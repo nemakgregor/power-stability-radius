@@ -1,0 +1,63 @@
+stability-radius-repo/
+├── .gitignore                  # + logs/, runs/, *.log, hydra/outputs/
+├── README.md                   # Как установить, как запускать с Hydra, примеры команд
+├── LICENSE                     # MIT
+├── pyproject.toml              # Poetry: hydra-core, numpy, scipy, pandas, networkx, pandapower, matplotlib
+├── config/                     # Конфиги Hydra (YAML)
+│   ├── main.yaml               # Основной конфиг (пути, logging, режим dc/ac и т.д.)
+│   ├── logging.yaml            # Настройки логирования (уровень, пути)
+│   └── experiments/            # Готовые варианты (можно копировать/override)
+│       └── default_dc.yaml
+├── src/
+│   └── stability_radius/
+│       ├── __init__.py
+│       ├── utils.py            # setup_logging(), save_results() и другие helpers
+│       ├── radii/              # Разные типы радиусов
+│       │   ├── __init__.py
+│       │   ├── l2.py
+│       │   ├── m_weighted.py
+│       │   └── sigma_prob.py
+│       ├── parsers/            # Парсеры входных данных
+│       │   ├── __init__.py
+│       │   ├── matpower.py
+│       │   ├── csv.py
+│       │   └── time_series.py
+│       ├── balancing/          # Карты балансировки (P)
+│       │   ├── __init__.py
+│       │   ├── orth.py
+│       │   ├── slack.py
+│       │   └── agc.py
+│       ├── models/             # Номинальные режимы, пределы
+│       │   ├── __init__.py
+│       │   ├── nominal.py
+│       │   └── limits.py
+│       ├── dc/
+│       │   ├── __init__.py
+│       │   └── dc_model.py
+│       └── ac/
+│           ├── __init__.py
+│           ├── ac_model.py
+│           └── ac_radii.py
+├── tests/                      # Тесты
+│   ├── test_dc_model.py
+│   ├── test_radii.py
+│   ├── test_parsers.py
+│   └── test_logging.py         # Проверка, что логи пишутся
+├── examples/
+│   ├── ieee_118_sr_dc.ipynb
+│   ├── ieee_30_sr_ac.ipynb
+│   └── script_demo.py          # Основной скрипт с @hydra.main()
+├── data/
+│   ├── input/                  # Исходные сырые файлы
+│   ├── intermediate/           # После парсинга (numpy, pickle)
+│   └── final/                  # Готовые результаты (если не в runs)
+├── runs/                       # НОВАЯ: Все запуски сюда!
+│   ├── 2026-01-10_12-34-56/     # Пример папки запуска (timestamp)
+│   │   ├── log_debug.log       # Полный лог (DEBUG+)
+│   │   ├── log_info.log        # Краткий лог для быстрого просмотра
+│   │   ├── results.json        # Радиусы, вероятности, etc.
+│   │   └── plots/              # png/pdf графики
+│   └── .gitkeep
+├── logs/                       # Опционально: симлинки или старые логи
+│   └── .gitkeep
+└── .dvc/                       # Для больших данных
