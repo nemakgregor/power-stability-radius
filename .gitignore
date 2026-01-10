@@ -7,3 +7,11 @@ __pycache__/
 __pycache__/
 *.pyc
 
+runs/
+outputs/
+*.log
+data/
+
+list.md
+res_sr.md
+
