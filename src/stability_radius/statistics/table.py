@@ -93,11 +93,13 @@ def format_results_table(
     return "\n".join(out_lines)
 
 
-def _finite_radii(results: Dict[str, Dict[str, Any]]) -> List[float]:
+def _finite_radii(
+    results: Dict[str, Dict[str, Any]], *, radius_field: str
+) -> List[float]:
     vals: List[float] = []
     for d in results.values():
         try:
-            r = float(d.get("radius_l2", float("nan")))
+            r = float(d.get(radius_field, float("nan")))
         except Exception:
             continue
         if math.isfinite(r):
@@ -125,25 +127,27 @@ def print_results_table(
     print(format_results_table(results, columns=columns, max_rows=max_rows))
 
 
-def print_radius_summary(results: Dict[str, Dict[str, Any]]) -> None:
+def print_radius_summary(
+    results: Dict[str, Dict[str, Any]], *, radius_field: str = "radius_l2"
+) -> None:
     """
-    Print a compact summary of L2 radii.
+    Print a compact summary of radii in the provided `radius_field`.
 
     Summary includes count, finite count, mean/min/max over finite radii.
     """
-    vals = _finite_radii(results)
+    vals = _finite_radii(results, radius_field=radius_field)
     total = len(results)
     finite = len(vals)
 
     if finite == 0:
-        print(f"Summary: lines={total}, finite_radii=0")
+        print(f"Summary({radius_field}): lines={total}, finite_radii=0")
         return
 
     mean_v = sum(vals) / finite
     min_v = min(vals)
     max_v = max(vals)
     print(
-        "Summary: "
+        f"Summary({radius_field}): "
         f"lines={total}, finite_radii={finite}, "
         f"mean={mean_v:.6g}, min={min_v:.6g}, max={max_v:.6g}"
     )
@@ -170,11 +174,17 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser.add_argument(
         "--max-rows", type=int, default=None, help="Limit number of printed rows"
     )
+    parser.add_argument(
+        "--radius-field",
+        type=str,
+        default="radius_l2",
+        help="Radius field to summarize (default: radius_l2).",
+    )
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     results = _load_results_json(Path(args.results_json))
     print_results_table(results, max_rows=args.max_rows)
-    print_radius_summary(results)
+    print_radius_summary(results, radius_field=str(args.radius_field))
     return 0
 
 

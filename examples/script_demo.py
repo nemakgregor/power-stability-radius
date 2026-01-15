@@ -5,9 +5,11 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import hydra
-from omegaconf import DictConfig
+import numpy as np
+from omegaconf import DictConfig, OmegaConf
 
 # Allow running the example without installing the package:
 # `python examples/script_demo.py` or `poetry run python examples/script_demo.py`
@@ -18,7 +20,11 @@ if _SRC_DIR.is_dir():
 
 from stability_radius.dc.dc_model import build_dc_matrices
 from stability_radius.parsers.matpower import load_network
+from stability_radius.radii.common import get_line_base_quantities
 from stability_radius.radii.l2 import compute_l2_radius
+from stability_radius.radii.metric import compute_metric_radius
+from stability_radius.radii.nminus1 import compute_nminus1_l2_radius
+from stability_radius.radii.probabilistic import compute_sigma_radius
 from stability_radius.statistics.table import print_radius_summary, print_results_table
 from stability_radius.utils import setup_logging
 from stability_radius.utils.download import download_ieee_case
@@ -72,6 +78,42 @@ def _resolve_under_project_root(p: str) -> str:
     return str((_PROJECT_ROOT / path).resolve())
 
 
+def _cfg_select(cfg: DictConfig, key: str, default: Any) -> Any:
+    """
+    Safe config accessor using OmegaConf.select().
+
+    Returns `default` when the key does not exist or cfg is not an OmegaConf object.
+    """
+    try:
+        val = OmegaConf.select(cfg, key)
+    except Exception:
+        val = None
+    return default if val is None else val
+
+
+def _merge_line_results(
+    *dicts: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """
+    Merge multiple per-line result dictionaries (same "line_<idx>" keys).
+
+    Later dicts override earlier ones for colliding fields (expected identical base fields).
+    """
+    keys: set[str] = set()
+    for d in dicts:
+        keys.update(d.keys())
+
+    merged: dict[str, dict[str, Any]] = {}
+    for k in sorted(
+        keys, key=lambda s: int(s.split("_", 1)[1]) if "_" in s else 10**18
+    ):
+        merged[k] = {}
+        for d in dicts:
+            if k in d:
+                merged[k].update(d[k])
+    return merged
+
+
 @hydra.main(config_path=str(_CONFIG_DIR), config_name="main", version_base=None)
 def main(cfg: DictConfig) -> None:
     # Configure logs and create runs/<timestamp> directory
@@ -87,18 +129,81 @@ def main(cfg: DictConfig) -> None:
 
     # 3) Build DC model matrices (PTDF-like sensitivities)
     H_full, _ = build_dc_matrices(net, slack_bus=int(cfg.settings.slack_bus))
+    n_bus = int(H_full.shape[1])
 
-    # 4) Compute radii
-    radii_results = compute_l2_radius(net, H_full)
+    # 4) Run power flow once and reuse base quantities for all radii
+    margin_factor = float(_cfg_select(cfg, "settings.margin_factor", 1.0))
+    logger.info(
+        "Running base AC PF and extracting base quantities (margin_factor=%.6g)...",
+        margin_factor,
+    )
+    base = get_line_base_quantities(net, margin_factor=margin_factor)
 
-    # 5) Print results table + summary to stdout
-    print_results_table(radii_results)
-    print_radius_summary(radii_results)
+    # 5) Compute all radii
 
-    # 6) Save results
+    # 5.1 L2 radii
+    l2 = compute_l2_radius(net, H_full, margin_factor=margin_factor, base=base)
+
+    # 5.2 Metric radii: default M = I unless provided by config (not required)
+    # If you later add config like settings.metric.diagonal_weight, you can plug it in here.
+    M = np.eye(n_bus, dtype=float)
+    metric = compute_metric_radius(
+        net, H_full, M, margin_factor=margin_factor, base=base
+    )
+
+    # 5.3 Probabilistic radii: diagonal Sigma with identical per-bus stddev (default=1 MW)
+    inj_std_mw = float(_cfg_select(cfg, "settings.sigma.injection_std_mw", 1.0))
+    Sigma_diag = (inj_std_mw**2) * np.ones(n_bus, dtype=float)
+    logger.info(
+        "Using Sigma as diagonal with injection_std_mw=%.6g (Sigma=std^2*I).",
+        inj_std_mw,
+    )
+    sigma = compute_sigma_radius(
+        net, H_full, Sigma_diag, margin_factor=margin_factor, base=base
+    )
+
+    # 5.4 Effective N-1 radii via LODF
+    update_sens = bool(_cfg_select(cfg, "settings.nminus1.update_sensitivities", True))
+    islanding = str(_cfg_select(cfg, "settings.nminus1.islanding", "skip"))
+    nminus1 = compute_nminus1_l2_radius(
+        net,
+        H_full,
+        margin_factor=margin_factor,
+        update_sensitivities=update_sens,
+        islanding=islanding,  # "skip" or "raise"
+        base=base,
+    )
+
+    # Merge into one per-line dict for JSON/table output
+    results = _merge_line_results(l2, metric, sigma, nminus1)
+
+    # 6) Print results table + summaries
+    print_results_table(
+        results,
+        columns=(
+            "p0_mw",
+            "p_limit_mw_est",
+            "margin_mw",
+            "norm_g",
+            "metric_denom",
+            "sigma_flow",
+            "radius_l2",
+            "radius_metric",
+            "radius_sigma",
+            "overload_probability",
+            "radius_nminus1",
+            "worst_contingency",
+        ),
+    )
+    print_radius_summary(results, radius_field="radius_l2")
+    print_radius_summary(results, radius_field="radius_metric")
+    print_radius_summary(results, radius_field="radius_sigma")
+    print_radius_summary(results, radius_field="radius_nminus1")
+
+    # 7) Save results
     results_path = os.path.join(run_dir, "results.json")
     with open(results_path, "w", encoding="utf-8") as f:
-        json.dump(radii_results, f, indent=4, ensure_ascii=False)
+        json.dump(results, f, indent=4, ensure_ascii=False)
 
     logger.info("Done. Results written to: %s", results_path)
 
