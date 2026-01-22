@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Sequence
+from typing import Literal, Sequence
 
 import numpy as np
 
@@ -30,11 +30,19 @@ def estimate_line_limit_mva(net, line_row, line_res_row) -> float:
     """
     Estimate a line thermal limit in MVA using available pandapower data.
 
-    Priority:
-      1) If `max_i_ka` and from-bus `vn_kv` are available:
-         Smax ≈ sqrt(3) * V_kV * I_kA, then apply `max_loading_percent` if present.
-      2) Fallback: infer from `loading_percent` if available:
-         Smax ≈ S0 * 100 / loading_percent, then apply `max_loading_percent`.
+    Priority (robust, version-tolerant)
+    -----------------------------------
+    0) If a MATPOWER-like MVA rating column exists on the line table:
+       - rateA / rate_a_mva / sn_mva / max_mva
+       then treat it as the limit in MVA (apply max_loading_percent if present).
+
+    1) If `max_i_ka` and from-bus `vn_kv` are available:
+         Smax ≈ sqrt(3) * V_kV * I_kA
+       then apply `max_loading_percent` if present.
+
+    2) Fallback: infer from `loading_percent` if available:
+         Smax ≈ S0 * 100 / loading_percent
+       then apply `max_loading_percent`.
 
     Returns
     -------
@@ -44,6 +52,16 @@ def estimate_line_limit_mva(net, line_row, line_res_row) -> float:
     max_loading_percent = float(line_row.get("max_loading_percent", 100.0))
     if not np.isfinite(max_loading_percent) or max_loading_percent <= 0:
         max_loading_percent = 100.0
+
+    # 0) Direct MVA rating if present (PGLib/MATPOWER converters often keep something like this).
+    for k in ("rateA", "rate_a_mva", "sn_mva", "max_mva"):
+        if k in line_row:
+            try:
+                v = float(line_row[k])
+            except Exception:
+                continue
+            if np.isfinite(v) and v > 0:
+                return v * (max_loading_percent / 100.0)
 
     # 1) Use max_i_ka and voltage level
     if "max_i_ka" in line_row:
@@ -75,10 +93,11 @@ def get_line_base_quantities(
     net,
     *,
     margin_factor: float = 1.0,
+    pf_mode: Literal["ac", "dc"] = "ac",
     line_indices: Sequence[int] | None = None,
 ) -> LineBaseQuantities:
     """
-    Run AC power flow (pandapower `runpp`) and extract per-line base flows, limits, and margins.
+    Run power flow and extract per-line base flows, limits, and margins.
 
     Parameters
     ----------
@@ -86,8 +105,11 @@ def get_line_base_quantities(
         pandapower network.
     margin_factor:
         Multiplier applied to estimated limits (e.g., 0.9 for conservative).
+    pf_mode:
+        "ac" -> pandapower.runpp (AC PF)
+        "dc" -> pandapower.rundcpp (DC PF, faster on large cases)
     line_indices:
-        Optional explicit ordering of line indices. Defaults to `list(net.line.index)`.
+        Optional explicit ordering of line indices. Defaults to sorted(net.line.index).
 
     Returns
     -------
@@ -96,12 +118,14 @@ def get_line_base_quantities(
     Raises
     ------
     ValueError
-        If margin_factor is non-positive.
+        If margin_factor is non-positive or pf_mode is invalid.
     ImportError
         If pandapower is not installed.
     """
     if margin_factor <= 0:
         raise ValueError("margin_factor must be positive.")
+    if pf_mode not in ("ac", "dc"):
+        raise ValueError("pf_mode must be 'ac' or 'dc'.")
 
     try:
         import pandapower as pp  # local import to keep math-only modules importable
@@ -110,9 +134,12 @@ def get_line_base_quantities(
             "pandapower is required for net-based radii computations."
         ) from e
 
-    pp.runpp(net)
+    if pf_mode == "ac":
+        pp.runpp(net)
+    else:
+        pp.rundcpp(net)
 
-    idx = list(net.line.index) if line_indices is None else list(line_indices)
+    idx = sorted(net.line.index) if line_indices is None else list(line_indices)
     res_line = net.res_line.loc[idx]
 
     flow0 = res_line["p_from_mw"].to_numpy(dtype=float)

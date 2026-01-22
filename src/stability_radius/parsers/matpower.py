@@ -223,6 +223,11 @@ def load_network(file_path: Union[str, Path], f_hz: float = 50.0):
        dependency `matpowercaseframes`, falls back to an internal `.m` parser
        and converts via `pandapower.converter.pypower.from_ppc`.
 
+    Logging
+    -------
+    Uses DEBUG-level logs for normal progress to keep CLI output clean. Errors are
+    still logged with exception details.
+
     Parameters
     ----------
     file_path:
@@ -248,18 +253,18 @@ def load_network(file_path: Union[str, Path], f_hz: float = 50.0):
 
     try:
         net = _from_mpc_to_pandapower(path, f_hz=f_hz)
-        logger.info("Network loaded: %d buses, %d lines", len(net.bus), len(net.line))
+        logger.debug("Network loaded: %d buses, %d lines", len(net.bus), len(net.line))
         return net
     except NotImplementedError as e:
         # pandapower's from_mpc raises this when matpowercaseframes is not installed.
-        logger.info(
+        logger.debug(
             "pandapower from_mpc() is not available (%s). Using internal MATPOWER .m parser fallback.",
             str(e),
         )
         try:
             ppc = _parse_matpower_m_file_to_ppc(path)
             net = _from_ppc_to_pandapower(ppc, f_hz=f_hz)
-            logger.info(
+            logger.debug(
                 "Network loaded (fallback parser): %d buses, %d lines",
                 len(net.bus),
                 len(net.line),

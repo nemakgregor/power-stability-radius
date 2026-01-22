@@ -63,6 +63,7 @@ def compute_l2_radius(
 
         k = line_key(lid)
         results[k] = {
+            "flow0_mw": float(base_q.flow0_mw[pos]),
             "p0_mw": float(base_q.p0_abs_mw[pos]),
             "p_limit_mw_est": float(base_q.limit_mw_est[pos]),
             "margin_mw": margin,
@@ -72,9 +73,10 @@ def compute_l2_radius(
         if np.isfinite(r_l2):
             finite_radii.append(r_l2)
 
+    # Keep CLI output compact: summary goes to DEBUG (still written to file log by default).
     if finite_radii:
-        logger.info("Mean L2 radius: %.6g", float(np.mean(finite_radii)))
+        logger.debug("Mean L2 radius: %.6g", float(np.mean(finite_radii)))
     else:
-        logger.info("Mean L2 radius: n/a (no finite radii)")
+        logger.debug("Mean L2 radius: n/a (no finite radii)")
 
     return results
