@@ -140,6 +140,49 @@ def _sum_p_by_bus(net: Any, table_name: str, *, p_col: str) -> dict[int, float]:
     return out
 
 
+def _pp_gen_p_bounds_to_pypsa(
+    *, gid: int, p_min_mw: float, p_max_mw: float
+) -> tuple[float, float] | None:
+    """
+    Convert pandapower generator active power bounds into PyPSA parameters.
+
+    Returns
+    -------
+    (p_nom, p_min_pu) or None
+        - Returns None if the generator has no active power capability for this model
+          (p_max_mw <= 0). This is common for synchronous condensers / reactive-only devices
+          in MATPOWER/PGLib converted networks.
+        - Raises ValueError for non-finite bounds or inconsistent bounds (p_min_mw > p_max_mw).
+
+    Notes
+    -----
+    - This project uses p_max_pu=1.0 for included generators, thus p_nom == p_max_mw.
+    - We intentionally do NOT try to "guess" missing/invalid bounds (no heuristics).
+    """
+    p_min = float(p_min_mw)
+    p_max = float(p_max_mw)
+
+    if not math.isfinite(p_min):
+        raise ValueError(f"Invalid min_p_mw for pandapower gen {gid}: {p_min}")
+    if not math.isfinite(p_max):
+        raise ValueError(f"Invalid max_p_mw for pandapower gen {gid}: {p_max}")
+
+    # Key fix: allow converted networks to contain in-service "generators" with zero
+    # active capability (e.g., synchronous condensers). For DC OPF base-point we skip them.
+    if p_max <= 0.0:
+        return None
+
+    if p_min > p_max:
+        raise ValueError(
+            f"Inconsistent active power bounds for pandapower gen {gid}: "
+            f"min_p_mw={p_min} > max_p_mw={p_max}"
+        )
+
+    p_nom = float(p_max)
+    p_min_pu = float(p_min / p_nom) if p_nom > 0 else 0.0
+    return p_nom, p_min_pu
+
+
 def solve_dc_opf_base_flows_from_pandapower(
     *,
     net: Any,
@@ -208,44 +251,68 @@ def solve_dc_opf_base_flows_from_pandapower(
 
     # generators from pandapower gen/ext_grid
     gen_rank = 0
+    skipped_nonpositive_pmax: list[int] = []
+
     if hasattr(net, "gen") and net.gen is not None and len(net.gen):
+        bus_id_set = set(bus_ids)
         for gid in [int(x) for x in sorted(net.gen.index)]:
             row = net.gen.loc[gid]
             if not _is_in_service(row):
                 continue
+
             bus = int(row.get("bus", -1))
-            if bus not in set(bus_ids):
+            if bus not in bus_id_set:
                 raise ValueError(f"pandapower gen {gid} refers to missing bus {bus}")
 
-            p_min = float(row.get("min_p_mw", 0.0))
-            p_max = float(row.get("max_p_mw", np.nan))
-            if not math.isfinite(p_max) or p_max <= 0:
-                raise ValueError(f"Invalid max_p_mw for pandapower gen {gid}: {p_max}")
-            if not math.isfinite(p_min):
-                raise ValueError(f"Invalid min_p_mw for pandapower gen {gid}: {p_min}")
+            try:
+                p_min = float(row.get("min_p_mw", 0.0))
+                p_max = float(row.get("max_p_mw", np.nan))
+            except (TypeError, ValueError) as e:
+                raise ValueError(
+                    f"Failed to parse min_p_mw/max_p_mw for pandapower gen {gid}."
+                ) from e
 
+            bounds = _pp_gen_p_bounds_to_pypsa(gid=gid, p_min_mw=p_min, p_max_mw=p_max)
+            if bounds is None:
+                skipped_nonpositive_pmax.append(int(gid))
+                logger.debug(
+                    "Skipping pandapower gen %d (bus=%d): non-positive max_p_mw=%.6g (min_p_mw=%.6g).",
+                    int(gid),
+                    int(bus),
+                    float(p_max),
+                    float(p_min),
+                )
+                continue
+
+            p_nom, p_min_pu = bounds
             gen_rank += 1
-            p_nom = float(p_max)
-            p_min_pu = float(p_min / p_nom) if p_nom > 0 else 0.0
-
             n.add(
                 "Generator",
                 f"gen_{gid}",
                 bus=str(bus),
-                p_nom=p_nom,
-                p_min_pu=p_min_pu,
+                p_nom=float(p_nom),
+                p_min_pu=float(p_min_pu),
                 p_max_pu=1.0,
                 marginal_cost=float(gen_rank),
             )
 
+    if skipped_nonpositive_pmax:
+        logger.warning(
+            "Skipped %d in-service pandapower gen(s) with non-positive max_p_mw (reactive-only / zero-capacity). "
+            "First ids: %s",
+            int(len(skipped_nonpositive_pmax)),
+            skipped_nonpositive_pmax[:20],
+        )
+
     if hasattr(net, "ext_grid") and net.ext_grid is not None and len(net.ext_grid):
         p_nom_ext = max(float(total_load), 1.0)
+        bus_id_set = set(bus_ids)
         for eid in [int(x) for x in sorted(net.ext_grid.index)]:
             row = net.ext_grid.loc[eid]
             if not _is_in_service(row):
                 continue
             bus = int(row.get("bus", -1))
-            if bus not in set(bus_ids):
+            if bus not in bus_id_set:
                 raise ValueError(
                     f"pandapower ext_grid {eid} refers to missing bus {bus}"
                 )
