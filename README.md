@@ -23,6 +23,8 @@ poetry install
 
 ## Quickstart (single case)
 
+### Option A (default): PF-based base point
+
 ```bash
 poetry run python src/power_stability_radius.py demo --input data/input/pglib_opf_case30_ieee.m
 ```
@@ -30,12 +32,32 @@ poetry run python src/power_stability_radius.py demo --input data/input/pglib_op
 What it does:
 1) Ensures an input MATPOWER/PGLib `.m` case file exists (downloads if needed)
 2) Loads the case into pandapower
-3) Runs AC PF once and extracts base flows / estimated limits
+3) Runs AC/DC PF once and extracts base flows / estimated limits
 4) Builds DC sensitivity matrix `H_full`
 5) Computes all radii per line
 6) Writes outputs under `runs/<timestamp>/`
 
-### Outputs in `runs/<timestamp>/`
+### Option B: OPF-based base point (recommended for PGLib-OPF verification)
+
+PGLib-OPF “as-loaded” cases are OPF benchmarks; the base dispatch stored in the case file
+is often **not feasible** w.r.t. thermal limits. In that regime Monte Carlo coverage can be `n/a`.
+
+To use an **OPF solution as the base point**, solve a single-snapshot DC OPF with **PyPSA**:
+
+```bash
+poetry run python src/power_stability_radius.py demo \
+  --input data/input/pglib_opf_case30_ieee.m \
+  --dispatch-mode opf_pypsa \
+  --opf-solver highs
+```
+
+Requirements:
+- `pypsa` installed
+- a linear solver supported by your PyPSA version (e.g. HiGHS via `highspy`)
+
+---
+
+## Outputs in `runs/<timestamp>/`
 
 - `results.json` — all per-line fields + `__meta__`
 - `results_table.csv` — CSV export (same columns/order as the internal table)
@@ -60,6 +82,10 @@ Common options:
     --input data/input/pglib_opf_case30_ieee.m \
     --export-results verification/results/case30.json
   ```
+
+### Base point (PF vs OPF)
+- `--dispatch-mode` — `pf` (default) or `opf_pypsa`
+- `--opf-solver` — solver name for PyPSA (e.g. `highs`)
 
 ### Power flow / model
 - `--slack-bus` — slack bus id/position (consistent with `build_dc_matrices`)
@@ -106,20 +132,13 @@ Example (case30 + case118):
 ```bash
 poetry run python src/power_stability_radius.py demo \
   --input data/input/pglib_opf_case30_ieee.m \
+  --dispatch-mode opf_pypsa --opf-solver highs \
   --export-results verification/results/case30.json
 
 poetry run python src/power_stability_radius.py demo \
   --input data/input/pglib_opf_case118_ieee.m \
+  --dispatch-mode opf_pypsa --opf-solver highs \
   --export-results verification/results/case118.json
-```
-
-Tip: for multiple cases, a shell loop is usually simplest:
-```bash
-for c in 30 118 300; do
-  poetry run python src/power_stability_radius.py demo \
-    --input data/input/pglib_opf_case${c}_ieee.m \
-    --export-results verification/results/case${c}.json
-done
 ```
 
 ### 2) Monte Carlo coverage for a single case
@@ -136,8 +155,18 @@ poetry run python src/power_stability_radius.py monte-carlo \
 
 ### 3) Generate the aggregated verification report
 
+By default, report auto-generation uses **OPF base point** (PyPSA):
+
 ```bash
 poetry run python src/power_stability_radius.py report \
+  --results-dir verification/results \
+  --out verification/report.md
+```
+
+You can force PF-based generation (legacy behavior) by:
+```bash
+poetry run python src/power_stability_radius.py report \
+  --demo-dispatch-mode pf \
   --results-dir verification/results \
   --out verification/report.md
 ```

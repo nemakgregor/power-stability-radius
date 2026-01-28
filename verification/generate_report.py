@@ -1,23 +1,23 @@
+from __future__ import annotations
+
 """
 Generate verification/report.md from stored per-case results under verification/results/.
 
-This script computes:
-- Monte Carlo coverage%
-- Top risky lines (top-10 by smallest radius_l2) and match with known congested corridors (case30/case118)
-- N-1 criticality match: whether worst_contingency corresponds to high base flow
+Workflow (deterministic policy)
+-------------------------------
+- Base point is solved ONLY via OPF: PyPSA DC OPF + HiGHS
+- Radii are computed around the OPF base point
+- Monte Carlo coverage is evaluated for each case
+- An aggregated Markdown report is generated
 
-Behavior:
-- Always includes all configured cases.
-- Can auto-generate missing verification/results/*.json (and auto-download inputs) using the same
-  computation pipeline as the 'demo' command.
+Input data policy
+-----------------
+- If an expected input `.m` case file is missing and its filename matches a supported
+  dataset (MATPOWER case<N>.m/ieee<N>.m or PGLib-OPF pglib_opf_*.m), it is downloaded
+  deterministically (stable URL candidate ordering).
 
-Report goal
------------
-The report is intended to be *verifiable*: all derived metrics include the underlying counts /
-denominators (where applicable) so you can audit computations.
+No PF/AC-OPF modes.
 """
-
-from __future__ import annotations
 
 import argparse
 import json
@@ -26,7 +26,6 @@ import math
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -39,12 +38,14 @@ if _SRC_DIR.is_dir() and str(_SRC_DIR) not in sys.path:
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from stability_radius.config import DEFAULT_LOGGING, DEFAULT_MC, LoggingConfig
 from stability_radius.parsers.matpower import load_network
 from stability_radius.radii.common import line_key
-from stability_radius.utils import setup_logging
+from stability_radius.utils import log_stage, setup_logging
+from stability_radius.utils.download import ensure_case_file
 from verification.monte_carlo import estimate_coverage_percent
 
-logger = logging.getLogger("verification.generate_report")
+logger = logging.getLogger("stability_radius.verification.generate_report")
 
 
 @dataclass(frozen=True)
@@ -86,7 +87,7 @@ def _get_meta(results: Dict[str, Any]) -> Dict[str, Any]:
 def _get_meta_time_sec(results: Dict[str, Any]) -> float:
     try:
         return float(_get_meta(results).get("compute_time_sec", float("nan")))
-    except Exception:
+    except (TypeError, ValueError):
         return float("nan")
 
 
@@ -100,7 +101,7 @@ def _get_meta_slack_bus(results: Dict[str, Any], fallback: int = 0) -> int:
     meta = _get_meta(results)
     try:
         return int(meta.get("slack_bus", fallback))
-    except Exception:
+    except (TypeError, ValueError):
         return int(fallback)
 
 
@@ -109,7 +110,6 @@ def _sorted_line_indices(net) -> List[int]:
 
 
 def _append_status(status: str, suffix: str) -> str:
-    """Append suffix to status in a stable, readable way."""
     if not status or status == "ok":
         return str(suffix)
     return f"{status}_{suffix}"
@@ -118,7 +118,6 @@ def _append_status(status: str, suffix: str) -> str:
 def _fmt_float_or_na(x: float, *, digits: int = 6) -> str:
     if not math.isfinite(float(x)):
         return "n/a"
-    # Use general format; digits is significant digits here.
     return f"{float(x):.{digits}g}"
 
 
@@ -130,6 +129,107 @@ def _fmt_percent_or_na(x: float, *, decimals: int = 3) -> str:
 
 def _fmt_ok(v: bool) -> str:
     return "PASS" if v else "FAIL"
+
+
+def _validate_results_for_monte_carlo(results: Dict[str, Any]) -> tuple[bool, str]:
+    """
+    Validate that results.json contains fields required for Monte Carlo.
+    """
+    required = ("flow0_mw", "p_limit_mw_est", "radius_l2")
+
+    meta = _get_meta(results)
+    dm = str(meta.get("dispatch_mode", "")).strip().lower()
+    if dm != "opf_pypsa":
+        return False, f"dispatch_mode={dm!r} is not supported (expected 'opf_pypsa')"
+
+    solver = str(meta.get("opf_solver", "")).strip().lower()
+    if solver != "highs":
+        return False, f"opf_solver={solver!r} is not supported (expected 'highs')"
+
+    line_keys = [
+        k for k in results.keys() if isinstance(k, str) and k.startswith("line_")
+    ]
+    if not line_keys:
+        return False, "no line_* entries"
+
+    missing_examples: list[str] = []
+    nan_limit_examples: list[str] = []
+    finite_r = 0
+
+    for k in sorted(line_keys):
+        row = results.get(k)
+        if not isinstance(row, dict):
+            missing_examples.append(f"{k}: not a dict")
+            if len(missing_examples) >= 5:
+                break
+            continue
+
+        for f in required:
+            if f not in row:
+                missing_examples.append(f"{k}: missing {f}")
+                break
+
+        try:
+            c = float(row.get("p_limit_mw_est", float("nan")))
+        except (TypeError, ValueError):
+            c = float("nan")
+        if math.isnan(c):
+            nan_limit_examples.append(k)
+
+        try:
+            r = float(row.get("radius_l2", float("nan")))
+        except (TypeError, ValueError):
+            r = float("nan")
+        if math.isfinite(r):
+            finite_r += 1
+
+    if missing_examples:
+        return False, "missing required fields: " + "; ".join(missing_examples[:5])
+    if nan_limit_examples:
+        return (
+            False,
+            "p_limit_mw_est contains NaN (first 10): "
+            + ", ".join(nan_limit_examples[:10]),
+        )
+    if finite_r <= 0:
+        return False, "no finite radius_l2 values (cannot define MC scaling)"
+
+    return True, "ok"
+
+
+def _results_config_matches(
+    *,
+    results: Dict[str, Any],
+    expected_dc_mode: str,
+    expected_slack_bus: int,
+    expected_compute_nminus1: bool,
+) -> tuple[bool, str]:
+    meta = _get_meta(results)
+
+    dm = str(meta.get("dispatch_mode", "")).strip().lower()
+    if dm != "opf_pypsa":
+        return False, f"dispatch_mode={dm!r} != 'opf_pypsa'"
+
+    solver = str(meta.get("opf_solver", "")).strip().lower()
+    if solver != "highs":
+        return False, f"opf_solver={solver!r} != 'highs'"
+
+    dc_mode = str(meta.get("dc_mode", "")).strip().lower()
+    if dc_mode != str(expected_dc_mode).strip().lower():
+        return False, f"dc_mode={dc_mode!r} != {str(expected_dc_mode)!r}"
+
+    try:
+        sb = int(meta.get("slack_bus", expected_slack_bus))
+    except (TypeError, ValueError):
+        sb = expected_slack_bus
+    if sb != int(expected_slack_bus):
+        return False, f"slack_bus={sb} != {int(expected_slack_bus)}"
+
+    n1 = bool(meta.get("nminus1_computed", False))
+    if n1 != bool(expected_compute_nminus1):
+        return False, f"nminus1_computed={n1} != {bool(expected_compute_nminus1)}"
+
+    return True, "ok"
 
 
 def _top_k_risky_lines(
@@ -146,7 +246,7 @@ def _top_k_risky_lines(
             continue
         try:
             r = float(row.get(radius_field, float("inf")))
-        except Exception:
+        except (TypeError, ValueError):
             r = float("inf")
         if math.isfinite(r):
             items.append((r, lid))
@@ -173,13 +273,6 @@ def _match_stats_top10(
     top10: Sequence[Dict[str, Any]],
     known_pairs: Sequence[Tuple[int, int]],
 ) -> TopMatchStats:
-    """
-    Returns a TopMatchStats with explicit counts.
-
-    Definitions (as used in the report):
-      - match% (common/10) = 100 * common / 10
-      - recall% (common/known) = 100 * common / len(known)
-    """
     top_k = int(len(top10))
     known = {frozenset((int(a), int(b))) for a, b in known_pairs}
     known_k = int(len(known))
@@ -209,19 +302,6 @@ def _match_stats_top10(
 
 
 def _nminus1_critical_match_stats(*, results: Dict[str, Any], net) -> NMinus1MatchStats:
-    """
-    Produce N-1 criticality match stats, including the intermediate counts.
-
-    Metric (as requested in the original task):
-      1) Select lines with radius_nminus1 < median(radius_nminus1) (finite only)
-      2) For each selected line m, check if its worst contingency w is a "high base flow" line:
-           p0_mw[w] > median(p0_mw)
-      3) match% = 100 * hits / evaluated
-
-    Important edge cases:
-    - If there are no finite radius_nminus1 values -> match is n/a with status.
-    - If no selected lines / no valid worst contingencies -> match is n/a with status.
-    """
     line_indices = _sorted_line_indices(net)
     m = len(line_indices)
 
@@ -235,15 +315,15 @@ def _nminus1_critical_match_stats(*, results: Dict[str, Any], net) -> NMinus1Mat
             continue
         try:
             p0[pos] = float(row.get("p0_mw", float("nan")))
-        except Exception:
+        except (TypeError, ValueError):
             p0[pos] = float("nan")
         try:
             r_n1[pos] = float(row.get("radius_nminus1", float("nan")))
-        except Exception:
+        except (TypeError, ValueError):
             r_n1[pos] = float("nan")
         try:
             worst[pos] = int(row.get("worst_contingency", -1))
-        except Exception:
+        except (TypeError, ValueError):
             worst[pos] = -1
 
     finite_r = r_n1[np.isfinite(r_n1)]
@@ -336,7 +416,6 @@ def _case_section_md(
     lines.append("")
     lines.append(f"- status: **{status}**")
 
-    # ---------- MC summary line ----------
     if mc is None:
         lines.append("- coverage % (MC): n/a")
     else:
@@ -357,25 +436,37 @@ def _case_section_md(
                 f"(mc_status={mc_status}; feasible_in_box={denom}/{n_samples})"
             )
 
-    # ---------- Top risky summary ----------
+        if "base_point_feasible" in mc:
+            base_feasible = bool(mc.get("base_point_feasible", False))
+            violated = int(mc.get("base_point_violated_lines", 0))
+            vmax = float(mc.get("base_point_max_violation_mw", float("nan")))
+            lines.append(
+                "- base feasibility (w.r.t. stored limits): "
+                + (
+                    "**feasible**"
+                    if base_feasible
+                    else f"**infeasible** (violated={violated}, max_violation={_fmt_float_or_na(vmax)} MW)"
+                )
+            )
+
     if top_match is None:
         lines.append("- top risky match %: n/a")
     else:
         match = top_match.match_percent_common_over_10
         recall = top_match.recall_percent_common_over_known
-        lines.append(
-            f"- top risky match % (common/10): **{_fmt_float_or_na(match, digits=6)}%** "
-            f"(common={top_match.common_k}, top_k={top_match.top_k}, known_k={top_match.known_k})"
-            if math.isfinite(match)
-            else "- top risky match %: n/a"
-        )
+        if math.isfinite(match):
+            lines.append(
+                f"- top risky match % (common/10): **{_fmt_float_or_na(match, digits=6)}%** "
+                f"(common={top_match.common_k}, top_k={top_match.top_k}, known_k={top_match.known_k})"
+            )
+        else:
+            lines.append("- top risky match %: n/a")
         if math.isfinite(recall):
             lines.append(
                 f"- top risky recall % (common/known): **{_fmt_float_or_na(recall, digits=6)}%** "
                 f"(= {top_match.common_k} / {top_match.known_k})"
             )
 
-    # ---------- N-1 summary ----------
     if n1_match is None:
         lines.append("- N-1 critical match %: n/a")
     else:
@@ -390,7 +481,6 @@ def _case_section_md(
                 f"- N-1 critical match %: n/a (status={n1_match.status}; selected={n1_match.selected_lines})"
             )
 
-    # ---------- time ----------
     lines.append(
         f"- time sec (demo): **{time_sec:.3f}**"
         if math.isfinite(time_sec)
@@ -398,84 +488,6 @@ def _case_section_md(
     )
     lines.append("")
 
-    # ---------- MC details ----------
-    if mc is not None:
-        lines.append("### Monte Carlo coverage (details)")
-        lines.append("")
-        mc_status = str(mc.get("status", "")) or "unknown"
-        cov = float(mc.get("coverage_percent", float("nan")))
-        ci_lo = float(mc.get("coverage_ci95_low_percent", float("nan")))
-        ci_hi = float(mc.get("coverage_ci95_high_percent", float("nan")))
-        n_samples = int(mc.get("n_samples", 0))
-        seed = int(mc.get("seed", 0))
-        chunk_size = int(mc.get("chunk_size", 0))
-        box_lo = float(mc.get("box_lo", float("nan")))
-        box_hi = float(mc.get("box_hi", float("nan")))
-        box_half_width = float(mc.get("box_half_width", float("nan")))
-        min_r = float(mc.get("min_r", float("nan")))
-        max_r = float(mc.get("max_r", float("nan")))
-        n_bus = int(mc.get("n_bus", 0))
-        denom = int(mc.get("total_feasible_in_box", 0))
-        numer = int(mc.get("feasible_in_ball", 0))
-        feasible_rate = float(mc.get("feasible_rate_in_box_percent", float("nan")))
-
-        lines.append(f"- status: **{mc_status}**")
-        lines.append(f"- n_samples={n_samples}, seed={seed}, chunk_size={chunk_size}")
-        if n_bus > 0:
-            lines.append(
-                "- sampling box: "
-                f"[box_lo, box_hi] = [{_fmt_float_or_na(box_lo)}, {_fmt_float_or_na(box_hi)}] "
-                f"(computed as ±2*max_r/sqrt(n_bus); max_r={_fmt_float_or_na(max_r)}, n_bus={n_bus}, half_width={_fmt_float_or_na(box_half_width)})"
-            )
-        else:
-            lines.append(
-                "- sampling box: "
-                f"[box_lo, box_hi] = [{_fmt_float_or_na(box_lo)}, {_fmt_float_or_na(box_hi)}] "
-                f"(computed as ±2*max_r/sqrt(n_bus); max_r={_fmt_float_or_na(max_r)})"
-            )
-
-        lines.append(f"- min_r (guaranteed L2 ball radius) = {_fmt_float_or_na(min_r)}")
-        lines.append(
-            f"- total_feasible_in_box = {denom} / {n_samples} = {_fmt_float_or_na(feasible_rate, digits=6)}%"
-        )
-        lines.append(f"- feasible_in_ball = {numer}")
-        lines.append(
-            "- coverage = feasible_in_ball / total_feasible_in_box * 100 = "
-            + (
-                f"{cov:.6f}%"
-                if math.isfinite(cov)
-                else "n/a (denominator is 0, i.e. no feasible samples in box)"
-            )
-        )
-        if math.isfinite(cov) and math.isfinite(ci_lo) and math.isfinite(ci_hi):
-            lines.append(f"- 95% CI (Wald, diagnostic): [{ci_lo:.3f}%, {ci_hi:.3f}%]")
-        lines.append("")
-
-    # ---------- Known corridors + top match details ----------
-    if known_pairs is not None:
-        lines.append("### Known congested corridors (literature/manual)")
-        lines.append("")
-        lines.append(f"- known pairs: {', '.join(f'{a}-{b}' for a, b in known_pairs)}")
-        if top_match is not None and math.isfinite(
-            top_match.match_percent_common_over_10
-        ):
-            lines.append(
-                f"- common in top-10: **{top_match.common_k}**; "
-                f"match% (common/10) = **{top_match.match_percent_common_over_10:.3f}%**; "
-                f"recall% (common/known) = **{top_match.recall_percent_common_over_known:.3f}%**"
-            )
-            lines.append(
-                "- Calculation: "
-                f"match = 100 * common / 10 = 100 * {top_match.common_k} / 10; "
-                f"recall = 100 * common / known = 100 * {top_match.common_k} / {top_match.known_k}."
-            )
-            lines.append(
-                "- Примечание: при малом числе известных пар метрика (common/10) имеет низкий максимум "
-                f"(например, для {len(known_pairs)} известных линий максимум = {100.0 * len(known_pairs) / 10.0:.1f}%)."
-            )
-        lines.append("")
-
-    # ---------- Top risky table ----------
     if top_risky:
         lines.append("### Top-10 risky lines (min radius_l2)")
         lines.append("")
@@ -487,34 +499,12 @@ def _case_section_md(
             )
         lines.append("")
 
-    # ---------- Adequacy checks ----------
-    if case in {"case30", "case118"} and top_match is not None:
-        recall = top_match.recall_percent_common_over_known
-        if math.isfinite(recall):
-            lines.append("### Adequacy check (top risky)")
-            lines.append("")
-            lines.append(
-                f"- Criterion (interpretable): recall% > 70% => **{_fmt_ok(recall > 70.0)}**"
-            )
-            lines.append("")
+    if math.isfinite(time_sec):
+        lines.append("### Scalability check")
+        lines.append("")
+        lines.append(f"- Criterion: time < 10 sec => **{_fmt_ok(time_sec < 10.0)}**")
+        lines.append("")
 
-    if case in {"case30", "case118", "case1354_pegase"} and n1_match is not None:
-        if math.isfinite(n1_match.match_percent):
-            lines.append("### Adequacy check (N-1 criticality)")
-            lines.append("")
-            lines.append(
-                f"- Criterion: N-1 critical match % > 80% => **{_fmt_ok(n1_match.match_percent > 80.0)}**"
-            )
-            lines.append("")
-        else:
-            lines.append("### Adequacy check (N-1 criticality)")
-            lines.append("")
-            lines.append(
-                "- Criterion: N-1 critical match % > 80% => **n/a** (metric undefined)"
-            )
-            lines.append("")
-
-    # ---------- Literature comparisons (now robust to n/a coverage) ----------
     if "1354_pegase" in case:
         lines.append("### Literature comparison (Nguyen 2018)")
         mc_cov = (
@@ -531,8 +521,7 @@ def _case_section_md(
                 f"Здесь coverage: n/a (MC status: {mc_status})."
             )
             lines.append(
-                "Критерий адекватности по задаче: >70%. "
-                "Условие не может быть проверено (coverage = n/a)."
+                "Критерий адекватности по задаче: >70%. Условие не может быть проверено (coverage = n/a)."
             )
         else:
             lines.append(
@@ -566,8 +555,7 @@ def _case_section_md(
                 f"Здесь coverage: n/a (MC status: {mc_status})."
             )
             lines.append(
-                "Критерий адекватности по задаче: >70%. "
-                "Условие не может быть проверено (coverage = n/a)."
+                "Критерий адекватности по задаче: >70%. Условие не может быть проверено (coverage = n/a)."
             )
         else:
             lines.append(
@@ -585,12 +573,6 @@ def _case_section_md(
             )
         lines.append("")
 
-    if math.isfinite(time_sec):
-        lines.append("### Scalability check")
-        lines.append("")
-        lines.append(f"- Criterion: time < 10 sec => **{_fmt_ok(time_sec < 10.0)}**")
-        lines.append("")
-
     return "\n".join(lines)
 
 
@@ -601,29 +583,21 @@ def generate_report_text(
     seed: int,
     chunk_size: int,
     generate_missing_results: bool,
-    demo_pf_mode: str,
     demo_dc_mode: str,
     demo_slack_bus: int,
+    demo_compute_nminus1: bool,
+    mc_box_radius_quantile: float,
 ) -> str:
     """
     Generate verification report markdown as a string.
-
-    Parameters
-    ----------
-    results_dir:
-        Directory containing per-case results JSON files.
-    n_samples, seed, chunk_size:
-        Monte Carlo parameters.
-    generate_missing_results:
-        If True, missing case results are computed and written into results_dir.
-    demo_pf_mode, demo_dc_mode, demo_slack_bus:
-        Settings used when generating missing results.
-
-    Returns
-    -------
-    str
-        Markdown report text.
     """
+    if not (0.0 <= float(mc_box_radius_quantile) <= 1.0):
+        raise ValueError("mc_box_radius_quantile must be within [0, 1].")
+
+    demo_dc_mode_eff = str(demo_dc_mode).strip().lower()
+    if demo_dc_mode_eff not in ("materialize", "operator"):
+        raise ValueError("demo_dc_mode must be materialize|operator")
+
     cases = [
         ("case30", "data/input/pglib_opf_case30_ieee.m", results_dir / "case30.json"),
         (
@@ -657,39 +631,13 @@ def generate_report_text(
     out: List[str] = []
     out.append("# Verification report")
     out.append("")
-    out.append("## How to reproduce (quick)")
+    out.append("## Notes on workflow")
     out.append("")
+    out.append("- Base point is produced by **opf_pypsa** (PyPSA DC OPF + HiGHS).")
     out.append(
-        "Generate report (auto-generates missing verification/results/*.json by default):"
+        "- Input cases are auto-downloaded deterministically when missing (supported filenames only)."
     )
-    out.append("")
-    out.append("```bash")
-    out.append("poetry run python src/power_stability_radius.py report \\")
-    out.append("  --results-dir verification/results --out verification/report.md")
-    out.append("```")
-    out.append("")
-    out.append("To disable auto-generation (only aggregate existing JSONs):")
-    out.append("")
-    out.append("```bash")
-    out.append("poetry run python src/power_stability_radius.py report \\")
-    out.append("  --generate-missing-results 0 \\")
-    out.append("  --results-dir verification/results --out verification/report.md")
-    out.append("```")
-    out.append("")
-    out.append("---")
-    out.append("")
-    out.append("## Notes on metrics")
-    out.append("")
-    out.append(
-        "- **MC coverage** is reported as `coverage = 100 * feasible_in_ball / total_feasible_in_box`."
-    )
-    out.append(
-        "- If `total_feasible_in_box = 0`, then coverage is **n/a** with `mc_status=no_feasible_samples` (not a crash)."
-    )
-    out.append(
-        "- Sampling box uses per-coordinate half-width `2*max_r/sqrt(n_bus)` (not `2*max_r`), "
-        "because `max_r` is an L2 radius and the old scaling makes feasibility probability collapse in high dimensions."
-    )
+    out.append("- No PF/AC-OPF modes are supported.")
     out.append("")
     out.append("---")
     out.append("")
@@ -699,88 +647,90 @@ def generate_report_text(
         status = "ok"
         results: Dict[str, Any] | None = None
 
-        if not rp.exists() and generate_missing_results:
-            logger.info("Missing results for %s. Generating: %s", case, str(rp))
-            try:
-                from power_stability_radius import compute_results_for_case
+        with log_stage(logger, f"{case}: Prepare results.json (base point)"):
+            if rp.exists():
+                try:
+                    results = _load_results(rp)
+                except Exception:
+                    logger.exception("Failed to parse results: %s", str(rp))
+                    results = None
+                    status = _append_status(status, "invalid_results_json")
 
-                results = compute_results_for_case(
-                    input_path=str(input_path_fallback),
-                    slack_bus=int(demo_slack_bus),
-                    pf_mode=str(demo_pf_mode),
-                    dc_mode=str(demo_dc_mode),
-                    dc_chunk_size=256,
-                    dc_dtype=np.float64,
-                    margin_factor=1.0,
-                    inj_std_mw=1.0,
-                    nminus1_update_sensitivities=True,
-                    nminus1_islanding="skip",
+            if results is not None:
+                ok_cfg, msg_cfg = _results_config_matches(
+                    results=results,
+                    expected_dc_mode=str(demo_dc_mode_eff),
+                    expected_slack_bus=int(demo_slack_bus),
+                    expected_compute_nminus1=bool(demo_compute_nminus1),
                 )
-                rp.parent.mkdir(parents=True, exist_ok=True)
-                rp.write_text(
-                    json.dumps(results, indent=4, ensure_ascii=False) + "\n",
-                    encoding="utf-8",
-                )
-                status = "generated"
-                logger.info("Generated results for %s: %s", case, str(rp))
-            except Exception:
-                logger.exception("Failed to generate results for %s", case)
-                status = "generation_failed"
+                if not ok_cfg:
+                    logger.info(
+                        "%s: results.json config mismatch (%s). Will regenerate.",
+                        case,
+                        msg_cfg,
+                    )
+                    results = None
+                    status = _append_status(status, "config_mismatch")
+
+            if results is None:
+                if not generate_missing_results:
+                    status = _append_status(status, "missing_or_invalid_results")
+                else:
+                    from power_stability_radius import compute_results_for_case
+
+                    ip = Path(input_path_fallback)
+                    try:
+                        ensured_ip = Path(ensure_case_file(str(ip)))
+                        ip = ensured_ip
+                    except Exception:
+                        logger.exception(
+                            "Failed to ensure/download input case file for %s: %s",
+                            case,
+                            str(ip),
+                        )
+                        status = _append_status(status, "missing_input")
+                    else:
+                        results = compute_results_for_case(
+                            input_path=str(ip),
+                            slack_bus=int(demo_slack_bus),
+                            dc_mode=str(demo_dc_mode_eff),
+                            dc_chunk_size=256,
+                            dc_dtype=np.float64,
+                            margin_factor=1.0,
+                            inj_std_mw=1.0,
+                            compute_nminus1=bool(demo_compute_nminus1),
+                            nminus1_update_sensitivities=True,
+                            nminus1_islanding="skip",
+                        )
+                        rp.parent.mkdir(parents=True, exist_ok=True)
+                        rp.write_text(
+                            json.dumps(results, indent=4, ensure_ascii=False) + "\n",
+                            encoding="utf-8",
+                        )
+                        status = _append_status(status, "generated")
+                        logger.info("Generated results for %s: %s", case, str(rp))
 
         if results is None:
-            if not rp.exists():
-                logger.error("Missing results: %s", str(rp))
-                status = "missing_results" if status == "ok" else status
-                table_rows.append(
-                    (
-                        case,
-                        status,
-                        float("nan"),
-                        float("nan"),
-                        float("nan"),
-                        float("nan"),
-                    )
+            table_rows.append(
+                (case, status, float("nan"), float("nan"), float("nan"), float("nan"))
+            )
+            sections.append(
+                _case_section_md(
+                    case=case,
+                    status=status,
+                    mc=None,
+                    top_risky=None,
+                    top_match=None,
+                    n1_match=None,
+                    time_sec=float("nan"),
                 )
-                sections.append(
-                    _case_section_md(
-                        case=case,
-                        status=status,
-                        mc=None,
-                        top_risky=None,
-                        top_match=None,
-                        n1_match=None,
-                        time_sec=float("nan"),
-                    )
-                )
-                continue
+            )
+            continue
 
-            try:
-                results = _load_results(rp)
-            except Exception:
-                logger.exception("Failed to parse results: %s", str(rp))
-                status = _append_status(status, "invalid_results_json")
-                table_rows.append(
-                    (
-                        case,
-                        status,
-                        float("nan"),
-                        float("nan"),
-                        float("nan"),
-                        float("nan"),
-                    )
-                )
-                sections.append(
-                    _case_section_md(
-                        case=case,
-                        status=status,
-                        mc=None,
-                        top_risky=None,
-                        top_match=None,
-                        n1_match=None,
-                        time_sec=float("nan"),
-                    )
-                )
-                continue
+        ok_mc, msg_mc = _validate_results_for_monte_carlo(results)
+        if not ok_mc:
+            logger.warning("Results for %s are invalid for MC: %s", case, msg_mc)
+            status = _append_status(status, "invalid_for_mc")
 
         time_sec = _get_meta_time_sec(results)
         input_path = _get_meta_input_path(results, input_path_fallback)
@@ -788,18 +738,17 @@ def generate_report_text(
 
         ip = Path(input_path)
         if not ip.exists():
-            # Try to download using the same logic as demo.
+            # Prefer canonical path for this case to keep the repo layout stable.
+            canonical = Path(input_path_fallback)
             try:
-                from power_stability_radius import (
-                    _ensure_input_case_file,
-                )  # internal helper
-
-                downloaded = _ensure_input_case_file(str(input_path))
-                ip = Path(downloaded)
-                logger.info("Downloaded missing input for %s: %s", case, str(ip))
+                ip = Path(ensure_case_file(str(canonical)))
+                status = _append_status(status, "downloaded_input")
             except Exception:
                 logger.exception(
-                    "Missing input case file and download failed: %s", str(ip)
+                    "Missing input case file for %s and download failed. meta_input=%s, canonical=%s",
+                    case,
+                    str(Path(input_path)),
+                    str(canonical),
                 )
                 status = _append_status(status, "missing_input")
                 table_rows.append(
@@ -818,31 +767,29 @@ def generate_report_text(
                 )
                 continue
 
-        try:
-            net = load_network(ip)
-        except Exception:
-            logger.exception("Failed to load network: %s", str(ip))
-            status = _append_status(status, "load_network_failed")
-            table_rows.append(
-                (case, status, float("nan"), float("nan"), float("nan"), time_sec)
-            )
-            sections.append(
-                _case_section_md(
-                    case=case,
-                    status=status,
-                    mc=None,
-                    top_risky=None,
-                    top_match=None,
-                    n1_match=None,
-                    time_sec=time_sec,
+        with log_stage(logger, f"{case}: Load network (for report metadata)"):
+            try:
+                net = load_network(ip)
+            except Exception:
+                logger.exception("Failed to load network: %s", str(ip))
+                status = _append_status(status, "load_network_failed")
+                table_rows.append(
+                    (case, status, float("nan"), float("nan"), float("nan"), time_sec)
                 )
-            )
-            continue
+                sections.append(
+                    _case_section_md(
+                        case=case,
+                        status=status,
+                        mc=None,
+                        top_risky=None,
+                        top_match=None,
+                        n1_match=None,
+                        time_sec=time_sec,
+                    )
+                )
+                continue
 
-        # ---------- Monte Carlo coverage ----------
-        mc_stats: Optional[Dict[str, Any]] = None
-        coverage = float("nan")
-        try:
+        with log_stage(logger, f"{case}: Monte Carlo coverage"):
             mc_stats = estimate_coverage_percent(
                 results_path=rp,
                 input_case_path=ip,
@@ -850,26 +797,12 @@ def generate_report_text(
                 n_samples=int(n_samples),
                 seed=int(seed),
                 chunk_size=int(chunk_size),
+                box_radius_quantile=float(mc_box_radius_quantile),
             )
-            coverage = float(mc_stats.get("coverage_percent", float("nan")))
+        coverage = float(mc_stats.get("coverage_percent", float("nan")))
+        if not math.isfinite(coverage):
+            status = _append_status(status, str(mc_stats.get("status", "mc_undefined")))
 
-            if not math.isfinite(coverage):
-                status = _append_status(
-                    status, str(mc_stats.get("status", "mc_undefined"))
-                )
-                # Not an error: the report already contains mc_status + counts.
-                logger.debug(
-                    "Monte Carlo coverage undefined for %s (mc_status=%s).",
-                    case,
-                    str(mc_stats.get("status", "mc_undefined")),
-                )
-        except Exception:
-            logger.exception("Monte Carlo coverage failed for %s", case)
-            coverage = float("nan")
-            mc_stats = None
-            status = _append_status(status, "mc_failed")
-
-        # ---------- Risky lines and matching ----------
         top10 = None
         top_stats: Optional[TopMatchStats] = None
         known_pairs: Optional[Sequence[Tuple[int, int]]] = None
@@ -890,7 +823,6 @@ def generate_report_text(
         if known_pairs is not None and top10 is not None:
             top_stats = _match_stats_top10(top10=top10, known_pairs=known_pairs)
 
-        # ---------- N-1 match (with stats) ----------
         n1_stats: Optional[NMinus1MatchStats]
         try:
             n1_stats = _nminus1_critical_match_stats(results=results, net=net)
@@ -901,7 +833,6 @@ def generate_report_text(
             n1_stats = None
             status = _append_status(status, "n1_match_failed")
 
-        # ---------- Section rendering ----------
         sections.append(
             _case_section_md(
                 case=case,
@@ -915,7 +846,6 @@ def generate_report_text(
             )
         )
 
-        # ---------- Summary table row ----------
         top_match_val = (
             float(top_stats.match_percent_common_over_10)
             if top_stats is not None
@@ -954,72 +884,56 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Generate verification report (Markdown)."
     )
-    parser.add_argument("--log-level", default="INFO", type=str)
-    parser.add_argument("--n-samples", default=50_000, type=int)
-    parser.add_argument("--seed", default=0, type=int)
-    parser.add_argument("--chunk-size", default=256, type=int)
-
+    parser.add_argument("--log-level", default=DEFAULT_LOGGING.level_console, type=str)
+    parser.add_argument("--n-samples", default=DEFAULT_MC.n_samples, type=int)
+    parser.add_argument("--seed", default=DEFAULT_MC.seed, type=int)
+    parser.add_argument("--chunk-size", default=DEFAULT_MC.chunk_size, type=int)
     parser.add_argument(
-        "--results-dir",
-        default="verification/results",
-        type=str,
-        help="Directory containing per-case results JSON files (default: verification/results).",
-    )
-    parser.add_argument(
-        "--out",
-        default="verification/report.md",
-        type=str,
-        help="Output report path (default: verification/report.md).",
-    )
-    parser.add_argument(
-        "--runs-dir",
-        default="runs",
-        type=str,
-        help="Directory where per-run folders and run.log are created.",
+        "--box-radius-quantile", default=DEFAULT_MC.box_radius_quantile, type=float
     )
 
+    parser.add_argument("--results-dir", default="verification/results", type=str)
+    parser.add_argument("--out", default="verification/report.md", type=str)
+    parser.add_argument("--runs-dir", default=DEFAULT_LOGGING.runs_dir, type=str)
+
+    parser.add_argument("--generate-missing-results", default=1, type=int)
+
     parser.add_argument(
-        "--generate-missing-results",
-        default=1,
-        type=int,
-        help="1: compute missing results JSONs automatically, 0: do not.",
-    )
-    parser.add_argument("--demo-pf-mode", default="dc", type=str, choices=("ac", "dc"))
-    parser.add_argument(
-        "--demo-dc-mode",
-        default="auto",
+        "--dc-mode",
+        default="operator",
         type=str,
-        choices=("auto", "materialize", "operator"),
+        choices=("materialize", "operator"),
+        help="DC model mode used for auto-generated results.",
     )
-    parser.add_argument("--demo-slack-bus", default=0, type=int)
+    parser.add_argument("--slack-bus", default=0, type=int)
+    parser.add_argument("--compute-nminus1", default=0, type=int)
 
     args = parser.parse_args(list(argv) if argv is not None else None)
 
-    cfg = SimpleNamespace(
-        paths=SimpleNamespace(runs_dir=str(args.runs_dir)),
-        settings=SimpleNamespace(
-            logging=SimpleNamespace(
-                level_console=str(args.log_level), level_file="DEBUG"
+    run_dir = Path(
+        setup_logging(
+            LoggingConfig(
+                runs_dir=str(args.runs_dir),
+                level_console=str(args.log_level),
+                level_file="DEBUG",
             )
-        ),
+        )
     )
-    run_dir = Path(setup_logging(cfg))
     logger.info("Report run directory: %s", str(run_dir))
 
-    results_dir = Path(str(args.results_dir))
-    out_path = Path(str(args.out))
-
     report_text = generate_report_text(
-        results_dir=results_dir,
+        results_dir=Path(str(args.results_dir)),
         n_samples=int(args.n_samples),
         seed=int(args.seed),
         chunk_size=int(args.chunk_size),
         generate_missing_results=bool(args.generate_missing_results),
-        demo_pf_mode=str(args.demo_pf_mode),
-        demo_dc_mode=str(args.demo_dc_mode),
-        demo_slack_bus=int(args.demo_slack_bus),
+        demo_dc_mode=str(args.dc_mode),
+        demo_slack_bus=int(args.slack_bus),
+        demo_compute_nminus1=bool(args.compute_nminus1),
+        mc_box_radius_quantile=float(args.box_radius_quantile),
     )
 
+    out_path = Path(str(args.out))
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(report_text, encoding="utf-8")
     logger.info("Wrote report: %s", str(out_path))

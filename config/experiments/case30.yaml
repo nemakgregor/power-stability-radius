@@ -1,0 +1,4 @@
+defaults:
+  - main
+  - experiments: case30
+  - _self_

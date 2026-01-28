@@ -43,6 +43,8 @@ def _make_small_net():
 
 
 def test_build_dc_matrices_shape_and_slack_column():
+    pytest.importorskip("scipy")
+
     from stability_radius.dc.dc_model import build_dc_matrices
 
     net, slack_bus = _make_small_net()

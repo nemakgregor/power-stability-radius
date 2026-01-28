@@ -8,14 +8,14 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-try:  # optional dependency (required for large-scale / operator mode)
+try:
     import scipy.sparse as sp
     import scipy.sparse.linalg as spla
 
     _HAVE_SCIPY = True
-except Exception:  # pragma: no cover
-    sp = None  # type: ignore[assignment]
-    spla = None  # type: ignore[assignment]
+except ImportError:
+    sp = None
+    spla = None
     _HAVE_SCIPY = False
 
 _X_TOTAL_EPS = 1e-12
@@ -29,17 +29,6 @@ class DCOperator:
     Represents:
         theta_red = Bred^{-1} * p_red
         f_lines = diag(b_lines) * A_lines_red * theta_red
-
-    Important
-    ---------
-    - Sensitivities are computed for **monitored pandapower lines** (net.line).
-    - The reduced nodal matrix Bred is built using the full in-service branch set
-      available in the pandapower network:
-        * lines (net.line)
-        * transformers (net.trafo)
-        * impedances (net.impedance)
-      This prevents artificial islanding/singularity when MATPOWER/PGLib branches are
-      converted into non-line elements by pandapower.
 
     Notes
     -----
@@ -252,42 +241,49 @@ def _resolve_slack_pos(bus_ids: list[int], slack_bus: int) -> int:
 
 
 def _is_in_service(row: Any) -> bool:
-    """Best-effort, version-tolerant in_service check for pandapower element rows."""
-    try:
-        if "in_service" in row:
-            return bool(row["in_service"])
-    except Exception:
-        return True
-    return True
+    """Return pandapower element in_service flag."""
+    return bool(row.get("in_service", True))
 
 
 def _bus_vn_kv(net: Any, bus_id: int) -> float:
     """Return bus nominal voltage vn_kv if available, else NaN."""
-    try:
-        if bus_id in net.bus.index and "vn_kv" in net.bus.columns:
-            return float(net.bus.loc[bus_id, "vn_kv"])
-    except Exception:
-        return float("nan")
+    if bus_id in net.bus.index and "vn_kv" in net.bus.columns:
+        return float(net.bus.loc[bus_id, "vn_kv"])
     return float("nan")
 
 
-def _line_b_from_row(line_row: Any) -> float:
-    """
-    Compute b = 1/x_total for a pandapower line row.
-
-    Important: negative reactance is allowed (b becomes negative). We only reject
-    near-zero/non-finite reactances.
-    """
+def _line_x_total_ohm(line_row: Any) -> float:
+    """Compute total series reactance of a pandapower line in Ohm."""
     x_ohm_per_km = float(line_row.get("x_ohm_per_km", 0.0))
     length_km = float(line_row.get("length_km", 0.0))
-    x_total = x_ohm_per_km * length_km
+    parallel = float(line_row.get("parallel", 1.0))
+    if not np.isfinite(parallel) or parallel <= 0:
+        parallel = 1.0
 
+    x_total = x_ohm_per_km * length_km / parallel
     if not np.isfinite(x_total) or abs(x_total) <= _X_TOTAL_EPS:
         return 0.0
-    return 1.0 / x_total
+    return float(x_total)
 
 
-def _trafo_x_total_ohm(net: Any, trafo_row: Any) -> float:
+def _line_b_mw_from_row(net: Any, line_row: Any) -> float:
+    """
+    Compute DC branch coefficient b for a pandapower line in MW/rad.
+
+    b ≈ V_kV^2 / X_ohm
+    """
+    fb = int(line_row.get("from_bus", -1))
+    vn_kv = _bus_vn_kv(net, fb)
+    x_ohm = _line_x_total_ohm(line_row)
+    if not np.isfinite(vn_kv) or vn_kv <= 0:
+        return 0.0
+    if not np.isfinite(x_ohm) or abs(x_ohm) <= _X_TOTAL_EPS:
+        return 0.0
+
+    return float((vn_kv * vn_kv) / x_ohm)
+
+
+def trafo_x_total_ohm(net: Any, trafo_row: Any) -> float:
     """
     Approximate transformer series reactance in Ohms from pandapower trafo parameters.
 
@@ -298,69 +294,101 @@ def _trafo_x_total_ohm(net: Any, trafo_row: Any) -> float:
       Z_base = (V_kV^2) / S_MVA   [Ohm]
       x_ohm = x_pu * Z_base
     """
-    try:
-        if not np.isfinite(float(trafo_row.get("vk_percent", np.nan))):
-            return 0.0
-        if not np.isfinite(float(trafo_row.get("sn_mva", np.nan))):
-            return 0.0
-
-        z_pu = float(trafo_row["vk_percent"]) / 100.0
-        r_pu = float(trafo_row.get("vkr_percent", 0.0)) / 100.0
-        x_pu2 = z_pu * z_pu - r_pu * r_pu
-        x_pu = float(np.sqrt(max(x_pu2, 0.0)))
-
-        sn_mva = float(trafo_row["sn_mva"])
-        if not np.isfinite(sn_mva) or sn_mva <= 0:
-            return 0.0
-
-        vn_hv_kv = float(trafo_row.get("vn_hv_kv", np.nan))
-        if not np.isfinite(vn_hv_kv) or vn_hv_kv <= 0:
-            hv_bus = int(trafo_row.get("hv_bus", -1))
-            vn_hv_kv = _bus_vn_kv(net, hv_bus)
-
-        if not np.isfinite(vn_hv_kv) or vn_hv_kv <= 0:
-            return 0.0
-
-        z_base_ohm = (vn_hv_kv * vn_hv_kv) / sn_mva
-        x_ohm = x_pu * z_base_ohm
-
-        if not np.isfinite(x_ohm) or abs(x_ohm) <= _X_TOTAL_EPS:
-            return 0.0
-        return x_ohm
-    except Exception:
+    if not np.isfinite(float(trafo_row.get("vk_percent", np.nan))):
         return 0.0
+    if not np.isfinite(float(trafo_row.get("sn_mva", np.nan))):
+        return 0.0
+
+    z_pu = float(trafo_row["vk_percent"]) / 100.0
+    r_pu = float(trafo_row.get("vkr_percent", 0.0)) / 100.0
+    x_pu2 = z_pu * z_pu - r_pu * r_pu
+    x_pu = float(np.sqrt(max(float(x_pu2), 0.0)))
+
+    sn_mva = float(trafo_row["sn_mva"])
+    if not np.isfinite(sn_mva) or sn_mva <= 0:
+        return 0.0
+
+    vn_hv_kv = float(trafo_row.get("vn_hv_kv", np.nan))
+    if not np.isfinite(vn_hv_kv) or vn_hv_kv <= 0:
+        hv_bus = int(trafo_row.get("hv_bus", -1))
+        vn_hv_kv = _bus_vn_kv(net, hv_bus)
+
+    if not np.isfinite(vn_hv_kv) or vn_hv_kv <= 0:
+        return 0.0
+
+    z_base_ohm = (vn_hv_kv * vn_hv_kv) / sn_mva
+    x_ohm = x_pu * z_base_ohm
+
+    if not np.isfinite(x_ohm) or abs(x_ohm) <= _X_TOTAL_EPS:
+        return 0.0
+    return float(x_ohm)
+
+
+def _trafo_b_mw_from_row(net: Any, trafo_row: Any) -> float:
+    """
+    Compute DC branch coefficient b for a pandapower transformer in MW/rad.
+
+    Uses hv-side nominal voltage:
+        b ≈ V_hv_kV^2 / X_ohm
+    """
+    hv_bus = int(trafo_row.get("hv_bus", -1))
+
+    vn_kv = float(trafo_row.get("vn_hv_kv", np.nan))
+    if not np.isfinite(vn_kv) or vn_kv <= 0:
+        vn_kv = _bus_vn_kv(net, hv_bus)
+
+    x_ohm = float(trafo_x_total_ohm(net, trafo_row))
+    if not np.isfinite(vn_kv) or vn_kv <= 0:
+        return 0.0
+    if not np.isfinite(x_ohm) or abs(x_ohm) <= _X_TOTAL_EPS:
+        return 0.0
+
+    return float((vn_kv * vn_kv) / x_ohm)
 
 
 def _impedance_x_total_ohm(net: Any, imp_row: Any) -> float:
     """
     Approximate impedance element series reactance in Ohms.
 
-    For net.impedance, pandapower uses p.u. values on system base (net.sn_mva)
-    and bus voltage base. We approximate using the from_bus voltage.
-
     x_ohm ≈ x_pu * (V_kV^2 / S_MVA)
     """
-    try:
-        x_pu = float(imp_row.get("xft_pu", np.nan))
-        if not np.isfinite(x_pu) or abs(x_pu) <= _X_TOTAL_EPS:
-            return 0.0
-
-        sn_mva = float(getattr(net, "sn_mva", np.nan))
-        if not np.isfinite(sn_mva) or sn_mva <= 0:
-            return 0.0
-
-        fb = int(imp_row.get("from_bus", -1))
-        vn_kv = _bus_vn_kv(net, fb)
-        if not np.isfinite(vn_kv) or vn_kv <= 0:
-            return 0.0
-
-        z_base_ohm = (vn_kv * vn_kv) / sn_mva
-        x_ohm = x_pu * z_base_ohm
-        if not np.isfinite(x_ohm) or abs(x_ohm) <= _X_TOTAL_EPS:
-            return 0.0
-        return x_ohm
-    except Exception:
+    x_pu = float(imp_row.get("xft_pu", np.nan))
+    if not np.isfinite(x_pu) or abs(x_pu) <= _X_TOTAL_EPS:
         return 0.0
+
+    sn_mva = float(getattr(net, "sn_mva", np.nan))
+    if not np.isfinite(sn_mva) or sn_mva <= 0:
+        return 0.0
+
+    fb = int(imp_row.get("from_bus", -1))
+    vn_kv = _bus_vn_kv(net, fb)
+    if not np.isfinite(vn_kv) or vn_kv <= 0:
+        return 0.0
+
+    z_base_ohm = (vn_kv * vn_kv) / sn_mva
+    x_ohm = x_pu * z_base_ohm
+    if not np.isfinite(x_ohm) or abs(x_ohm) <= _X_TOTAL_EPS:
+        return 0.0
+    return float(x_ohm)
+
+
+def _impedance_b_mw_from_row(net: Any, imp_row: Any) -> float:
+    """
+    Compute DC branch coefficient b for a pandapower impedance element in MW/rad.
+
+    Uses from-bus nominal voltage:
+        b ≈ V_kV^2 / X_ohm
+    """
+    fb = int(imp_row.get("from_bus", -1))
+
+    vn_kv = _bus_vn_kv(net, fb)
+    x_ohm = float(_impedance_x_total_ohm(net, imp_row))
+    if not np.isfinite(vn_kv) or vn_kv <= 0:
+        return 0.0
+    if not np.isfinite(x_ohm) or abs(x_ohm) <= _X_TOTAL_EPS:
+        return 0.0
+
+    return float((vn_kv * vn_kv) / x_ohm)
 
 
 def _check_connected_to_slack(
@@ -400,8 +428,8 @@ def _check_connected_to_slack(
         msg = (
             "Network is disconnected from the chosen slack bus under the DC branch model. "
             f"Disconnected buses count={len(disconnected_bus_ids)} (first 20 ids: {disconnected_bus_ids[:20]}). "
-            "This typically happens when some MATPOWER/PGLib branches were converted by pandapower into "
-            "transformers/impedances and were ignored, or when too many branches have invalid/zero reactance."
+            "This typically happens when some branches were converted into transformers/impedances "
+            "and were ignored, or when too many branches have invalid/zero reactance."
         )
         raise ValueError(msg)
 
@@ -417,16 +445,15 @@ def build_dc_operator(net, slack_bus: int = 0) -> DCOperator:
     Behavior
     --------
     - Monitored elements: net.line (ordering: sorted(net.line.index))
-    - B matrix assembly includes: net.line + net.trafo + net.impedance (in service, with nonzero reactance)
+    - B matrix assembly includes: net.line + net.trafo + net.impedance (in service, nonzero reactance)
 
     Logging
     -------
     Uses DEBUG-level logs for normal progress to keep CLI output clean.
     """
-    if not _HAVE_SCIPY:  # pragma: no cover
+    if not _HAVE_SCIPY:
         raise ImportError(
-            "SciPy is required for DCOperator (large-scale / operator mode). "
-            "Install scipy to use this functionality."
+            "SciPy is required for DCOperator and DC matrices in this project. Install scipy."
         )
 
     bus_ids = [int(x) for x in sorted(net.bus.index)]
@@ -453,40 +480,30 @@ def build_dc_operator(net, slack_bus: int = 0) -> DCOperator:
     A_line_data: list[float] = []
 
     valid_monitored = 0
-    invalid_monitored = 0
 
     for row_pos, lid in enumerate(line_ids):
         row = net.line.loc[lid]
         fb = int(row.get("from_bus", -1))
         tb = int(row.get("to_bus", -1))
 
-        if fb in bus_pos and tb in bus_pos:
-            fpos = int(bus_pos[fb])
-            tpos = int(bus_pos[tb])
-            from_bus_pos[row_pos] = fpos
-            to_bus_pos[row_pos] = tpos
-        else:
-            invalid_monitored += 1
-            logger.warning(
-                "Monitored line %s references missing buses (%s -> %s); treating as zero row.",
-                lid,
-                fb,
-                tb,
+        if fb not in bus_pos or tb not in bus_pos:
+            raise ValueError(
+                f"Monitored line {lid} references missing buses ({fb} -> {tb})."
             )
-            continue
+
+        fpos = int(bus_pos[fb])
+        tpos = int(bus_pos[tb])
+        from_bus_pos[row_pos] = fpos
+        to_bus_pos[row_pos] = tpos
 
         if not _is_in_service(row):
-            # Keep as zero row (consistent with previous behavior).
             continue
 
-        b_i = float(_line_b_from_row(row))
-        if abs(b_i) <= 0.0:
-            # Keep as zero row; still monitored but non-contributing.
-            invalid_monitored += 1
-            logger.warning(
-                "Monitored line %s has invalid/zero reactance; setting b=0.", lid
+        b_i = float(_line_b_mw_from_row(net, row))
+        if not np.isfinite(b_i) or abs(b_i) <= 0.0:
+            raise ValueError(
+                f"Monitored in-service line {lid} has invalid/zero reactance or voltage (b={b_i})."
             )
-            continue
 
         b_lines[row_pos] = b_i
         valid_monitored += 1
@@ -518,9 +535,7 @@ def build_dc_operator(net, slack_bus: int = 0) -> DCOperator:
         A_all_data.extend([1.0, -1.0])
         undirected_edges.append((int(fpos), int(tpos)))
 
-    # Add all in-service lines (not just monitored-valid) to B when possible.
     added_lines_to_b = 0
-    skipped_lines_to_b = 0
     for lid in line_ids:
         row = net.line.loc[lid]
         if not _is_in_service(row):
@@ -528,18 +543,15 @@ def build_dc_operator(net, slack_bus: int = 0) -> DCOperator:
         fb = int(row.get("from_bus", -1))
         tb = int(row.get("to_bus", -1))
         if fb not in bus_pos or tb not in bus_pos:
-            skipped_lines_to_b += 1
             continue
-        b_i = float(_line_b_from_row(row))
+        b_i = float(_line_b_mw_from_row(net, row))
         if not np.isfinite(b_i) or abs(b_i) <= 0.0:
-            skipped_lines_to_b += 1
             continue
         _add_branch(fpos=int(bus_pos[fb]), tpos=int(bus_pos[tb]), b_val=b_i)
         added_lines_to_b += 1
 
-    # Add transformers
     added_trafos_to_b = 0
-    if hasattr(net, "trafo") and getattr(net, "trafo") is not None and len(net.trafo):
+    if hasattr(net, "trafo") and net.trafo is not None and len(net.trafo):
         for tid in [int(x) for x in sorted(net.trafo.index)]:
             row = net.trafo.loc[tid]
             if not _is_in_service(row):
@@ -548,22 +560,14 @@ def build_dc_operator(net, slack_bus: int = 0) -> DCOperator:
             lv = int(row.get("lv_bus", -1))
             if hv not in bus_pos or lv not in bus_pos:
                 continue
-            x_ohm = float(_trafo_x_total_ohm(net, row))
-            if not np.isfinite(x_ohm) or abs(x_ohm) <= _X_TOTAL_EPS:
-                logger.debug(
-                    "Skipping trafo %s for B matrix: invalid x_ohm=%s", tid, x_ohm
-                )
+            b_i = float(_trafo_b_mw_from_row(net, row))
+            if not np.isfinite(b_i) or abs(b_i) <= 0.0:
                 continue
-            _add_branch(fpos=int(bus_pos[hv]), tpos=int(bus_pos[lv]), b_val=1.0 / x_ohm)
+            _add_branch(fpos=int(bus_pos[hv]), tpos=int(bus_pos[lv]), b_val=b_i)
             added_trafos_to_b += 1
 
-    # Add impedance elements
     added_imps_to_b = 0
-    if (
-        hasattr(net, "impedance")
-        and getattr(net, "impedance") is not None
-        and len(net.impedance)
-    ):
+    if hasattr(net, "impedance") and net.impedance is not None and len(net.impedance):
         for iid in [int(x) for x in sorted(net.impedance.index)]:
             row = net.impedance.loc[iid]
             if not _is_in_service(row):
@@ -572,24 +576,21 @@ def build_dc_operator(net, slack_bus: int = 0) -> DCOperator:
             tb = int(row.get("to_bus", -1))
             if fb not in bus_pos or tb not in bus_pos:
                 continue
-            x_ohm = float(_impedance_x_total_ohm(net, row))
-            if not np.isfinite(x_ohm) or abs(x_ohm) <= _X_TOTAL_EPS:
-                logger.debug(
-                    "Skipping impedance %s for B matrix: invalid x_ohm=%s", iid, x_ohm
-                )
+            b_i = float(_impedance_b_mw_from_row(net, row))
+            if not np.isfinite(b_i) or abs(b_i) <= 0.0:
                 continue
-            _add_branch(fpos=int(bus_pos[fb]), tpos=int(bus_pos[tb]), b_val=1.0 / x_ohm)
+            _add_branch(fpos=int(bus_pos[fb]), tpos=int(bus_pos[tb]), b_val=b_i)
             added_imps_to_b += 1
 
     if not b_all:
         raise RuntimeError(
             "Cannot build DC nodal matrix: no valid in-service branches (lines/trafo/impedance) "
-            "with nonzero reactance were found."
+            "with nonzero reactance/voltage were found."
         )
 
     logger.debug(
         "DCOperator summary: buses=%d, monitored_lines=%d (valid=%d), B-branches=%d "
-        "[lines=%d, trafos=%d, impedances=%d, skipped_lines=%d]",
+        "[lines=%d, trafos=%d, impedances=%d]",
         n_bus,
         m_line,
         valid_monitored,
@@ -597,10 +598,8 @@ def build_dc_operator(net, slack_bus: int = 0) -> DCOperator:
         added_lines_to_b,
         added_trafos_to_b,
         added_imps_to_b,
-        skipped_lines_to_b,
     )
 
-    # Connectivity pre-check (fast, deterministic) to fail early with a clear error.
     _check_connected_to_slack(
         n_bus=n_bus, slack_pos=slack_pos, edges=undirected_edges, bus_ids=bus_ids
     )
@@ -618,7 +617,6 @@ def build_dc_operator(net, slack_bus: int = 0) -> DCOperator:
     red_pos_of_bus_pos = np.full(n_bus, -1, dtype=int)
     red_pos_of_bus_pos[np.where(mask_non_slack)[0]] = np.arange(n_bus - 1, dtype=int)
 
-    # Bred uses full branch set; W uses only monitored lines.
     A_all_red = A_all[:, mask_non_slack]  # (m_all, n-1)
     W_all = A_all_red.multiply(b_all_arr[:, None]).tocsr()
     Bred = (A_all_red.T @ W_all).tocsc()
@@ -629,10 +627,9 @@ def build_dc_operator(net, slack_bus: int = 0) -> DCOperator:
     try:
         Bred_lu = spla.splu(Bred)
     except Exception as e:
-        # Provide additional context (counts) to help debugging real datasets.
         raise RuntimeError(
             "Reduced B matrix factorization failed (possibly singular/disconnected network "
-            "or too many invalid branch reactances). "
+            "or too many invalid branch reactances/voltages). "
             f"buses={n_bus}, monitored_lines={m_line}, B-branches={len(b_all)}"
         ) from e
 
@@ -664,163 +661,16 @@ def build_dc_matrices(
     """
     Build a dense DC PTDF-like sensitivity matrix `H_full` for pandapower networks.
 
-    Notes
-    -----
-    - If SciPy is available, uses `DCOperator.materialize_H_full()` (chunked, stable ordering).
-    - Otherwise falls back to a dense construction (small cases only).
-    - B matrix assembly (both modes) includes: lines + trafos + impedances. Rows of H_full
-      are still aligned with monitored lines (net.line).
-
-    Parameters
-    ----------
-    net:
-        pandapower network object.
-    slack_bus:
-        Slack bus identifier or position (in sorted bus ordering).
-    chunk_size:
-        Number of lines per solve block for SciPy/operator path.
-    dtype:
-        Output dtype for H_full (float64 or float32 recommended).
-
-    Returns
-    -------
-    (H_full, ctx):
-        H_full is an (m_lines x n_buses) numpy array.
-        ctx is a `DCOperator` (when SciPy is available) or `net` in dense fallback mode.
+    This function always uses the SciPy-backed `DCOperator` to materialize H_full.
     """
     if chunk_size <= 0:
         raise ValueError("chunk_size must be positive.")
 
-    if _HAVE_SCIPY:
-        op = build_dc_operator(net, slack_bus=int(slack_bus))
-        H_full = op.materialize_H_full(dtype=dtype, chunk_size=int(chunk_size))
-        return H_full, op
-
-    # -------- Dense fallback (small cases only) --------
-    bus_ids = [int(x) for x in sorted(net.bus.index)]
-    n_bus = len(bus_ids)
-    if n_bus == 0:
-        raise ValueError("Network has no buses.")
-    slack_pos = _resolve_slack_pos(bus_ids, int(slack_bus))
-    bus_pos = {bus_id: pos for pos, bus_id in enumerate(bus_ids)}
-
-    line_ids = [int(x) for x in sorted(net.line.index)]
-    m_line = len(line_ids)
-    if m_line == 0:
-        raise ValueError("Network has no lines; cannot build DC matrices.")
-
-    # A_lines and b_lines
-    A_lines = np.zeros((m_line, n_bus), dtype=float)
-    b_lines = np.zeros(m_line, dtype=float)
-    for row_pos, lid in enumerate(line_ids):
-        row = net.line.loc[lid]
-        if not _is_in_service(row):
-            continue
-        fb = int(row.get("from_bus", -1))
-        tb = int(row.get("to_bus", -1))
-        if fb not in bus_pos or tb not in bus_pos:
-            continue
-        b_i = float(_line_b_from_row(row))
-        if not np.isfinite(b_i) or abs(b_i) <= 0.0:
-            logger.warning(
-                "Line %s has invalid/zero reactance in dense DC fallback; setting b=0.",
-                lid,
-            )
-            continue
-        b_lines[row_pos] = b_i
-        A_lines[row_pos, bus_pos[fb]] = 1.0
-        A_lines[row_pos, bus_pos[tb]] = -1.0
-
-    # Full branch set for B
-    A_all_rows: list[np.ndarray] = []
-    b_all: list[float] = []
-    undirected_edges: list[tuple[int, int]] = []
-
-    def _add_dense_branch(*, fb: int, tb: int, b_val: float) -> None:
-        if fb not in bus_pos or tb not in bus_pos:
-            return
-        if not np.isfinite(b_val) or abs(float(b_val)) <= 0.0:
-            return
-        r = np.zeros(n_bus, dtype=float)
-        r[bus_pos[fb]] = 1.0
-        r[bus_pos[tb]] = -1.0
-        A_all_rows.append(r)
-        b_all.append(float(b_val))
-        undirected_edges.append((int(bus_pos[fb]), int(bus_pos[tb])))
-
-    # Lines
-    for lid in line_ids:
-        row = net.line.loc[lid]
-        if not _is_in_service(row):
-            continue
-        fb = int(row.get("from_bus", -1))
-        tb = int(row.get("to_bus", -1))
-        b_i = float(_line_b_from_row(row))
-        _add_dense_branch(fb=fb, tb=tb, b_val=b_i)
-
-    # Trafos
-    if hasattr(net, "trafo") and getattr(net, "trafo") is not None and len(net.trafo):
-        for tid in [int(x) for x in sorted(net.trafo.index)]:
-            row = net.trafo.loc[tid]
-            if not _is_in_service(row):
-                continue
-            hv = int(row.get("hv_bus", -1))
-            lv = int(row.get("lv_bus", -1))
-            x_ohm = float(_trafo_x_total_ohm(net, row))
-            if np.isfinite(x_ohm) and abs(x_ohm) > _X_TOTAL_EPS:
-                _add_dense_branch(fb=hv, tb=lv, b_val=1.0 / x_ohm)
-
-    # Impedances
-    if (
-        hasattr(net, "impedance")
-        and getattr(net, "impedance") is not None
-        and len(net.impedance)
-    ):
-        for iid in [int(x) for x in sorted(net.impedance.index)]:
-            row = net.impedance.loc[iid]
-            if not _is_in_service(row):
-                continue
-            fb = int(row.get("from_bus", -1))
-            tb = int(row.get("to_bus", -1))
-            x_ohm = float(_impedance_x_total_ohm(net, row))
-            if np.isfinite(x_ohm) and abs(x_ohm) > _X_TOTAL_EPS:
-                _add_dense_branch(fb=fb, tb=tb, b_val=1.0 / x_ohm)
-
-    if not b_all:
-        raise RuntimeError(
-            "Cannot build dense DC nodal matrix: no valid in-service branches were found."
+    if not _HAVE_SCIPY:
+        raise ImportError(
+            "SciPy is required for build_dc_matrices in this project. Install scipy."
         )
 
-    _check_connected_to_slack(
-        n_bus=n_bus, slack_pos=slack_pos, edges=undirected_edges, bus_ids=bus_ids
-    )
-
-    A_all = np.vstack(A_all_rows) if A_all_rows else np.zeros((0, n_bus), dtype=float)
-    b_all_arr = np.asarray(b_all, dtype=float).reshape(-1)
-
-    mask = np.ones(n_bus, dtype=bool)
-    mask[slack_pos] = False
-    A_all_red = A_all[:, mask]  # (m_all, n-1)
-    A_lines_red = A_lines[:, mask]  # (m_lines, n-1)
-
-    # Bred = A_all_red^T * diag(b_all) * A_all_red
-    weighted_A_all = b_all_arr[:, None] * A_all_red
-    Bred = A_all_red.T @ weighted_A_all
-
-    if Bred.size == 0:
-        H_full = np.zeros((m_line, n_bus), dtype=dtype)
-        return H_full, net
-
-    try:
-        RHS = (b_lines[:, None] * A_lines_red).T  # (n-1, m_lines)
-        # Bred is symmetric by construction, so solve(Bred, RHS) is OK.
-        H_red = np.linalg.solve(Bred.T, RHS).T  # (m_lines, n-1)
-    except np.linalg.LinAlgError as e:
-        raise RuntimeError(
-            "Reduced B matrix is singular in dense DC fallback. "
-            "The network may be disconnected or have invalid branch reactances."
-        ) from e
-
-    H_full = np.zeros((m_line, n_bus), dtype=dtype)
-    H_full[:, mask] = H_red.astype(dtype, copy=False)
-    return H_full, net
+    op = build_dc_operator(net, slack_bus=int(slack_bus))
+    H_full = op.materialize_H_full(dtype=dtype, chunk_size=int(chunk_size))
+    return H_full, op

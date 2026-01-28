@@ -6,14 +6,14 @@ import json
 import math
 from io import StringIO
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Iterable, List, Sequence, Tuple
 
 
 def _line_sort_key(line_key: str) -> Tuple[int, str]:
     """Sort keys like 'line_10' numerically, with a deterministic fallback."""
     try:
         return (int(line_key.split("_", 1)[1]), line_key)
-    except Exception:
+    except (IndexError, ValueError):
         return (10**18, line_key)
 
 
@@ -26,7 +26,7 @@ def _format_float(x: Any) -> str:
     """Format numeric values consistently for terminal/CSV output."""
     try:
         xf = float(x)
-    except Exception:
+    except (TypeError, ValueError):
         return str(x)
 
     if math.isinf(xf):
@@ -36,9 +36,7 @@ def _format_float(x: Any) -> str:
     return f"{xf:.6g}"
 
 
-def _iter_line_keys(
-    results: Dict[str, Dict[str, Any]], *, max_rows: int | None
-) -> List[str]:
+def _iter_line_keys(results: dict[str, Any], *, max_rows: int | None) -> List[str]:
     line_keys = sorted(
         (k for k in results.keys() if _is_line_key(k)), key=_line_sort_key
     )
@@ -48,7 +46,7 @@ def _iter_line_keys(
 
 
 def format_results_table(
-    results: Dict[str, Dict[str, Any]],
+    results: dict[str, Any],
     *,
     columns: Sequence[str] = (
         "p0_mw",
@@ -64,22 +62,7 @@ def format_results_table(
 
     Notes
     -----
-    This function intentionally ignores non-line keys (e.g., "__meta__") to keep
-    CLI output stable even when results JSON includes auxiliary metadata.
-
-    Parameters
-    ----------
-    results:
-        Mapping like {"line_0": {...}, ...}. May also include auxiliary keys.
-    columns:
-        Fields to include in the table (in order).
-    max_rows:
-        If provided, show at most this many rows (deterministic order).
-
-    Returns
-    -------
-    str
-        A table ready to print to stdout.
+    This function ignores non-line keys (e.g., "__meta__") to keep output stable.
     """
     line_keys = _iter_line_keys(results, max_rows=max_rows)
 
@@ -89,17 +72,17 @@ def format_results_table(
     for k in line_keys:
         row = [k]
         data = results.get(k, {})
+        if not isinstance(data, dict):
+            data = {}
         for c in columns:
             row.append(_format_float(data.get(c, "")))
         rows.append(row)
 
-    # Compute column widths
     widths = [len(h) for h in headers]
     for r in rows:
         for i, cell in enumerate(r):
             widths[i] = max(widths[i], len(cell))
 
-    # Align: first column (line key) left, everything else right (numbers).
     align_right = [False] + [True] * len(columns)
 
     def fmt_row(values: Sequence[str]) -> str:
@@ -124,28 +107,12 @@ def format_results_table(
 
 
 def format_results_csv(
-    results: Dict[str, Dict[str, Any]],
+    results: dict[str, Any],
     *,
     columns: Sequence[str],
     max_rows: int | None = None,
 ) -> str:
-    """
-    Format per-line results as CSV (deterministic ordering).
-
-    Parameters
-    ----------
-    results:
-        Results mapping (may include non-line keys; they are ignored).
-    columns:
-        CSV columns in order.
-    max_rows:
-        Optional limit of exported rows.
-
-    Returns
-    -------
-    str
-        CSV content (includes header).
-    """
+    """Format per-line results as CSV (deterministic ordering)."""
     line_keys = _iter_line_keys(results, max_rows=max_rows)
 
     buf = StringIO()
@@ -154,6 +121,8 @@ def format_results_csv(
 
     for k in line_keys:
         data = results.get(k, {})
+        if not isinstance(data, dict):
+            data = {}
         writer.writerow([k, *(_format_float(data.get(c, "")) for c in columns)])
 
     return buf.getvalue()
@@ -161,16 +130,12 @@ def format_results_csv(
 
 def write_results_table(
     path: Path,
-    results: Dict[str, Dict[str, Any]],
+    results: dict[str, Any],
     *,
     columns: Sequence[str],
     max_rows: int | None = None,
 ) -> None:
-    """
-    Write an ASCII results table to disk.
-
-    The file content matches `format_results_table(...)`.
-    """
+    """Write an ASCII results table to disk."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         format_results_table(results, columns=columns, max_rows=max_rows) + "\n",
@@ -180,7 +145,7 @@ def write_results_table(
 
 def write_results_csv(
     path: Path,
-    results: Dict[str, Dict[str, Any]],
+    results: dict[str, Any],
     *,
     columns: Sequence[str],
     max_rows: int | None = None,
@@ -193,16 +158,16 @@ def write_results_csv(
     )
 
 
-def _finite_radii(
-    results: Dict[str, Dict[str, Any]], *, radius_field: str
-) -> List[float]:
+def _finite_radii(results: dict[str, Any], *, radius_field: str) -> List[float]:
     vals: List[float] = []
     for k, d in results.items():
         if not _is_line_key(k):
             continue
+        if not isinstance(d, dict):
+            continue
         try:
             r = float(d.get(radius_field, float("nan")))
-        except Exception:
+        except (TypeError, ValueError):
             continue
         if math.isfinite(r):
             vals.append(r)
@@ -210,13 +175,9 @@ def _finite_radii(
 
 
 def format_radius_summary(
-    results: Dict[str, Dict[str, Any]], *, radius_field: str = "radius_l2"
+    results: dict[str, Any], *, radius_field: str = "radius_l2"
 ) -> str:
-    """
-    Format a compact summary of radii in the provided `radius_field`.
-
-    Summary includes count, finite count, mean/min/max over finite radii.
-    """
+    """Format a compact summary of radii in the provided `radius_field`."""
     vals = _finite_radii(results, radius_field=radius_field)
     total = len([k for k in results.keys() if _is_line_key(k)])
     finite = len(vals)
@@ -235,7 +196,7 @@ def format_radius_summary(
 
 
 def print_results_table(
-    results: Dict[str, Dict[str, Any]],
+    results: dict[str, Any],
     *,
     columns: Sequence[str] = (
         "p0_mw",
@@ -246,49 +207,32 @@ def print_results_table(
     ),
     max_rows: int | None = None,
 ) -> None:
-    """
-    Print per-line results as a table to stdout.
-
-    This is intended for CLI usage (demo scripts, quick inspection).
-    """
+    """Print per-line results as a table to stdout."""
     print(format_results_table(results, columns=columns, max_rows=max_rows))
 
 
 def print_radius_summary(
-    results: Dict[str, Dict[str, Any]], *, radius_field: str = "radius_l2"
+    results: dict[str, Any], *, radius_field: str = "radius_l2"
 ) -> None:
     """Print `format_radius_summary(...)` to stdout."""
     print(format_radius_summary(results, radius_field=radius_field))
 
 
-def _load_results_json(path: Path) -> Dict[str, Dict[str, Any]]:
+def _load_results_json(path: Path) -> dict[str, Any]:
     obj = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(obj, dict):
         raise ValueError("results.json must contain a JSON object.")
-    return obj  # type: ignore[return-value]
+    return obj
 
 
 def main(argv: Iterable[str] | None = None) -> int:
-    """
-    CLI entrypoint.
-
-    Usage:
-        python -m stability_radius.statistics.table runs/<timestamp>/results.json
-
-    Examples:
-        python -m stability_radius.statistics.table runs/.../results.json --max-rows 20
-        python -m stability_radius.statistics.table runs/.../results.json --columns radius_l2,radius_nminus1
-        python -m stability_radius.statistics.table runs/.../results.json --csv-out runs/.../table.csv
-    """
+    """CLI entrypoint: print/export stability radius results as a table."""
     parser = argparse.ArgumentParser(
         description="Print/export stability radius results as a table."
     )
     parser.add_argument("results_json", type=str, help="Path to results.json")
     parser.add_argument(
-        "--max-rows",
-        type=int,
-        default=None,
-        help="Limit number of printed/exported rows",
+        "--max-rows", type=int, default=None, help="Limit number of rows"
     )
     parser.add_argument(
         "--radius-field",
@@ -300,32 +244,15 @@ def main(argv: Iterable[str] | None = None) -> int:
         "--columns",
         type=str,
         default="",
-        help=(
-            "Comma-separated list of columns to print/export. "
-            "If empty, uses the default compact set."
-        ),
+        help="Comma-separated list of columns to print/export.",
     )
     parser.add_argument(
-        "--table-out",
-        type=str,
-        default="",
-        help="If provided, write the ASCII table to this path.",
+        "--table-out", type=str, default="", help="Write ASCII table here."
     )
-    parser.add_argument(
-        "--csv-out",
-        type=str,
-        default="",
-        help="If provided, write the CSV table to this path.",
-    )
+    parser.add_argument("--csv-out", type=str, default="", help="Write CSV here.")
     args = parser.parse_args(list(argv) if argv is not None else None)
 
-    default_cols = (
-        "p0_mw",
-        "p_limit_mw_est",
-        "margin_mw",
-        "norm_g",
-        "radius_l2",
-    )
+    default_cols = ("p0_mw", "p_limit_mw_est", "margin_mw", "norm_g", "radius_l2")
     if str(args.columns).strip():
         columns = tuple(c.strip() for c in str(args.columns).split(",") if c.strip())
     else:

@@ -21,14 +21,24 @@ You can fully override the base URL candidate list via environment variables:
 - SR_PGLIB_OPF_BASE_URLS="https://...,https://..."
 
 If an env var is set (non-empty), it is used *as-is* (no additional defaults).
+
+Deprecated API
+--------------
+- download_ieee30(): deprecated wrapper, use download_ieee_case(30, ...) instead.
 """
 
 import logging
 import os
+import re
 import time
-from typing import Optional, Sequence, Union
+import warnings
+from pathlib import Path
+from typing import Any, Optional, Sequence, Union
 
-import requests
+try:
+    import requests  # type: ignore
+except ImportError:  # pragma: no cover
+    requests = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +56,9 @@ _PGLIB_OPF_BASE_URL_GITHUB = "https://github.com/power-grid-lib/pglib-opf/raw/ma
 
 _ENV_MATPOWER_BASE_URLS = "SR_MATPOWER_BASE_URLS"
 _ENV_PGLIB_OPF_BASE_URLS = "SR_PGLIB_OPF_BASE_URLS"
+
+_RE_IEEE_CASE_FILENAME = re.compile(r"^(?:case|ieee)(\d+)\.m$", flags=re.IGNORECASE)
+_RE_PGLIB_OPF_FILENAME = re.compile(r"^pglib_opf_.*\.m$", flags=re.IGNORECASE)
 
 
 class DownloadError(RuntimeError):
@@ -136,7 +149,7 @@ def _download_text_file(
     target_path: str,
     overwrite: bool,
     timeout: float,
-    session: Optional[requests.Session],
+    session: Optional[Any],
     retries: int = 1,
     backoff_sec: float = 0.0,
 ) -> str:
@@ -155,7 +168,12 @@ def _download_text_file(
     if retries <= 0:
         raise ValueError("retries must be positive")
 
-    http = session or requests
+    http = session if session is not None else requests
+    if http is None:
+        raise ImportError(
+            "requests is required for downloading (or pass a custom `session`)."
+        )
+
     last_exc: Exception | None = None
 
     for attempt in range(1, int(retries) + 1):
@@ -199,7 +217,7 @@ def _download_from_candidates(
     target_path: str,
     overwrite: bool,
     timeout: float,
-    session: Optional[requests.Session],
+    session: Optional[Any],
     retries_per_url: int,
     backoff_sec: float,
 ) -> str:
@@ -242,7 +260,7 @@ def download_ieee_case(
     overwrite: bool = False,
     timeout: float = 15.0,
     base_url: str = _DEFAULT_MATPOWER_BASE_URL_RAW,
-    session: Optional[requests.Session] = None,
+    session: Optional[Any] = None,
     retries_per_url: int = 1,
     backoff_sec: float = 0.0,
 ) -> str:
@@ -308,7 +326,7 @@ def download_pglib_opf_case(
     overwrite: bool = False,
     timeout: float = 30.0,
     base_url: str = _PGLIB_OPF_BASE_URL_RAW,
-    session: Optional[requests.Session] = None,
+    session: Optional[Any] = None,
     retries_per_url: int = 1,
     backoff_sec: float = 0.0,
 ) -> str:
@@ -364,10 +382,75 @@ def download_pglib_opf_case(
     )
 
 
-def download_ieee30(target_path: str = "data/input/ieee30.m") -> str:
+def ensure_case_file(
+    path: Union[str, os.PathLike[str]],
+    *,
+    overwrite: bool = False,
+    session: Optional[Any] = None,
+) -> str:
     """
-    Backward-compatible wrapper for downloading IEEE 30-bus case.
+    Ensure that a MATPOWER/PGLib `.m` case file exists at `path`.
 
-    Prefer `download_ieee_case(30, target_path=...)` in new code.
+    If the file is missing and the file name matches a supported pattern, download it
+    deterministically using the helpers in this module.
+
+    Supported patterns (by filename only)
+    -------------------------------------
+    - `case<N>.m` or `ieee<N>.m`    -> MATPOWER `case<N>.m` (saved to `path`)
+    - `pglib_opf_*.m`               -> PGLib-OPF repository (saved to `path`)
+
+    Determinism
+    -----------
+    - Candidate URLs are tried in a stable order (see download_* functions).
+    - No guessing of directories: only the explicit `path` is used.
+
+    Parameters
+    ----------
+    path:
+        Target path where the case file should exist.
+    overwrite:
+        If True, re-download even if the file exists.
+    session:
+        Optional requests-like session (used by unit tests).
+
+    Returns
+    -------
+    str
+        Path to the existing or downloaded file.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the file is missing and its filename does not match supported patterns.
+    RuntimeError
+        If the file is missing, pattern matches, but download failed.
     """
-    return download_ieee_case(30, target_path=target_path)
+    target = Path(path)
+
+    if target.exists() and not overwrite:
+        logger.debug("Case file exists: %s", str(target))
+        return str(target)
+
+    fname = target.name
+
+    m_ieee = _RE_IEEE_CASE_FILENAME.match(fname)
+    if m_ieee:
+        n = int(m_ieee.group(1))
+        logger.info("Ensuring MATPOWER case%d -> %s", n, str(target))
+        return download_ieee_case(
+            n, target_path=str(target), overwrite=overwrite, session=session
+        )
+
+    if _RE_PGLIB_OPF_FILENAME.match(fname):
+        logger.info("Ensuring PGLib-OPF case %s -> %s", fname, str(target))
+        return download_pglib_opf_case(
+            case_filename=fname,
+            target_path=str(target),
+            overwrite=overwrite,
+            session=session,
+        )
+
+    raise FileNotFoundError(
+        f"Case file not found and unsupported filename pattern: {str(target)}. "
+        "Supported: case<N>.m / ieee<N>.m / pglib_opf_*.m"
+    )
