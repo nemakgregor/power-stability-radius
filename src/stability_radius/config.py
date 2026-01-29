@@ -70,16 +70,33 @@ class DCConfig:
 
 @dataclass(frozen=True)
 class MonteCarloConfig:
-    """Defaults for verification Monte Carlo coverage evaluation."""
+    """
+    Defaults for verification Monte Carlo evaluation.
+
+    What is evaluated
+    -----------------
+    1) Soundness (certificate check):
+       uniform sampling in the certified L2 ball of radius r* in the balanced subspace,
+       verifying that all line constraints hold.
+
+    2) Probabilistic safety (Gaussian injections):
+       balanced injections with i.i.d. per-bus sigma (taken from results.json meta by default),
+       estimating P(feasible) via MC and computing the analytic lower bound P(||Δp||<=r*).
+
+    Legacy note
+    -----------
+    box_radius_quantile is a legacy parameter from the old "box vs ball coverage" experiment.
+    The current verification workflow does NOT use box sampling for reporting/validation.
+    """
 
     n_samples: int = 50_000
     seed: int = 0
     chunk_size: int = 256
 
-    # Quantile of finite radius_l2 used to scale the sampling box.
+    # Legacy (deprecated): kept for CLI backward-compatibility; ignored by current MC.
     box_radius_quantile: float = 0.10
 
-    # Strict feasibility by default.
+    # Strict feasibility by default (used as feasibility tolerance in MW).
     box_feas_tol_mw: float = 0.0
 
     # Certificate sanity-check (inside min_r ball).

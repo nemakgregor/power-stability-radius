@@ -17,7 +17,7 @@ class LineBaseQuantities:
 
     Notes
     -----
-    - flow0_mw is signed (pandapower's p_from_mw convention).
+    - flow0_mw is signed (PyPSA's convention for Line.p0 with bus0->bus1 direction).
     - p0_abs_mw is abs(flow0_mw).
     - limit_mw_est is the thermal limit from the case (treated as MW proxy).
     - margin_mw = max(limit - abs(flow0), 0).
@@ -27,7 +27,13 @@ class LineBaseQuantities:
     Base point in this project is OPF-based (PyPSA+HiGHS), therefore:
     - opf_status
     - opf_objective
-    are always expected to be populated for pipeline runs.
+    are expected to be populated for pipeline runs.
+
+    Bus injections (for consistency checks)
+    ---------------------------------------
+    - bus_ids is the stable bus ordering used across the project (sorted pandapower net.bus.index).
+    - bus_injections_mw is aligned with bus_ids and corresponds to the OPF dispatch result
+      (sum gens at bus - sum loads at bus), used to validate OPF -> DCOperator consistency.
     """
 
     line_indices: list[int]
@@ -38,6 +44,9 @@ class LineBaseQuantities:
 
     opf_status: str | None = None
     opf_objective: float | None = None
+
+    bus_ids: list[int] | None = None
+    bus_injections_mw: np.ndarray | None = None
 
 
 def _line_row_id(line_row: object) -> str:
@@ -351,6 +360,20 @@ def get_line_base_quantities(
     p0_abs = np.abs(flow0)
     margins = np.maximum(limits - p0_abs, 0.0)
 
+    # Keep stable bus ordering for cross-module checks.
+    bus_ids = [int(x) for x in sorted(net.bus.index)]
+    if tuple(bus_ids) != tuple(opf_res.bus_ids):
+        raise ValueError(
+            "Internal consistency error: PyPSA OPF returned bus_ids not matching pandapower net.bus ordering. "
+            f"pandapower(sorted)={bus_ids[:10]}..., pypsa={list(opf_res.bus_ids)[:10]}..."
+        )
+
+    bus_inj = np.asarray(opf_res.bus_injections_mw, dtype=float).reshape(-1)
+    if bus_inj.shape != (len(bus_ids),):
+        raise ValueError(
+            f"Unexpected bus_injections_mw shape from OPF: got {bus_inj.shape}, expected ({len(bus_ids)},)"
+        )
+
     return LineBaseQuantities(
         line_indices=idx,
         flow0_mw=flow0,
@@ -359,6 +382,8 @@ def get_line_base_quantities(
         margin_mw=margins,
         opf_status=str(opf_res.status),
         opf_objective=float(opf_res.objective),
+        bus_ids=bus_ids,
+        bus_injections_mw=bus_inj,
     )
 
 

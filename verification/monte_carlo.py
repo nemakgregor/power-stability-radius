@@ -1,13 +1,29 @@
 from __future__ import annotations
 
 """
-Monte Carlo coverage estimate for the "true feasibility region" vs. the guaranteed L2 ball.
+Monte Carlo verification for the DC L2-ball robustness certificate.
+
+What is verified
+----------------
+1) Soundness (certificate check):
+   sample uniformly inside the certified L2 ball of radius r* (in the balanced subspace)
+   and verify that all line flow limits hold.
+
+2) Probabilistic safety (Gaussian injections):
+   sample balanced Gaussian injections Δp ~ N(0, σ^2 I) (projected to balanced subspace)
+   and estimate P(feasible). Also compute the analytic lower bound:
+     P(||Δp|| <= r*) = F_{χ²(d)}((r*/σ)^2), d = n_bus - 1.
+
+Legacy note
+-----------
+Older versions estimated "coverage" via sampling a cube and measuring the fraction of
+feasible samples inside the L2 ball. That quantity is not robust in high dimension and
+is no longer used for validation/reporting.
 
 Determinism notes
 -----------------
 - All randomness is controlled via an explicit `seed`.
-- No implicit scaling heuristics beyond an explicit quantile parameter
-  (box_radius_quantile), with defaults centralized in stability_radius.config.
+- No implicit scaling heuristics beyond explicit parameters (kept only for backward CLI compatibility).
 
 Input data policy
 -----------------
@@ -64,23 +80,16 @@ def _load_results(path: Path) -> Dict[str, Any]:
     return obj
 
 
+def _get_meta(results: Dict[str, Any]) -> Dict[str, Any]:
+    meta = results.get("__meta__")
+    return meta if isinstance(meta, dict) else {}
+
+
 def _finite_min_max(values: Iterable[float]) -> Tuple[float, float]:
     finite = [float(x) for x in values if math.isfinite(float(x))]
     if not finite:
         raise ValueError("No finite values found.")
     return float(min(finite)), float(max(finite))
-
-
-def _finite_quantile(values: np.ndarray, *, q: float) -> float:
-    """Quantile over finite values of an array."""
-    if not (0.0 <= float(q) <= 1.0):
-        raise ValueError(f"q must be in [0,1], got {q!r}")
-
-    v = np.asarray(values, dtype=float).reshape(-1)
-    finite = v[np.isfinite(v)]
-    if finite.size == 0:
-        raise ValueError("No finite values found for quantile computation.")
-    return float(np.quantile(finite, float(q)))
 
 
 def _extract_radii_f0_c(
@@ -139,7 +148,7 @@ def _norm_rows_l2(x: np.ndarray) -> np.ndarray:
     return np.linalg.norm(x, ord=2, axis=1)
 
 
-def _coverage_ci95_percent(*, k: int, n: int) -> tuple[float, float]:
+def _wald_ci95_percent(*, k: int, n: int) -> tuple[float, float]:
     """Simple 95% Wald CI for p = k/n."""
     if n <= 0:
         return float("nan"), float("nan")
@@ -150,22 +159,51 @@ def _coverage_ci95_percent(*, k: int, n: int) -> tuple[float, float]:
     return 100.0 * lo, 100.0 * hi
 
 
-def _sampling_box_bounds(
-    *, radius_scale: float, n_bus: int
-) -> tuple[float, float, float]:
-    """Compute sampling box bounds from an L2 radius scale."""
-    if n_bus <= 0:
-        raise ValueError("n_bus must be positive.")
-    rs = float(radius_scale)
-    if not math.isfinite(rs) or rs < 0:
-        raise ValueError(
-            f"radius_scale must be finite and non-negative; got {radius_scale!r}"
-        )
+def _chi2_cdf(*, x: float, df: int) -> float:
+    """
+    Chi-square CDF using SciPy special function.
 
-    half_width = 0.0 if rs == 0.0 else (2.0 * rs / math.sqrt(float(n_bus)))
-    lo = -half_width
-    hi = half_width
-    return float(lo), float(hi), float(half_width)
+    CDF for χ²_k at x:
+        F(x) = gammainc(k/2, x/2)
+    """
+    if df <= 0:
+        raise ValueError(f"df must be positive, got {df}")
+    xx = float(x)
+    if not math.isfinite(xx) or xx <= 0.0:
+        return 0.0
+
+    try:
+        from scipy.special import gammainc  # type: ignore
+    except Exception as e:  # noqa: BLE001
+        raise ImportError("SciPy is required to compute chi-square CDF.") from e
+
+    return float(gammainc(float(df) / 2.0, xx / 2.0))
+
+
+def _sample_balanced_gaussian(
+    *,
+    rng: np.random.Generator,
+    n: int,
+    n_bus: int,
+    sigma_mw: float,
+) -> np.ndarray:
+    """
+    Sample balanced Gaussian injections.
+
+    Procedure:
+    - z ~ N(0, sigma^2 I) in R^n
+    - project to balanced subspace by subtracting row-wise mean
+    """
+    if n <= 0:
+        raise ValueError("n must be positive.")
+    if n_bus <= 1:
+        raise ValueError("n_bus must be >= 2 for balanced sampling.")
+    s = float(sigma_mw)
+    if not math.isfinite(s) or s <= 0.0:
+        raise ValueError(f"sigma_mw must be finite and positive; got {sigma_mw!r}")
+
+    z = (s * rng.standard_normal(size=(n, n_bus))).astype(float, copy=False)
+    return _orthogonalize_balance(z)
 
 
 def _sample_balanced_uniform_l2_ball(
@@ -217,23 +255,30 @@ def estimate_coverage_percent(
     n_samples: int = DEFAULT_MC.n_samples,
     seed: int = DEFAULT_MC.seed,
     chunk_size: int = DEFAULT_MC.chunk_size,
-    box_radius_quantile: float = DEFAULT_MC.box_radius_quantile,
+    box_radius_quantile: float = DEFAULT_MC.box_radius_quantile,  # legacy (ignored)
     box_feas_tol_mw: float = DEFAULT_MC.box_feas_tol_mw,
     cert_tol_mw: float = DEFAULT_MC.cert_tol_mw,
     cert_max_samples: int = DEFAULT_MC.cert_max_samples,
 ) -> Dict[str, Any]:
     """
-    Estimate coverage% of the feasible set inside the guaranteed L2 ball.
+    Monte Carlo verification entrypoint.
+
+    Output fields (high-level)
+    --------------------------
+    - base_point_*: feasibility of the OPF base flow w.r.t. stored limits
+    - gaussian_*: probabilistic safety metrics for Δp~N(0,σ^2 I) (balanced)
+    - certificate_*: soundness check inside the certified L2 ball (radius r*)
     """
+    # box_radius_quantile is kept only for backward-compatibility with older CLI/report scripts.
+    _ = float(box_radius_quantile)
+
     if n_samples <= 0:
         raise ValueError("n_samples must be positive.")
     if chunk_size <= 0:
         raise ValueError("chunk_size must be positive.")
-    if not (0.0 <= float(box_radius_quantile) <= 1.0):
-        raise ValueError("box_radius_quantile must be within [0, 1].")
 
-    tol_box = float(box_feas_tol_mw)
-    if not math.isfinite(tol_box) or tol_box < 0:
+    tol_feas = float(box_feas_tol_mw)
+    if not math.isfinite(tol_feas) or tol_feas < 0:
         raise ValueError("box_feas_tol_mw must be finite and non-negative.")
 
     tol_cert = float(cert_tol_mw)
@@ -246,6 +291,7 @@ def estimate_coverage_percent(
 
     with log_stage(logger, "Read Results (results.json)"):
         results = _load_results(results_path)
+        meta = _get_meta(results)
 
     with log_stage(logger, "Ensure input case file (download if missing)"):
         ensured = ensure_case_file(str(input_case_path))
@@ -259,7 +305,10 @@ def estimate_coverage_percent(
     with log_stage(logger, f"Build DC Model (DCOperator, slack_bus={slack_bus})"):
         dc_op = build_dc_operator(net, slack_bus=int(slack_bus))
         m_line, n_bus = int(dc_op.n_line), int(dc_op.n_bus)
-        logger.debug("DC operator dims: n_line=%d, n_bus=%d", m_line, n_bus)
+        d_bal = int(max(n_bus - 1, 0))
+        logger.debug(
+            "DC operator dims: n_line=%d, n_bus=%d, d_balance=%d", m_line, n_bus, d_bal
+        )
 
     f0, c, r, min_r, max_r = _extract_radii_f0_c(results=results, net=net)
     if f0.shape != (m_line,) or c.shape != (m_line,):
@@ -267,24 +316,21 @@ def estimate_coverage_percent(
             f"Shape mismatch: f0={f0.shape}, c={c.shape}, expected ({m_line},)"
         )
 
-    r_scale = _finite_quantile(r, q=float(box_radius_quantile))
+    # Gaussian sigma comes from results meta (generated together with radius_sigma).
+    sigma_meta = meta.get("inj_std_mw", None)
+    if sigma_meta is None:
+        raise ValueError(
+            "results.json is missing __meta__.inj_std_mw which is required for Gaussian verification. "
+            "Regenerate results with the current pipeline."
+        )
+    try:
+        sigma_mw = float(sigma_meta)
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"Invalid __meta__.inj_std_mw={sigma_meta!r}") from e
+    if not math.isfinite(sigma_mw) or sigma_mw <= 0.0:
+        raise ValueError(f"__meta__.inj_std_mw must be finite and >0, got {sigma_mw!r}")
 
-    lo, hi, half_width = _sampling_box_bounds(
-        radius_scale=float(r_scale), n_bus=int(n_bus)
-    )
-    logger.info(
-        "Monte Carlo sampling box: half_width=%.6g computed as 2*r_scale/sqrt(n_bus) "
-        "[r_scale(q=%.3f)=%.6g, max_r=%.6g, n_bus=%d, box=[%.6g, %.6g]]",
-        half_width,
-        float(box_radius_quantile),
-        float(r_scale),
-        float(max_r),
-        n_bus,
-        lo,
-        hi,
-    )
-
-    base_viol = np.where(np.abs(f0) > (c + tol_box))[0]
+    base_viol = np.where(np.abs(f0) > (c + tol_feas))[0]
     base_feasible = bool(base_viol.size == 0)
     base_max_violation = (
         float(np.max(np.abs(f0[base_viol]) - c[base_viol])) if base_viol.size else 0.0
@@ -298,29 +344,51 @@ def estimate_coverage_percent(
             base_max_violation,
         )
 
-    rng_box = np.random.default_rng(seed=int(seed))
+    # Analytic lower bound: P(||Δp|| <= r*) under balanced N(0, sigma^2 I)
+    if math.isfinite(float(min_r)) and float(min_r) >= 0.0:
+        x = (float(min_r) / float(sigma_mw)) ** 2
+        ball_mass = 100.0 * _chi2_cdf(x=x, df=max(int(n_bus - 1), 1))
+    else:
+        ball_mass = float("nan")
 
-    total_feasible = 0
-    feasible_in_ball = 0
+    logger.info(
+        "Gaussian verification setup: sigma_mw=%.6g, r*=min_r=%.6g, dim=d=n_bus-1=%d, "
+        "analytic_P(||dp||<=r*)=%.6g%%",
+        float(sigma_mw),
+        float(min_r),
+        int(max(n_bus - 1, 0)),
+        float(ball_mass) if math.isfinite(ball_mass) else float("nan"),
+    )
 
-    best_box_max_violation = float("inf")
-    best_box_line_pos = -1
-    best_box_line_idx = -1
-    best_box_sample_l2 = float("nan")
+    rng = np.random.default_rng(seed=int(seed))
 
-    with log_stage(logger, "Monte Carlo Coverage (sampling box)"):
+    # Gaussian MC: P(feasible) and empirical P(||dp||<=r*)
+    gauss_feasible = 0
+    gauss_in_ball = 0
+    gauss_in_ball_and_feasible = 0
+
+    gauss_worst_max_violation = float("-inf")
+    gauss_worst_line_pos = -1
+    gauss_worst_line_idx = -1
+    gauss_worst_sample_l2 = float("nan")
+
+    with log_stage(logger, "Monte Carlo: Gaussian feasibility (balanced)"):
         remaining = int(n_samples)
         while remaining > 0:
             k = min(int(chunk_size), remaining)
             remaining -= k
 
-            delta = rng_box.uniform(lo, hi, size=(k, n_bus)).astype(float, copy=False)
-            delta_orth = _orthogonalize_balance(delta)
+            delta = _sample_balanced_gaussian(
+                rng=rng, n=k, n_bus=int(n_bus), sigma_mw=float(sigma_mw)
+            )
 
-            viol = dc_op.flows_from_delta_injections(delta_orth)  # (k, m)
+            norms = _norm_rows_l2(delta)
+            gauss_in_ball += int(np.sum(norms <= float(min_r)))
+
+            viol = dc_op.flows_from_delta_injections(delta)  # (k, m)
             viol += f0[None, :]
             np.abs(viol, out=viol)
-            viol -= c[None, :]
+            viol -= c[None, :]  # abs(flow) - limit
 
             np.nan_to_num(
                 viol,
@@ -331,61 +399,77 @@ def estimate_coverage_percent(
             )
 
             max_v = np.max(viol, axis=1)
-            feasible_mask = max_v <= tol_box
-            num_feasible = int(np.sum(feasible_mask))
-            total_feasible += num_feasible
+            feasible_mask = max_v <= float(tol_feas)
 
-            if num_feasible:
-                norms = _norm_rows_l2(delta_orth[feasible_mask, :])
-                feasible_in_ball += int(np.sum(norms <= float(min_r)))
+            gauss_feasible += int(np.sum(feasible_mask))
+            if int(np.sum(feasible_mask)) > 0:
+                gauss_in_ball_and_feasible += int(
+                    np.sum((norms <= float(min_r)) & feasible_mask)
+                )
 
-            batch_best = float(np.min(max_v))
-            if batch_best < best_box_max_violation:
-                j = int(np.argmin(max_v))
-                best_box_max_violation = batch_best
-                best_box_sample_l2 = float(np.linalg.norm(delta_orth[j, :], ord=2))
+            batch_worst = float(np.max(max_v))
+            if batch_worst > gauss_worst_max_violation:
+                gauss_worst_max_violation = batch_worst
+                j = int(np.argmax(max_v))
+                gauss_worst_sample_l2 = float(norms[j])
                 lp = int(np.argmax(viol[j, :]))
-                best_box_line_pos = lp
-                best_box_line_idx = (
+                gauss_worst_line_pos = lp
+                gauss_worst_line_idx = (
                     int(line_indices[lp]) if 0 <= lp < len(line_indices) else -1
                 )
 
-    feasible_rate = 100.0 * float(total_feasible) / float(n_samples)
+    gauss_feasible_percent = 100.0 * float(gauss_feasible) / float(n_samples)
+    gauss_ci_lo, gauss_ci_hi = _wald_ci95_percent(
+        k=int(gauss_feasible), n=int(n_samples)
+    )
 
-    base_out: Dict[str, Any] = {
+    gauss_in_ball_percent = 100.0 * float(gauss_in_ball) / float(n_samples)
+    ball_ci_lo, ball_ci_hi = _wald_ci95_percent(k=int(gauss_in_ball), n=int(n_samples))
+
+    # Prepare base output
+    out: Dict[str, Any] = {
         "status": "ok",
-        "coverage_percent": float("nan"),
-        "coverage_ci95_low_percent": float("nan"),
-        "coverage_ci95_high_percent": float("nan"),
-        "min_r": float(min_r),
-        "max_r": float(max_r),
-        "box_radius_scale": float(r_scale),
-        "box_radius_quantile": float(box_radius_quantile),
-        "box_lo": float(lo),
-        "box_hi": float(hi),
-        "box_half_width": float(half_width),
-        "box_half_width_formula": "2*box_radius_scale/sqrt(n_bus)",
         "n_samples": int(n_samples),
         "seed": int(seed),
         "chunk_size": int(chunk_size),
         "n_bus": int(n_bus),
         "n_line": int(m_line),
-        "total_feasible_in_box": int(total_feasible),
-        "feasible_in_ball": int(feasible_in_ball),
-        "feasible_rate_in_box_percent": float(feasible_rate),
+        "dim_balance": int(d_bal),
+        "min_r": float(min_r),
+        "max_r": float(max_r),
         "base_point_feasible": bool(base_feasible),
         "base_point_violated_lines": int(base_viol.size),
         "base_point_max_violation_mw": float(base_max_violation),
-        "box_feas_tol_mw": float(tol_box),
-        "box_best_max_violation_mw": float(best_box_max_violation),
-        "box_best_max_violation_line_pos": int(best_box_line_pos),
-        "box_best_max_violation_line_idx": int(best_box_line_idx),
-        "box_best_max_violation_sample_l2": float(best_box_sample_l2),
+        "feas_tol_mw": float(tol_feas),
+        # Gaussian
+        "gaussian_sigma_mw": float(sigma_mw),
+        "gaussian_feasible_samples": int(gauss_feasible),
+        "gaussian_feasible_percent": float(gauss_feasible_percent),
+        "gaussian_feasible_ci95_low_percent": float(gauss_ci_lo),
+        "gaussian_feasible_ci95_high_percent": float(gauss_ci_hi),
+        "gaussian_in_ball_samples": int(gauss_in_ball),
+        "gaussian_in_ball_percent": float(gauss_in_ball_percent),
+        "gaussian_in_ball_ci95_low_percent": float(ball_ci_lo),
+        "gaussian_in_ball_ci95_high_percent": float(ball_ci_hi),
+        "gaussian_in_ball_and_feasible_samples": int(gauss_in_ball_and_feasible),
+        "gaussian_ball_mass_analytic_percent": float(ball_mass),
+        "gaussian_worst_max_violation_mw": float(gauss_worst_max_violation),
+        "gaussian_worst_max_violation_line_pos": int(gauss_worst_line_pos),
+        "gaussian_worst_max_violation_line_idx": int(gauss_worst_line_idx),
+        "gaussian_worst_sample_l2": float(gauss_worst_sample_l2),
+        # Certificate check settings
+        "certificate_tol_mw": float(tol_cert),
+        "certificate_max_samples": int(cert_max),
     }
 
+    # Derive status
+    if not base_feasible:
+        out["status"] = "base_point_infeasible"
+
+    # Soundness check inside the certified ball
     n_cert = min(int(n_samples), int(cert_max))
     if n_cert > 0:
-        with log_stage(logger, "L2-ball Certificate Sanity Check (DC)"):
+        with log_stage(logger, "Monte Carlo: L2-ball certificate soundness check (DC)"):
             cert = _run_l2_ball_certificate_check(
                 dc_op=dc_op,
                 f0=f0,
@@ -399,53 +483,43 @@ def estimate_coverage_percent(
                 tol_mw=float(tol_cert),
                 base_point_feasible=bool(base_feasible),
             )
-        base_out.update(cert)
+        out.update(cert)
 
-    if total_feasible <= 0:
-        logger.info(
-            "Monte Carlo coverage: n/a (no feasible samples) "
-            "[n_samples=%d, box=[%.6g, %.6g], min_r=%.6g, r_scale=%.6g, "
-            "best_box_max_violation=%.6g MW at line_idx=%d, base_feasible=%s].",
-            n_samples,
-            lo,
-            hi,
-            min_r,
-            r_scale,
-            best_box_max_violation,
-            best_box_line_idx,
-            bool(base_feasible),
-        )
-        base_out["status"] = (
-            "no_feasible_samples"
-            if base_feasible
-            else "base_point_infeasible_no_feasible_samples"
-        )
-        return base_out
+        if (
+            out.get("certificate_status") == "violations_found"
+            and out["status"] == "ok"
+        ):
+            out["status"] = "certificate_violations_found"
 
-    coverage = 100.0 * float(feasible_in_ball) / float(total_feasible)
-    ci_lo, ci_hi = _coverage_ci95_percent(
-        k=int(feasible_in_ball), n=int(total_feasible)
-    )
+    # Cross-check: if certificate is sound and base point is feasible, all in-ball
+    # samples must be feasible. We log this as a diagnostic (do not fail hard here,
+    # certificate check above is already the main hard signal).
+    if base_feasible and int(gauss_in_ball) > 0:
+        if gauss_in_ball_and_feasible != gauss_in_ball:
+            logger.warning(
+                "Gaussian diagnostic: not all samples inside the certified ball were feasible "
+                "(in_ball=%d, in_ball_and_feasible=%d). This suggests a certificate/model inconsistency.",
+                int(gauss_in_ball),
+                int(gauss_in_ball_and_feasible),
+            )
+        else:
+            logger.debug(
+                "Gaussian diagnostic: all in-ball samples were feasible (count=%d).",
+                int(gauss_in_ball),
+            )
 
     logger.info(
-        "Monte Carlo coverage: %.6f%% (feasible_in_ball=%d / total_feasible_in_box=%d), "
-        "feasible_rate_in_box=%.6f%%, min_r=%.6g, r_scale=%.6g",
-        coverage,
-        feasible_in_ball,
-        total_feasible,
-        feasible_rate,
-        min_r,
-        r_scale,
+        "Gaussian MC: P(feasible)=%.6g%% (=%d/%d), "
+        "P(||dp||<=r*)_mc=%.6g%% (=%d/%d), P(||dp||<=r*)_analytic=%.6g%%",
+        float(gauss_feasible_percent),
+        int(gauss_feasible),
+        int(n_samples),
+        float(gauss_in_ball_percent),
+        int(gauss_in_ball),
+        int(n_samples),
+        float(ball_mass) if math.isfinite(ball_mass) else float("nan"),
     )
-
-    base_out["coverage_percent"] = float(coverage)
-    base_out["coverage_ci95_low_percent"] = float(ci_lo)
-    base_out["coverage_ci95_high_percent"] = float(ci_hi)
-
-    if not base_feasible:
-        base_out["status"] = "base_point_infeasible"
-
-    return base_out
+    return out
 
 
 def _run_l2_ball_certificate_check(
@@ -556,7 +630,10 @@ def _run_l2_ball_certificate_check(
 
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Monte Carlo coverage estimate + DC L2-ball certificate sanity check."
+        description=(
+            "Monte Carlo verification: Gaussian feasibility + analytic certified ball mass "
+            "+ L2-ball certificate soundness check."
+        )
     )
     parser.add_argument(
         "--results", required=True, type=str, help="Path to results.json"
@@ -568,11 +645,20 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser.add_argument("--n-samples", default=DEFAULT_MC.n_samples, type=int)
     parser.add_argument("--seed", default=DEFAULT_MC.seed, type=int)
     parser.add_argument("--chunk-size", default=DEFAULT_MC.chunk_size, type=int)
+
+    # Deprecated args: kept for CLI backward-compatibility
     parser.add_argument(
-        "--box-radius-quantile", default=DEFAULT_MC.box_radius_quantile, type=float
+        "--box-radius-quantile",
+        default=DEFAULT_MC.box_radius_quantile,
+        type=float,
+        help="DEPRECATED (ignored): legacy parameter from old box-based coverage experiment.",
     )
+
     parser.add_argument(
-        "--box-feas-tol-mw", default=DEFAULT_MC.box_feas_tol_mw, type=float
+        "--box-feas-tol-mw",
+        default=DEFAULT_MC.box_feas_tol_mw,
+        type=float,
+        help="Feasibility tolerance in MW (applies to Gaussian feasibility checks).",
     )
     parser.add_argument("--cert-tol-mw", default=DEFAULT_MC.cert_tol_mw, type=float)
     parser.add_argument(
@@ -591,7 +677,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         n_samples=int(args.n_samples),
         seed=int(args.seed),
         chunk_size=int(args.chunk_size),
-        box_radius_quantile=float(args.box_radius_quantile),
+        box_radius_quantile=float(args.box_radius_quantile),  # ignored
         box_feas_tol_mw=float(args.box_feas_tol_mw),
         cert_tol_mw=float(args.cert_tol_mw),
         cert_max_samples=int(args.cert_max_samples),

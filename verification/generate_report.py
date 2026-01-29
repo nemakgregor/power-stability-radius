@@ -7,16 +7,16 @@ Workflow (deterministic policy)
 -------------------------------
 - Base point is solved ONLY via OPF: PyPSA DC OPF + HiGHS
 - Radii are computed around the OPF base point
-- Monte Carlo coverage is evaluated for each case
-- An aggregated Markdown report is generated
+- Monte Carlo verification is evaluated for each case:
+    * Gaussian feasibility probability (balanced N(0, σ^2 I))
+    * analytic certified ball probability mass P(||Δp||<=r*)
+    * soundness check inside the certified L2 ball (uniform)
 
 Input data policy
 -----------------
 - If an expected input `.m` case file is missing and its filename matches a supported
   dataset (MATPOWER case<N>.m/ieee<N>.m or PGLib-OPF pglib_opf_*.m), it is downloaded
   deterministically (stable URL candidate ordering).
-
-No PF/AC-OPF modes.
 """
 
 import argparse
@@ -133,7 +133,7 @@ def _fmt_ok(v: bool) -> str:
 
 def _validate_results_for_monte_carlo(results: Dict[str, Any]) -> tuple[bool, str]:
     """
-    Validate that results.json contains fields required for Monte Carlo.
+    Validate that results.json contains fields required for Monte Carlo verification.
     """
     required = ("flow0_mw", "p_limit_mw_est", "radius_l2")
 
@@ -145,6 +145,12 @@ def _validate_results_for_monte_carlo(results: Dict[str, Any]) -> tuple[bool, st
     solver = str(meta.get("opf_solver", "")).strip().lower()
     if solver != "highs":
         return False, f"opf_solver={solver!r} is not supported (expected 'highs')"
+
+    if "inj_std_mw" not in meta:
+        return (
+            False,
+            "missing __meta__.inj_std_mw (required for Gaussian verification); regenerate results",
+        )
 
     line_keys = [
         k for k in results.keys() if isinstance(k, str) and k.startswith("line_")
@@ -192,7 +198,7 @@ def _validate_results_for_monte_carlo(results: Dict[str, Any]) -> tuple[bool, st
             + ", ".join(nan_limit_examples[:10]),
         )
     if finite_r <= 0:
-        return False, "no finite radius_l2 values (cannot define MC scaling)"
+        return False, "no finite radius_l2 values (cannot define r*)"
 
     return True, "ok"
 
@@ -417,24 +423,32 @@ def _case_section_md(
     lines.append(f"- status: **{status}**")
 
     if mc is None:
-        lines.append("- coverage % (MC): n/a")
+        lines.append("- Gaussian P(feasible) % (MC): n/a")
+        lines.append("- Certified ball mass % (analytic): n/a")
+        lines.append("- Certificate soundness (MC in ball): n/a")
     else:
-        cov = float(mc.get("coverage_percent", float("nan")))
-        denom = int(mc.get("total_feasible_in_box", 0))
-        numer = int(mc.get("feasible_in_ball", 0))
-        n_samples = int(mc.get("n_samples", 0))
         mc_status = str(mc.get("status", "")) or "unknown"
 
-        if math.isfinite(cov):
+        p_feas = float(mc.get("gaussian_feasible_percent", float("nan")))
+        feas_k = int(mc.get("gaussian_feasible_samples", 0))
+        n_samples = int(mc.get("n_samples", 0))
+
+        if math.isfinite(p_feas):
             lines.append(
-                f"- coverage % (MC): **{cov:.3f}%** "
-                f"(= {numer} / {denom}; feasible_in_box={denom}/{n_samples}; mc_status={mc_status})"
+                f"- Gaussian P(feasible) % (MC): **{p_feas:.3f}%** "
+                f"(= {feas_k} / {n_samples}; mc_status={mc_status})"
             )
         else:
+            lines.append(f"- Gaussian P(feasible) % (MC): n/a (mc_status={mc_status})")
+
+        ball_mass = float(mc.get("gaussian_ball_mass_analytic_percent", float("nan")))
+        if math.isfinite(ball_mass):
             lines.append(
-                "- coverage % (MC): n/a "
-                f"(mc_status={mc_status}; feasible_in_box={denom}/{n_samples})"
+                f"- Certified ball mass % (analytic): **{ball_mass:.3f}%** "
+                "(= P(||Δp||₂ ≤ r*) under balanced N(0,σ²I))"
             )
+        else:
+            lines.append("- Certified ball mass % (analytic): n/a")
 
         if "base_point_feasible" in mc:
             base_feasible = bool(mc.get("base_point_feasible", False))
@@ -448,6 +462,22 @@ def _case_section_md(
                     else f"**infeasible** (violated={violated}, max_violation={_fmt_float_or_na(vmax)} MW)"
                 )
             )
+
+        cert_status = str(mc.get("certificate_status", "n/a"))
+        cert_viol = int(mc.get("certificate_violation_samples", 0))
+        cert_max = float(mc.get("certificate_max_violation_mw", float("nan")))
+        if cert_status != "n/a":
+            if cert_status == "ok":
+                lines.append(
+                    "- Certificate soundness (MC in ball): **PASS** (no violations)"
+                )
+            else:
+                lines.append(
+                    "- Certificate soundness (MC in ball): **FAIL** "
+                    f"(status={cert_status}, violation_samples={cert_viol}, max_violation={_fmt_float_or_na(cert_max)} MW)"
+                )
+        else:
+            lines.append("- Certificate soundness (MC in ball): n/a")
 
     if top_match is None:
         lines.append("- top risky match %: n/a")
@@ -505,72 +535,23 @@ def _case_section_md(
         lines.append(f"- Criterion: time < 10 sec => **{_fmt_ok(time_sec < 10.0)}**")
         lines.append("")
 
+    # Literature comparison notes: keep them explicit that this is not "coverage of feasibility region".
     if "1354_pegase" in case:
-        lines.append("### Literature comparison (Nguyen 2018)")
-        mc_cov = (
-            float("nan")
-            if mc is None
-            else float(mc.get("coverage_percent", float("nan")))
+        lines.append("### Literature note (Nguyen 2018)")
+        lines.append(
+            "Nguyen (2018, arXiv:1708.06845v3) обсуждает coverage fractions внутренних convex аппроксимаций "
+            "относительно true feasibility region (другая метрика). "
+            "Здесь верифицируется **вероятность безопасности** под balanced Gaussian injections и soundness сертификата."
         )
-        mc_status = "n/a" if mc is None else str(mc.get("status", ""))
-        cov_s = _fmt_percent_or_na(mc_cov, decimals=3)
-        if cov_s == "n/a":
-            lines.append(
-                "Nguyen (2018) отмечает, что полито́пные convex inner approximations покрывают существенные доли true region "
-                "порядка 50–90% на 1354 buses (arXiv:1708.06845v3). "
-                f"Здесь coverage: n/a (MC status: {mc_status})."
-            )
-            lines.append(
-                "Критерий адекватности по задаче: >70%. Условие не может быть проверено (coverage = n/a)."
-            )
-        else:
-            lines.append(
-                "Nguyen (2018) отмечает, что полито́пные convex inner approximations покрывают существенные доли true region "
-                "порядка 50–90% на 1354 buses (arXiv:1708.06845v3). "
-                f"Здесь получено coverage ≈ {cov_s}."
-            )
-            lines.append(
-                "Критерий адекватности по задаче: >70%. "
-                + (
-                    "Условие выполнено."
-                    if float(mc_cov) > 70.0
-                    else "Условие не выполнено."
-                )
-            )
         lines.append("")
 
     if "9241_pegase" in case:
-        lines.append("### Literature comparison (Nguyen 2018, Lee 2019)")
-        mc_cov = (
-            float("nan")
-            if mc is None
-            else float(mc.get("coverage_percent", float("nan")))
+        lines.append("### Literature note (Nguyen 2018, Lee 2019)")
+        lines.append(
+            "Nguyen (2018) и Lee (2019, IEEE TPS) обсуждают size/coverage внутренних ограничений и convex restrictions "
+            "в терминах областей допустимости (другие постановки). "
+            "Здесь отчёт выводит вероятностные метрики под Gaussian injections + soundness проверки L2-сертификата."
         )
-        mc_status = "n/a" if mc is None else str(mc.get("status", ""))
-        cov_s = _fmt_percent_or_na(mc_cov, decimals=3)
-        if cov_s == "n/a":
-            lines.append(
-                "Nguyen (2018) на large-scale тестах также демонстрирует substantial fractions для внутренних аппроксимаций. "
-                "Lee (2019, IEEE TPS) указывает, что convex quadratic restriction может быть достаточно большой для практической эксплуатации. "
-                f"Здесь coverage: n/a (MC status: {mc_status})."
-            )
-            lines.append(
-                "Критерий адекватности по задаче: >70%. Условие не может быть проверено (coverage = n/a)."
-            )
-        else:
-            lines.append(
-                "Nguyen (2018) на large-scale тестах также демонстрирует substantial fractions для внутренних аппроксимаций. "
-                "Lee (2019, IEEE TPS) указывает, что convex quadratic restriction может быть достаточно большой для практической эксплуатации. "
-                f"Здесь получено coverage ≈ {cov_s}."
-            )
-            lines.append(
-                "Критерий адекватности по задаче: >70%. "
-                + (
-                    "Условие выполнено."
-                    if float(mc_cov) > 70.0
-                    else "Условие не выполнено."
-                )
-            )
         lines.append("")
 
     return "\n".join(lines)
@@ -586,13 +567,12 @@ def generate_report_text(
     demo_dc_mode: str,
     demo_slack_bus: int,
     demo_compute_nminus1: bool,
-    mc_box_radius_quantile: float,
+    mc_box_radius_quantile: float,  # legacy (ignored)
 ) -> str:
     """
     Generate verification report markdown as a string.
     """
-    if not (0.0 <= float(mc_box_radius_quantile) <= 1.0):
-        raise ValueError("mc_box_radius_quantile must be within [0, 1].")
+    _ = float(mc_box_radius_quantile)
 
     demo_dc_mode_eff = str(demo_dc_mode).strip().lower()
     if demo_dc_mode_eff not in ("materialize", "operator"):
@@ -637,7 +617,10 @@ def generate_report_text(
     out.append(
         "- Input cases are auto-downloaded deterministically when missing (supported filenames only)."
     )
-    out.append("- No PF/AC-OPF modes are supported.")
+    out.append("- Verification reports:")
+    out.append("  - Gaussian P(feasible) under balanced N(0,σ²I) (MC)")
+    out.append("  - Analytic lower bound P(||Δp||₂ ≤ r*) (chi-square CDF)")
+    out.append("  - Soundness check inside certified L2 ball (uniform sampling)")
     out.append("")
     out.append("---")
     out.append("")
@@ -738,7 +721,6 @@ def generate_report_text(
 
         ip = Path(input_path)
         if not ip.exists():
-            # Prefer canonical path for this case to keep the repo layout stable.
             canonical = Path(input_path_fallback)
             try:
                 ip = Path(ensure_case_file(str(canonical)))
@@ -789,7 +771,7 @@ def generate_report_text(
                 )
                 continue
 
-        with log_stage(logger, f"{case}: Monte Carlo coverage"):
+        with log_stage(logger, f"{case}: Monte Carlo verification"):
             mc_stats = estimate_coverage_percent(
                 results_path=rp,
                 input_case_path=ip,
@@ -797,10 +779,11 @@ def generate_report_text(
                 n_samples=int(n_samples),
                 seed=int(seed),
                 chunk_size=int(chunk_size),
-                box_radius_quantile=float(mc_box_radius_quantile),
+                box_radius_quantile=float(mc_box_radius_quantile),  # legacy, ignored
             )
-        coverage = float(mc_stats.get("coverage_percent", float("nan")))
-        if not math.isfinite(coverage):
+
+        p_feas = float(mc_stats.get("gaussian_feasible_percent", float("nan")))
+        if not math.isfinite(p_feas):
             status = _append_status(status, str(mc_stats.get("status", "mc_undefined")))
 
         top10 = None
@@ -854,24 +837,22 @@ def generate_report_text(
         n1_match_val = (
             float(n1_stats.match_percent) if n1_stats is not None else float("nan")
         )
-        table_rows.append(
-            (case, status, coverage, top_match_val, n1_match_val, time_sec)
-        )
+        table_rows.append((case, status, p_feas, top_match_val, n1_match_val, time_sec))
 
     out.append(
-        "Таблица (критерии usability по задаче: coverage > 70%, match > 70%, time < 10 sec):"
+        "Таблица (критерии usability по задаче: Gaussian P(feasible) > 70%, match > 70%, time < 10 sec):"
     )
     out.append("")
     out.append(
-        "| case | status | coverage % | top risky match % | N-1 critical match % | time sec |"
+        "| case | status | Gaussian P(feasible) % | top risky match % | N-1 critical match % | time sec |"
     )
     out.append("|---|---|---:|---:|---:|---:|")
-    for case, status, cov, topm, n1m, t in table_rows:
-        cov_s = f"{cov:.3f}" if math.isfinite(cov) else "n/a"
+    for case, status, p_feas, topm, n1m, t in table_rows:
+        feas_s = f"{p_feas:.3f}" if math.isfinite(p_feas) else "n/a"
         top_s = f"{topm:.3f}" if math.isfinite(topm) else "n/a"
         n1_s = f"{n1m:.3f}" if math.isfinite(n1m) else "n/a"
         t_s = f"{t:.3f}" if math.isfinite(t) else "n/a"
-        out.append(f"| {case} | {status} | {cov_s} | {top_s} | {n1_s} | {t_s} |")
+        out.append(f"| {case} | {status} | {feas_s} | {top_s} | {n1_s} | {t_s} |")
     out.append("")
     out.append("---")
     out.append("")
@@ -888,8 +869,13 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser.add_argument("--n-samples", default=DEFAULT_MC.n_samples, type=int)
     parser.add_argument("--seed", default=DEFAULT_MC.seed, type=int)
     parser.add_argument("--chunk-size", default=DEFAULT_MC.chunk_size, type=int)
+
+    # Deprecated, kept for backward-compatibility only
     parser.add_argument(
-        "--box-radius-quantile", default=DEFAULT_MC.box_radius_quantile, type=float
+        "--box-radius-quantile",
+        default=DEFAULT_MC.box_radius_quantile,
+        type=float,
+        help="DEPRECATED (ignored): legacy parameter from old box-based coverage experiment.",
     )
 
     parser.add_argument("--results-dir", default="verification/results", type=str)
@@ -930,7 +916,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         demo_dc_mode=str(args.dc_mode),
         demo_slack_bus=int(args.slack_bus),
         demo_compute_nminus1=bool(args.compute_nminus1),
-        mc_box_radius_quantile=float(args.box_radius_quantile),
+        mc_box_radius_quantile=float(args.box_radius_quantile),  # ignored
     )
 
     out_path = Path(str(args.out))

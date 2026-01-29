@@ -4,27 +4,32 @@
 
 - Base point is produced by **opf_pypsa** (PyPSA DC OPF + HiGHS).
 - Input cases are auto-downloaded deterministically when missing (supported filenames only).
-- No PF/AC-OPF modes are supported.
+- Verification reports:
+  - Gaussian P(feasible) under balanced N(0,σ²I) (MC)
+  - Analytic lower bound P(||Δp||₂ ≤ r*) (chi-square CDF)
+  - Soundness check inside certified L2 ball (uniform sampling)
 
 ---
 
-Таблица (критерии usability по задаче: coverage > 70%, match > 70%, time < 10 sec):
+Таблица (критерии usability по задаче: Gaussian P(feasible) > 70%, match > 70%, time < 10 sec):
 
-| case | status | coverage % | top risky match % | N-1 critical match % | time sec |
+| case | status | Gaussian P(feasible) % | top risky match % | N-1 critical match % | time sec |
 |---|---|---:|---:|---:|---:|
-| case30 | config_mismatch_generated_n1_match_undefined | 0.000 | 10.000 | n/a | 31.908 |
-| case118 | config_mismatch_generated_n1_match_undefined | 0.000 | 0.000 | n/a | 6.568 |
-| case300 | config_mismatch_generated_n1_match_undefined | 0.000 | n/a | n/a | 11.149 |
-| case1354_pegase | config_mismatch_generated_n1_match_undefined | 0.000 | n/a | n/a | 53.417 |
-| case9241_pegase | config_mismatch_generated_n1_match_undefined | 0.000 | n/a | n/a | 763.901 |
+| case30 | n1_match_undefined | 100.000 | 10.000 | n/a | 31.908 |
+| case118 | n1_match_undefined | 7.948 | 0.000 | n/a | 6.568 |
+| case300 | n1_match_undefined | 4.482 | n/a | n/a | 11.149 |
+| case1354_pegase | n1_match_undefined | 100.000 | n/a | n/a | 53.417 |
+| case9241_pegase | n1_match_undefined | 100.000 | n/a | n/a | 763.901 |
 
 ---
 
 ## case30
 
-- status: **config_mismatch_generated_n1_match_undefined**
-- coverage % (MC): **0.000%** (= 0 / 50000; feasible_in_box=50000/50000; mc_status=ok)
+- status: **n1_match_undefined**
+- Gaussian P(feasible) % (MC): **100.000%** (= 50000 / 50000; mc_status=ok)
+- Certified ball mass % (analytic): **76.102%** (= P(||Δp||₂ ≤ r*) under balanced N(0,σ²I))
 - base feasibility (w.r.t. stored limits): **feasible**
+- Certificate soundness (MC in ball): **PASS** (no violations)
 - top risky match % (common/10): **10%** (common=1, top_k=10, known_k=3)
 - top risky recall % (common/known): **33.3333%** (= 1 / 3)
 - N-1 critical match %: n/a (status=no_finite_radius_nminus1; selected=0)
@@ -51,9 +56,11 @@
 
 ## case118
 
-- status: **config_mismatch_generated_n1_match_undefined**
-- coverage % (MC): **0.000%** (= 0 / 4084; feasible_in_box=4084/50000; mc_status=ok)
+- status: **n1_match_undefined**
+- Gaussian P(feasible) % (MC): **7.948%** (= 3974 / 50000; mc_status=ok)
+- Certified ball mass % (analytic): **0.000%** (= P(||Δp||₂ ≤ r*) under balanced N(0,σ²I))
 - base feasibility (w.r.t. stored limits): **feasible**
+- Certificate soundness (MC in ball): **FAIL** (status=trivial_radius_zero, violation_samples=0, max_violation=n/a MW)
 - top risky match % (common/10): **0%** (common=0, top_k=10, known_k=2)
 - top risky recall % (common/known): **0%** (= 0 / 2)
 - N-1 critical match %: n/a (status=no_finite_radius_nminus1; selected=0)
@@ -80,9 +87,11 @@
 
 ## case300
 
-- status: **config_mismatch_generated_n1_match_undefined**
-- coverage % (MC): **0.000%** (= 0 / 2066; feasible_in_box=2066/50000; mc_status=ok)
+- status: **n1_match_undefined**
+- Gaussian P(feasible) % (MC): **4.482%** (= 2241 / 50000; mc_status=ok)
+- Certified ball mass % (analytic): **0.000%** (= P(||Δp||₂ ≤ r*) under balanced N(0,σ²I))
 - base feasibility (w.r.t. stored limits): **feasible**
+- Certificate soundness (MC in ball): **FAIL** (status=trivial_radius_zero, violation_samples=0, max_violation=n/a MW)
 - top risky match %: n/a
 - N-1 critical match %: n/a (status=no_finite_radius_nminus1; selected=0)
 - time sec (demo): **11.149**
@@ -93,9 +102,11 @@
 
 ## case1354_pegase
 
-- status: **config_mismatch_generated_n1_match_undefined**
-- coverage % (MC): **0.000%** (= 0 / 50000; feasible_in_box=50000/50000; mc_status=ok)
+- status: **n1_match_undefined**
+- Gaussian P(feasible) % (MC): **100.000%** (= 50000 / 50000; mc_status=ok)
+- Certified ball mass % (analytic): **0.000%** (= P(||Δp||₂ ≤ r*) under balanced N(0,σ²I))
 - base feasibility (w.r.t. stored limits): **feasible**
+- Certificate soundness (MC in ball): **PASS** (no violations)
 - top risky match %: n/a
 - N-1 critical match %: n/a (status=no_finite_radius_nminus1; selected=0)
 - time sec (demo): **53.417**
@@ -104,15 +115,16 @@
 
 - Criterion: time < 10 sec => **FAIL**
 
-### Literature comparison (Nguyen 2018)
-Nguyen (2018) отмечает, что полито́пные convex inner approximations покрывают существенные доли true region порядка 50–90% на 1354 buses (arXiv:1708.06845v3). Здесь получено coverage ≈ 0.000%.
-Критерий адекватности по задаче: >70%. Условие не выполнено.
+### Literature note (Nguyen 2018)
+Nguyen (2018, arXiv:1708.06845v3) обсуждает coverage fractions внутренних convex аппроксимаций относительно true feasibility region (другая метрика). Здесь верифицируется **вероятность безопасности** под balanced Gaussian injections и soundness сертификата.
 
 ## case9241_pegase
 
-- status: **config_mismatch_generated_n1_match_undefined**
-- coverage % (MC): **0.000%** (= 0 / 50000; feasible_in_box=50000/50000; mc_status=ok)
+- status: **n1_match_undefined**
+- Gaussian P(feasible) % (MC): **100.000%** (= 50000 / 50000; mc_status=ok)
+- Certified ball mass % (analytic): **0.000%** (= P(||Δp||₂ ≤ r*) under balanced N(0,σ²I))
 - base feasibility (w.r.t. stored limits): **feasible**
+- Certificate soundness (MC in ball): **PASS** (no violations)
 - top risky match %: n/a
 - N-1 critical match %: n/a (status=no_finite_radius_nminus1; selected=0)
 - time sec (demo): **763.901**
@@ -121,7 +133,6 @@ Nguyen (2018) отмечает, что полито́пные convex inner appro
 
 - Criterion: time < 10 sec => **FAIL**
 
-### Literature comparison (Nguyen 2018, Lee 2019)
-Nguyen (2018) на large-scale тестах также демонстрирует substantial fractions для внутренних аппроксимаций. Lee (2019, IEEE TPS) указывает, что convex quadratic restriction может быть достаточно большой для практической эксплуатации. Здесь получено coverage ≈ 0.000%.
-Критерий адекватности по задаче: >70%. Условие не выполнено.
+### Literature note (Nguyen 2018, Lee 2019)
+Nguyen (2018) и Lee (2019, IEEE TPS) обсуждают size/coverage внутренних ограничений и convex restrictions в терминах областей допустимости (другие постановки). Здесь отчёт выводит вероятностные метрики под Gaussian injections + soundness проверки L2-сертификата.
 

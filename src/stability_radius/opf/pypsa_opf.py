@@ -12,12 +12,24 @@ from stability_radius.dc.dc_model import trafo_x_total_ohm
 
 logger = logging.getLogger(__name__)
 
+_AC_CARRIER = "AC"
+
 
 @dataclass(frozen=True)
 class PyPSAOPFResult:
-    """Minimal OPF result required by the rest of this project."""
+    """
+    Minimal OPF result required by the rest of this project.
+
+    Notes
+    -----
+    - bus_injections_mw is aligned with bus_ids ordering, and should be balanced
+      (sum ~= 0) up to solver tolerances.
+    - line_flows_mw is aligned with the provided pandapower line_indices ordering.
+    """
 
     line_flows_mw: np.ndarray  # aligned with provided pandapower line_indices ordering
+    bus_ids: tuple[int, ...]  # sorted pandapower net.bus.index
+    bus_injections_mw: np.ndarray  # aligned with bus_ids
     status: str
     objective: float
 
@@ -167,7 +179,7 @@ def _pp_gen_p_bounds_to_pypsa(
     if not math.isfinite(p_max):
         raise ValueError(f"Invalid max_p_mw for pandapower gen {gid}: {p_max}")
 
-    # Key fix: allow converted networks to contain in-service "generators" with zero
+    # Allow converted networks to contain in-service "generators" with zero
     # active capability (e.g., synchronous condensers). For DC OPF base-point we skip them.
     if p_max <= 0.0:
         return None
@@ -183,6 +195,30 @@ def _pp_gen_p_bounds_to_pypsa(
     return p_nom, p_min_pu
 
 
+def _ensure_carrier_table(n: Any, carrier_name: str) -> None:
+    """
+    Ensure that `carrier_name` exists in `n.carriers`.
+
+    Why this exists
+    ---------------
+    Some PyPSA versions emit warnings when a component's `carrier` is set but the carrier
+    is missing in `network.carriers`. We explicitly define the carrier to avoid ambiguous
+    AC/DC network interpretation and keep logs clean/deterministic.
+    """
+    if not hasattr(n, "carriers"):
+        return
+    try:
+        carriers = n.carriers
+    except Exception:  # noqa: BLE001
+        return
+    try:
+        if str(carrier_name) in carriers.index:
+            return
+    except Exception:  # noqa: BLE001
+        return
+    n.add("Carrier", str(carrier_name))
+
+
 def solve_dc_opf_base_flows_from_pandapower(
     *,
     net: Any,
@@ -195,7 +231,14 @@ def solve_dc_opf_base_flows_from_pandapower(
     Project policy
     --------------
     - Solver is enforced globally: HiGHS (see stability_radius.config.DEFAULT_OPF).
-    - No legacy API fallbacks (requires modern PyPSA with Network.optimize()).
+    - PyPSA network is built as an **AC** network and solved in linear (DC) approximation.
+      (buses have carrier="AC", lines use reactance `x`).
+
+    Returns
+    -------
+    PyPSAOPFResult
+        Includes both base line flows and the corresponding bus injections (for
+        OPF->DC consistency checks).
     """
     try:
         import pandas as pd
@@ -228,6 +271,9 @@ def solve_dc_opf_base_flows_from_pandapower(
     n = pypsa.Network()
     n.set_snapshots(pd.Index([0]))
 
+    # Explicitly define AC carrier to avoid PyPSA warnings and accidental DC network semantics.
+    _ensure_carrier_table(n, _AC_CARRIER)
+
     sn_mva = float(getattr(net, "sn_mva", np.nan))
     if math.isfinite(sn_mva) and sn_mva > 0:
         n.sn_mva = sn_mva
@@ -238,7 +284,13 @@ def solve_dc_opf_base_flows_from_pandapower(
         vn_kv = _bus_vn_kv(net, b)
         if not math.isfinite(vn_kv) or vn_kv <= 0:
             raise ValueError(f"Invalid vn_kv for bus {b}: {vn_kv}")
-        n.add("Bus", str(b), v_nom=float(vn_kv))
+
+        bus_kwargs: dict[str, Any] = {"v_nom": float(vn_kv)}
+        # Bus has carrier field in modern PyPSA. Keep it guarded for compatibility.
+        if hasattr(n, "buses") and "carrier" in getattr(n, "buses").columns:
+            bus_kwargs["carrier"] = _AC_CARRIER
+
+        n.add("Bus", str(b), **bus_kwargs)
 
     # loads: aggregate per bus
     load_by_bus = _sum_p_by_bus(net, "load", p_col="p_mw")
@@ -438,7 +490,14 @@ def solve_dc_opf_base_flows_from_pandapower(
             "PyPSA did not produce line flow results (lines_t.p0 missing)."
         )
 
+    if not hasattr(n, "generators_t") or not hasattr(n.generators_t, "p"):
+        raise RuntimeError(
+            "PyPSA did not produce generator dispatch results (generators_t.p missing)."
+        )
+
     snap = n.snapshots[0]
+
+    # line flows for monitored pandapower net.line entries only (aligned with idx)
     flows: list[float] = []
     for lid in idx:
         if not bool(in_service_flags.get(int(lid), True)):
@@ -449,8 +508,39 @@ def solve_dc_opf_base_flows_from_pandapower(
         v = float(n.lines_t.p0.loc[snap, name])
         flows.append(v)
 
+    # bus injections for OPF->DC consistency checks
+    bus_names = [str(b) for b in bus_ids]
+
+    gen_p = n.generators_t.p.loc[snap, :]
+    gen_bus = n.generators.bus
+    gen_by_bus = gen_p.groupby(gen_bus).sum()
+
+    if len(n.loads.index) > 0:
+        load_by_bus = n.loads.p_set.groupby(n.loads.bus).sum()
+    else:
+        load_by_bus = gen_by_bus.iloc[0:0].copy()
+
+    inj_by_bus = gen_by_bus.reindex(bus_names, fill_value=0.0) - load_by_bus.reindex(
+        bus_names, fill_value=0.0
+    )
+    bus_inj = np.asarray(
+        [float(inj_by_bus.get(str(b), 0.0)) for b in bus_ids], dtype=float
+    )
+
+    inj_sum = float(np.sum(bus_inj))
+    if abs(inj_sum) > 1e-6:
+        logger.warning(
+            "PyPSA OPF produced non-zero total injection sum=%.6g MW (should be ~0). "
+            "This may indicate solver tolerances or model inconsistency.",
+            inj_sum,
+        )
+    else:
+        logger.debug("OPF bus injection balance check: sum=%.6g MW", inj_sum)
+
     out = PyPSAOPFResult(
         line_flows_mw=np.asarray(flows, dtype=float),
+        bus_ids=tuple(bus_ids),
+        bus_injections_mw=bus_inj,
         status=str(status),
         objective=float(objective),
     )

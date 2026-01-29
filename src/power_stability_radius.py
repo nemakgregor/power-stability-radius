@@ -30,6 +30,7 @@ from stability_radius.config import (
 from stability_radius.dc.dc_model import build_dc_matrices, build_dc_operator
 from stability_radius.parsers.matpower import load_network
 from stability_radius.radii.common import (
+    LineBaseQuantities,
     assert_line_limit_sources_present,
     get_line_base_quantities,
 )
@@ -49,6 +50,9 @@ from stability_radius.statistics.table import (
 from stability_radius.utils import log_stage, setup_logging
 
 logger = logging.getLogger("stability_radius.cli")
+
+_OPF_DC_FLOW_CONSISTENCY_TOL_MW = 1e-3
+_OPF_BUS_BALANCE_TOL_MW = 1e-6
 
 
 def _resolve_under_project_root(p: str) -> str:
@@ -90,7 +94,6 @@ def _ensure_input_case_file(input_path: str) -> str:
     try:
         from stability_radius.utils.download import ensure_case_file
     except Exception as e:  # noqa: BLE001
-        # We keep the error explicit: downloading is an optional feature, but requested by the user.
         raise RuntimeError(
             "Case file is missing and download helpers are unavailable. "
             "Install optional dependencies (e.g., requests) or provide an existing file."
@@ -250,6 +253,91 @@ def _compute_radii_operator_path(
     return out
 
 
+def _check_opf_dc_consistency(
+    *,
+    dc_op,
+    base: LineBaseQuantities,
+    tol_flow_mw: float = _OPF_DC_FLOW_CONSISTENCY_TOL_MW,
+    tol_balance_mw: float = _OPF_BUS_BALANCE_TOL_MW,
+) -> dict[str, float]:
+    """
+    Validate that OPF base flows are consistent with the project's DCOperator.
+
+    This is a hard correctness check:
+    - we reconstruct line flows from OPF bus injections via DCOperator
+    - we compare against OPF-reported base flows f0 for monitored lines
+
+    Raises
+    ------
+    ValueError
+        If bus ordering is inconsistent, injections are missing, or max|Δf| > tol_flow_mw.
+
+    Returns
+    -------
+    dict
+        Diagnostic scalars for results meta.
+    """
+    if base.bus_ids is None or base.bus_injections_mw is None:
+        raise ValueError(
+            "Internal error: OPF base quantities must include bus_ids and bus_injections_mw "
+            "(required for OPF->DC consistency checks). Regenerate results with the current version."
+        )
+
+    bus_ids = tuple(int(x) for x in base.bus_ids)
+    op_bus_ids = tuple(int(x) for x in getattr(dc_op, "bus_ids", ()))
+    if bus_ids != op_bus_ids:
+        raise ValueError(
+            "Bus ordering mismatch between OPF base point and DC operator. "
+            f"opf_bus_ids[:10]={list(bus_ids)[:10]}..., dc_bus_ids[:10]={list(op_bus_ids)[:10]}..."
+        )
+
+    p = np.asarray(base.bus_injections_mw, dtype=float).reshape(-1)
+    if p.shape != (len(bus_ids),):
+        raise ValueError(
+            f"bus_injections_mw shape mismatch: got {p.shape}, expected ({len(bus_ids)},)"
+        )
+
+    inj_sum = float(np.sum(p))
+    if abs(inj_sum) > float(tol_balance_mw):
+        raise ValueError(
+            "OPF bus injections are not balanced within tolerance. "
+            f"sum(injections)={inj_sum:.6g} MW (tol={float(tol_balance_mw):.6g})."
+        )
+
+    f0_opf = np.asarray(base.flow0_mw, dtype=float).reshape(-1)
+    f0_dc = np.asarray(dc_op.flows_from_delta_injections(p), dtype=float).reshape(-1)
+
+    if f0_dc.shape != f0_opf.shape:
+        raise ValueError(
+            f"OPF/DC flow vector shape mismatch: opf={f0_opf.shape}, dc={f0_dc.shape}"
+        )
+
+    diff = f0_dc - f0_opf
+    max_abs = float(np.max(np.abs(diff))) if diff.size else 0.0
+
+    logger.info(
+        "OPF->DC consistency check: max|Δf|=%.6g MW (tol=%.6g MW), sum(inj)=%.6g MW",
+        max_abs,
+        float(tol_flow_mw),
+        inj_sum,
+    )
+
+    if not np.isfinite(max_abs) or max_abs > float(tol_flow_mw):
+        raise ValueError(
+            "OPF->DC consistency check failed: base flows from PyPSA do not match DCOperator flows "
+            f"(max|Δf|={max_abs:.6g} MW, tol={float(tol_flow_mw):.6g} MW). "
+            "This indicates a model/data mismatch between OPF construction and the DC operator "
+            "(e.g., wrong AC/DC carrier interpretation in PyPSA, missing branches in B, wrong slack/bus mapping)."
+        )
+
+    return {
+        "opf_bus_balance_abs_mw": float(abs(inj_sum)),
+        "opf_dc_flow_max_abs_diff_mw": float(max_abs),
+        "opf_dc_flow_tol_mw": float(tol_flow_mw),
+        "opf_bus_balance_tol_mw": float(tol_balance_mw),
+    }
+
+
 def compute_results_for_case(
     *,
     input_path: str,
@@ -275,6 +363,11 @@ def compute_results_for_case(
     --------------
     - dc_mode="materialize": materialize H_full and compute all radii (including N-1 if requested)
     - dc_mode="operator": compute L2/metric/sigma radii via operator norms (no N-1)
+
+    Correctness checks
+    ------------------
+    The pipeline enforces an OPF->DCOperator consistency check:
+    base flows from OPF must match DCOperator flows reconstructed from OPF bus injections.
     """
     time_start = time.time()
 
@@ -330,6 +423,12 @@ def compute_results_for_case(
             m_line = int(dc_op.n_line)
             logger.debug("Built DC operator: n_bus=%d, n_line=%d", n_bus, m_line)
 
+    if dc_op is None:
+        raise AssertionError("Internal error: DC operator was not created.")
+
+    with log_stage(logger, f"{case_tag}: Consistency Check (OPF -> DCOperator)"):
+        consistency = _check_opf_dc_consistency(dc_op=dc_op, base=base)
+
     with log_stage(logger, f"{case_tag}: Compute Radii"):
         if H_full is not None:
             l2 = compute_l2_radius(
@@ -369,8 +468,6 @@ def compute_results_for_case(
 
             results_lines = _merge_line_results(l2, metric, sigma, nminus1)
         else:
-            if dc_op is None:
-                raise AssertionError("Internal error: operator mode requires dc_op")
             if bool(compute_nminus1):
                 raise ValueError(
                     "compute_nminus1=1 requires dc_mode=materialize (N-1 needs H_full)."
@@ -412,6 +509,7 @@ def compute_results_for_case(
             "n_bus": int(n_bus),
             "n_line": int(m_line),
             "nminus1_computed": bool(nminus1_computed),
+            **consistency,
         }
     }
     results.update(results_lines)
@@ -430,7 +528,7 @@ def run_demo(args: argparse.Namespace) -> int:
     run_dir_path = Path(run_dir)
 
     logger.info(
-        "Workflow (demo): Read Data -> Solve DC OPF (PyPSA+HiGHS) -> Build DC Model -> Compute Radii -> Save Outputs"
+        "Workflow (demo): Read Data -> Solve DC OPF (PyPSA+HiGHS) -> Build DC Model -> Consistency Check -> Compute Radii -> Save Outputs"
     )
 
     results = compute_results_for_case(
@@ -489,7 +587,7 @@ def run_demo(args: argparse.Namespace) -> int:
 
 
 def run_monte_carlo(args: argparse.Namespace) -> int:
-    """Run Monte Carlo coverage estimation using stored results and a case file."""
+    """Run Monte Carlo verification using stored results and a case file."""
     setup_logging(
         LoggingConfig(
             runs_dir=str(args.runs_dir),
@@ -499,12 +597,13 @@ def run_monte_carlo(args: argparse.Namespace) -> int:
     )
 
     logger.info(
-        "Workflow (monte-carlo): Read Results -> Read Data -> Build DC Model -> Run Monte Carlo Coverage"
+        "Workflow (monte-carlo): Read Results -> Read Data -> Build DC Model -> "
+        "Gaussian feasibility MC + analytic ball mass -> L2-ball certificate soundness check"
     )
 
     from verification.monte_carlo import estimate_coverage_percent
 
-    with log_stage(logger, "Monte Carlo Coverage"):
+    with log_stage(logger, "Monte Carlo Verification"):
         stats = estimate_coverage_percent(
             results_path=Path(str(args.results)),
             input_case_path=Path(str(args.input)),
@@ -512,6 +611,7 @@ def run_monte_carlo(args: argparse.Namespace) -> int:
             n_samples=int(args.n_samples),
             seed=int(args.seed),
             chunk_size=int(args.chunk_size),
+            # DEPRECATED: legacy box parameter kept for CLI backward-compatibility.
             box_radius_quantile=float(args.box_radius_quantile),
         )
 
@@ -531,7 +631,7 @@ def run_report(args: argparse.Namespace) -> int:
     run_dir_path = Path(run_dir)
 
     logger.info(
-        "Workflow (report): Ensure results -> Monte Carlo Coverage -> Generate Report [dc_mode=%s]",
+        "Workflow (report): Ensure results -> Monte Carlo Verification -> Generate Report [dc_mode=%s]",
         str(args.dc_mode),
     )
 
@@ -550,6 +650,7 @@ def run_report(args: argparse.Namespace) -> int:
             demo_dc_mode=str(args.dc_mode),
             demo_slack_bus=int(args.slack_bus),
             demo_compute_nminus1=bool(args.compute_nminus1),
+            # DEPRECATED: legacy box parameter kept for CLI backward-compatibility.
             mc_box_radius_quantile=float(args.box_radius_quantile),
         )
 
@@ -687,7 +788,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma-separated list of table columns (default: full set).",
     )
 
-    p_mc = sub.add_parser("monte-carlo", help="Monte Carlo coverage for one case.")
+    p_mc = sub.add_parser("monte-carlo", help="Monte Carlo verification for one case.")
     p_mc.add_argument("--results", required=True, type=str, help="Path to results.json")
     p_mc.add_argument("--input", required=True, type=str, help="Path to case .m file")
     p_mc.add_argument("--slack-bus", default=0, type=int)
@@ -698,7 +799,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--box-radius-quantile",
         default=DEFAULT_MC.box_radius_quantile,
         type=float,
-        help="Quantile of finite radius_l2 used to scale the MC sampling box.",
+        help=(
+            "DEPRECATED (ignored): legacy parameter from the old box-based coverage experiment. "
+            "Kept for backward-compatibility only."
+        ),
     )
 
     p_rep = sub.add_parser("report", help="Generate aggregated verification report.")
@@ -721,7 +825,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--box-radius-quantile",
         default=DEFAULT_MC.box_radius_quantile,
         type=float,
-        help="Quantile of finite radius_l2 used to scale the MC sampling box.",
+        help=(
+            "DEPRECATED (ignored): legacy parameter from the old box-based coverage experiment. "
+            "Kept for backward-compatibility only."
+        ),
     )
     p_rep.add_argument(
         "--generate-missing-results",

@@ -7,32 +7,29 @@ from pathlib import Path
 import pytest
 
 
-def test_report_formats_na_for_nan_coverage():
+def test_report_formats_na_for_nan_metrics():
     # Module import requires pandapower in this repo setup.
     pytest.importorskip("pandapower")
 
     from verification.generate_report import _case_section_md
 
     mc = {
-        "status": "no_feasible_samples",
-        "coverage_percent": float("nan"),
-        "total_feasible_in_box": 0,
-        "feasible_in_ball": 0,
+        "status": "ok",
         "n_samples": 50000,
-        "seed": 0,
-        "chunk_size": 256,
-        "box_lo": -10.0,
-        "box_hi": 10.0,
-        "min_r": 0.0,
-        "max_r": 5.0,
-        "feasible_rate_in_box_percent": 0.0,
-        "coverage_ci95_low_percent": float("nan"),
-        "coverage_ci95_high_percent": float("nan"),
+        "gaussian_feasible_samples": 0,
+        "gaussian_feasible_percent": float("nan"),
+        "gaussian_ball_mass_analytic_percent": float("nan"),
+        "base_point_feasible": True,
+        "base_point_violated_lines": 0,
+        "base_point_max_violation_mw": 0.0,
+        "certificate_status": "skipped",
+        "certificate_violation_samples": 0,
+        "certificate_max_violation_mw": float("nan"),
     }
 
     md = _case_section_md(
         case="case1354_pegase",
-        status="generated_no_feasible_samples",
+        status="generated_ok",
         mc=mc,
         top_risky=None,
         top_match=None,
@@ -41,12 +38,12 @@ def test_report_formats_na_for_nan_coverage():
         known_pairs=None,
     )
 
-    # Must not leak "nan%" into literature comparison or anywhere else.
+    # Must not leak "nan%" anywhere.
     assert "nan%" not in md.lower()
-    assert "coverage: n/a" in md.lower() or "coverage % (mc): n/a" in md.lower()
+    assert "n/a" in md.lower()
 
 
-def test_monte_carlo_returns_no_feasible_samples_on_zero_limits(tmp_path: Path):
+def test_monte_carlo_runs_on_zero_limits_and_reports_zero_feasible(tmp_path: Path):
     pytest.importorskip("pandapower")
     pytest.importorskip("scipy")
 
@@ -79,11 +76,13 @@ mpc.branch = [
     assert len(net.line) >= 1
     lid = int(sorted(net.line.index)[0])
 
+    # Intentionally inconsistent radius (radius_l2=1 with limit=0) to force certificate violations,
+    # but the Monte Carlo routine must still run and return deterministic keys.
     results = {
-        "__meta__": {"input_path": str(mfile), "slack_bus": 0},
+        "__meta__": {"input_path": str(mfile), "slack_bus": 0, "inj_std_mw": 1.0},
         f"line_{lid}": {
             "flow0_mw": 0.0,
-            "p_limit_mw_est": 0.0,  # makes feasibility measure-zero for continuous sampling
+            "p_limit_mw_est": 0.0,  # feasibility becomes measure-zero for continuous distributions
             "radius_l2": 1.0,
         },
     }
@@ -99,13 +98,18 @@ mpc.branch = [
         chunk_size=50,
     )
 
-    assert stats["status"] == "no_feasible_samples"
-    assert math.isnan(float(stats["coverage_percent"]))
-    assert int(stats["total_feasible_in_box"]) == 0
-    assert int(stats["feasible_in_ball"]) == 0
+    assert stats["status"] in {
+        "ok",
+        "certificate_violations_found",
+        "base_point_infeasible",
+    }
+    assert int(stats["n_samples"]) == 200
+    assert int(stats["gaussian_feasible_samples"]) == 0
+    assert float(stats["gaussian_feasible_percent"]) == pytest.approx(0.0)
 
-    # New scaling: box half-width is 2*max_r/sqrt(n_bus)
-    n_bus = int(stats["n_bus"])
-    expected_half = 2.0 * 1.0 / math.sqrt(float(n_bus))
-    assert float(stats["box_lo"]) == pytest.approx(-expected_half)
-    assert float(stats["box_hi"]) == pytest.approx(expected_half)
+    # Certificate check should detect violations for this artificial (wrong) radius.
+    assert stats["certificate_status"] in {
+        "violations_found",
+        "base_point_infeasible",
+        "skipped",
+    }
