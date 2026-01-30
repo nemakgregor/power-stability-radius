@@ -7,12 +7,23 @@ from typing import Any, Sequence
 
 import numpy as np
 
-from stability_radius.config import DEFAULT_OPF
-from stability_radius.dc.dc_model import trafo_x_total_ohm
+from stability_radius.config import DEFAULT_OPF, OPFConfig
+from stability_radius.dc.dc_model import trafo_tap_ratio, trafo_x_total_ohm
 
 logger = logging.getLogger(__name__)
 
 _AC_CARRIER = "AC"
+
+# NOTE:
+# ext_grid is a "slack-like" unlimited source used to keep the OPF feasible when real generators
+# are missing/insufficient after MATPOWER->pandapower conversion.
+#
+# It must be expensive (so it is used only if needed), but NOT astronomically expensive:
+# huge costs (e.g. 1e6) hurt LP scaling in HiGHS and can lead to small primal feasibility drift,
+# which then shows up as OPF->DCOperator flow mismatches at MW level.
+_EXT_GRID_MARGINAL_COST_BASE = 1_000.0
+
+_X_OHM_EPS = 1e-12
 
 
 @dataclass(frozen=True)
@@ -57,77 +68,76 @@ def _z_base_ohm(*, vn_kv: float, sn_mva: float) -> float:
     return (v * v) / s
 
 
-def _line_r_x_pu_from_pp(net: Any, line_row: Any) -> tuple[float, float]:
+def _line_r_x_ohm_from_pp(net: Any, line_row: Any) -> tuple[float, float]:
     """
-    Convert pandapower line parameters (Ohm/km) to per-unit total r,x for PyPSA.
-    """
-    sn_mva = float(getattr(net, "sn_mva", np.nan))
-    if not math.isfinite(sn_mva) or sn_mva <= 0:
-        raise ValueError("pandapower net.sn_mva must be finite and positive for OPF")
+    Convert pandapower line parameters (Ohm/km) to total r,x in Ohm for PyPSA.
 
+    Important (PyPSA unit contract)
+    -------------------------------
+    PyPSA `Line` expects:
+      - r in Ohm
+      - x in Ohm
+
+    PyPSA then computes per-unit values internally from `n.buses.v_nom` and `n.sn_mva`.
+    Previously, this project passed x in per-unit, which *accidentally* works for
+    single-voltage test networks (uniform scaling cancels out in DC flows), but breaks
+    multi-voltage networks (e.g. IEEE 118) and triggers large OPF->DCOperator mismatches.
+
+    Project policy
+    --------------
+    Lossless DC:
+      - we intentionally set r_ohm = 0.0 (ignore resistances)
+      - we keep x_ohm from physical reactance
+    """
     fb = int(line_row.get("from_bus", -1))
     vn_kv = _bus_vn_kv(net, fb)
     if not math.isfinite(vn_kv) or vn_kv <= 0:
         raise ValueError(f"Invalid vn_kv for from_bus={fb} (vn_kv={vn_kv})")
 
-    r_ohm_per_km = float(line_row.get("r_ohm_per_km", 0.0))
     x_ohm_per_km = float(line_row.get("x_ohm_per_km", 0.0))
     length_km = float(line_row.get("length_km", 0.0))
     parallel = float(line_row.get("parallel", 1.0))
     if not math.isfinite(parallel) or parallel <= 0:
         parallel = 1.0
 
-    r_ohm = r_ohm_per_km * length_km / parallel
     x_ohm = x_ohm_per_km * length_km / parallel
+    if not math.isfinite(x_ohm) or abs(x_ohm) <= _X_OHM_EPS:
+        raise ValueError(f"Invalid series reactance for line: x_ohm={x_ohm}")
 
-    z_base = _z_base_ohm(vn_kv=vn_kv, sn_mva=sn_mva)
-    if not math.isfinite(z_base) or z_base <= 0:
-        raise ValueError("Invalid z_base computed from vn_kv and sn_mva")
-
-    r_pu = r_ohm / z_base
-    x_pu = x_ohm / z_base
-    if not math.isfinite(x_pu) or abs(x_pu) <= 1e-12:
-        raise ValueError(f"Invalid per-unit reactance for line: x_pu={x_pu}")
-    return float(r_pu), float(x_pu)
+    # Lossless DC policy: resistances are ignored.
+    r_ohm = 0.0
+    return float(r_ohm), float(x_ohm)
 
 
-def _trafo_x_pu_from_pp(net: Any, trafo_row: Any) -> float:
+def _impedance_x_ohm_from_pp(net: Any, imp_row: Any) -> float:
     """
-    Approximate transformer series reactance in per unit on system base.
+    Convert pandapower impedance element to series reactance in Ohm.
+
+    pandapower impedance stores xft_pu (per unit on system base).
+    For PyPSA Line we need x in Ohm:
+        x_ohm = x_pu * (V_kV^2 / S_MVA)
     """
     sn_system = float(getattr(net, "sn_mva", np.nan))
     if not math.isfinite(sn_system) or sn_system <= 0:
         raise ValueError("pandapower net.sn_mva must be finite and positive for OPF")
 
-    hv_bus = int(trafo_row.get("hv_bus", -1))
-    vn_hv_kv = float(trafo_row.get("vn_hv_kv", np.nan))
-    if not math.isfinite(vn_hv_kv) or vn_hv_kv <= 0:
-        vn_hv_kv = _bus_vn_kv(net, hv_bus)
-
-    if not math.isfinite(vn_hv_kv) or vn_hv_kv <= 0:
-        raise ValueError(
-            f"Invalid hv vn_kv for trafo hv_bus={hv_bus} (vn_kv={vn_hv_kv})"
-        )
-
-    x_ohm = float(trafo_x_total_ohm(net, trafo_row))
-    if not math.isfinite(x_ohm) or abs(x_ohm) <= 1e-12:
-        raise ValueError(f"Invalid trafo x_ohm={x_ohm}")
-
-    z_base_system = _z_base_ohm(vn_kv=vn_hv_kv, sn_mva=sn_system)
-    if not math.isfinite(z_base_system) or z_base_system <= 0:
-        raise ValueError("Invalid system z_base for trafo conversion")
-    x_pu = float(x_ohm / z_base_system)
-    if not math.isfinite(x_pu) or abs(x_pu) <= 1e-12:
-        raise ValueError(f"Invalid per-unit reactance for trafo: x_pu={x_pu}")
-    return x_pu
-
-
-def _impedance_x_pu_from_pp(net: Any, imp_row: Any) -> float:
-    """Convert pandapower impedance element to x_pu on system base."""
     x_pu = float(imp_row.get("xft_pu", np.nan))
-    if not math.isfinite(x_pu) or abs(x_pu) <= 1e-12:
+    if not math.isfinite(x_pu) or abs(x_pu) <= _X_OHM_EPS:
         raise ValueError(f"Invalid impedance xft_pu={x_pu}")
-    return float(x_pu)
+
+    fb = int(imp_row.get("from_bus", -1))
+    vn_kv = _bus_vn_kv(net, fb)
+    if not math.isfinite(vn_kv) or vn_kv <= 0:
+        raise ValueError(f"Invalid vn_kv for impedance from_bus={fb} (vn_kv={vn_kv})")
+
+    z_base = _z_base_ohm(vn_kv=vn_kv, sn_mva=sn_system)
+    if not math.isfinite(z_base) or z_base <= 0:
+        raise ValueError("Invalid z_base computed from vn_kv and sn_mva")
+
+    x_ohm = float(x_pu * z_base)
+    if not math.isfinite(x_ohm) or abs(x_ohm) <= _X_OHM_EPS:
+        raise ValueError(f"Invalid impedance x_ohm={x_ohm}")
+    return float(x_ohm)
 
 
 def _sum_p_by_bus(net: Any, table_name: str, *, p_col: str) -> dict[int, float]:
@@ -224,15 +234,38 @@ def solve_dc_opf_base_flows_from_pandapower(
     net: Any,
     line_indices: Sequence[int],
     line_limits_mw: np.ndarray,
+    opf_cfg: OPFConfig | None = None,
 ) -> PyPSAOPFResult:
     """
     Solve a single-snapshot DC OPF using PyPSA + HiGHS and return base line flows.
 
     Project policy
     --------------
-    - Solver is enforced globally: HiGHS (see stability_radius.config.DEFAULT_OPF).
-    - PyPSA network is built as an **AC** network and solved in linear (DC) approximation.
-      (buses have carrier="AC", lines use reactance `x`).
+    - Solver is enforced globally: HiGHS (see stability_radius.config.OPFConfig).
+    - Lossless DC model: branch resistances are ignored (r=0).
+    - PyPSA `Line` uses r/x in Ohm. We therefore pass total X in Ohm (not per unit).
+      This is crucial for multi-voltage networks to avoid incorrect scaling.
+
+    Transformer/impedance surrogates
+    --------------------------------
+    pandapower net.trafo and net.impedance are included into the OPF model as additional
+    unconstrained PyPSA Lines. This keeps the OPF base-point network connected in cases
+    where MATPOWER branches were converted into transformers/impedances.
+
+    Tap ratios are handled in a MATPOWER-style DC approximation:
+      - we scale transformer X in Ohm:  x_eff = x * tap
+        (equivalently b_eff = b / tap)
+
+    Parameters
+    ----------
+    net:
+        pandapower network.
+    line_indices:
+        pandapower net.line indices ordering used by downstream code.
+    line_limits_mw:
+        thermal limits for each monitored line (same ordering as `line_indices`).
+    opf_cfg:
+        Optional OPF configuration (HiGHS options, unconstrained surrogate).
 
     Returns
     -------
@@ -240,6 +273,8 @@ def solve_dc_opf_base_flows_from_pandapower(
         Includes both base line flows and the corresponding bus injections (for
         OPF->DC consistency checks).
     """
+    cfg = opf_cfg if opf_cfg is not None else DEFAULT_OPF
+
     try:
         import pandas as pd
         import pypsa
@@ -255,18 +290,22 @@ def solve_dc_opf_base_flows_from_pandapower(
             f"line_limits_mw must have shape ({len(idx)},), got {limits.shape}"
         )
 
-    solver_name = str(DEFAULT_OPF.highs.solver_name)
+    solver_name = str(cfg.highs.solver_name)
     if solver_name.lower() != "highs":
         raise ValueError(
             f"Project policy violation: solver must be 'highs', got {solver_name!r}"
         )
 
-    unconstrained_nom = float(DEFAULT_OPF.unconstrained_line_nom_mw)
+    unconstrained_nom = float(cfg.unconstrained_line_nom_mw)
     if not math.isfinite(unconstrained_nom) or unconstrained_nom <= 0:
         raise ValueError(
-            "DEFAULT_OPF.unconstrained_line_nom_mw must be finite and >0 "
-            f"(got {DEFAULT_OPF.unconstrained_line_nom_mw!r})"
+            "opf_cfg.unconstrained_line_nom_mw must be finite and >0 "
+            f"(got {cfg.unconstrained_line_nom_mw!r})"
         )
+
+    logger.debug(
+        "Building PyPSA network for lossless DC OPF. Policy: r=0.0, x in Ohm for PyPSA Line."
+    )
 
     n = pypsa.Network()
     n.set_snapshots(pd.Index([0]))
@@ -292,8 +331,18 @@ def solve_dc_opf_base_flows_from_pandapower(
 
         n.add("Bus", str(b), **bus_kwargs)
 
-    # loads: aggregate per bus
+    # loads: aggregate per bus (pandapower load + shunt p_mw)
     load_by_bus = _sum_p_by_bus(net, "load", p_col="p_mw")
+    shunt_p_by_bus = _sum_p_by_bus(net, "shunt", p_col="p_mw")
+    if shunt_p_by_bus:
+        for bus, p in shunt_p_by_bus.items():
+            load_by_bus[bus] = load_by_bus.get(bus, 0.0) + float(p)
+        logger.debug(
+            "Included pandapower shunt p_mw into OPF loads: buses=%d, total_shunt_p_mw=%.6g",
+            int(len(shunt_p_by_bus)),
+            float(sum(shunt_p_by_bus.values())),
+        )
+
     total_load = float(sum(load_by_bus.values()))
     for b in sorted(load_by_bus.keys()):
         p = float(load_by_bus[b])
@@ -370,6 +419,14 @@ def solve_dc_opf_base_flows_from_pandapower(
                 )
 
             gen_rank += 1
+            mc = float(_EXT_GRID_MARGINAL_COST_BASE + gen_rank)
+            logger.debug(
+                "Adding ext_grid ext_%d: bus=%d, p_nom=%.6g MW, marginal_cost=%.6g",
+                int(eid),
+                int(bus),
+                float(p_nom_ext),
+                float(mc),
+            )
             n.add(
                 "Generator",
                 f"ext_{eid}",
@@ -377,7 +434,7 @@ def solve_dc_opf_base_flows_from_pandapower(
                 p_nom=float(p_nom_ext),
                 p_min_pu=0.0,
                 p_max_pu=1.0,
-                marginal_cost=float(1_000_000 + gen_rank),
+                marginal_cost=float(mc),
             )
 
     if len(n.generators.index) == 0:
@@ -400,7 +457,7 @@ def solve_dc_opf_base_flows_from_pandapower(
         if fb not in set(bus_ids) or tb not in set(bus_ids):
             raise ValueError(f"Line {lid} refers to missing buses {fb}->{tb}")
 
-        r_pu, x_pu = _line_r_x_pu_from_pp(net, row)
+        r_ohm, x_ohm = _line_r_x_ohm_from_pp(net, row)
 
         s_nom = float(limits[pos])
         if not math.isfinite(s_nom) or math.isinf(s_nom):
@@ -413,8 +470,8 @@ def solve_dc_opf_base_flows_from_pandapower(
             f"line_{lid}",
             bus0=str(fb),
             bus1=str(tb),
-            r=float(r_pu),
-            x=float(x_pu),
+            r=float(r_ohm),
+            x=float(x_ohm),
             s_nom=float(s_nom),
         )
 
@@ -429,14 +486,41 @@ def solve_dc_opf_base_flows_from_pandapower(
             if hv not in set(bus_ids) or lv not in set(bus_ids):
                 raise ValueError(f"Trafo {tid} refers to missing buses {hv}->{lv}")
 
-            x_pu = _trafo_x_pu_from_pp(net, row)
+            x_ohm = float(trafo_x_total_ohm(net, row))
+            if not math.isfinite(x_ohm) or abs(x_ohm) <= _X_OHM_EPS:
+                raise ValueError(f"Invalid trafo x_ohm={x_ohm} for trafo {tid}")
+
+            # Apply MATPOWER-style DC tap modeling: x_eff = x * tap  (=> b_eff = b / tap)
+            tap = float(trafo_tap_ratio(row))
+            x_ohm_eff = float(x_ohm * tap)
+
+            if tap != 1.0:
+                logger.debug(
+                    "Trafo %d: applying DC tap ratio in OPF model: tap=%.6g, x_ohm=%.6g, x_ohm_eff=%.6g",
+                    int(tid),
+                    float(tap),
+                    float(x_ohm),
+                    float(x_ohm_eff),
+                )
+
+            shift_deg = float(row.get("shift_degree", 0.0))
+            if math.isfinite(shift_deg) and abs(shift_deg) > 1e-9:
+                # We intentionally keep the OPF/DCOperator models consistent.
+                # Phase shifting transformers require an explicit constant term in the DC equations;
+                # the current OPF surrogate uses a Line component which cannot represent it.
+                logger.warning(
+                    "Trafo %d has non-zero shift_degree=%.6g deg; current OPF/DCOperator surrogate ignores phase shift.",
+                    int(tid),
+                    float(shift_deg),
+                )
+
             n.add(
                 "Line",
                 f"trafo_{tid}",
                 bus0=str(hv),
                 bus1=str(lv),
                 r=0.0,
-                x=float(x_pu),
+                x=float(x_ohm_eff),
                 s_nom=unconstrained_nom,
             )
 
@@ -450,14 +534,15 @@ def solve_dc_opf_base_flows_from_pandapower(
             if fb not in set(bus_ids) or tb not in set(bus_ids):
                 raise ValueError(f"Impedance {iid} refers to missing buses {fb}->{tb}")
 
-            x_pu = _impedance_x_pu_from_pp(net, row)
+            x_ohm = _impedance_x_ohm_from_pp(net, row)
+
             n.add(
                 "Line",
                 f"impedance_{iid}",
                 bus0=str(fb),
                 bus1=str(tb),
                 r=0.0,
-                x=float(x_pu),
+                x=float(x_ohm),
                 s_nom=unconstrained_nom,
             )
 
@@ -476,7 +561,7 @@ def solve_dc_opf_base_flows_from_pandapower(
 
     try:
         res = n.optimize(
-            solver_name=solver_name, solver_options=DEFAULT_OPF.highs.solver_options()
+            solver_name=solver_name, solver_options=cfg.highs.solver_options()
         )
     except Exception as e:
         logger.exception("PyPSA OPF failed: %s", e)

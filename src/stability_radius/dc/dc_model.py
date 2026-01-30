@@ -19,6 +19,7 @@ except ImportError:
     _HAVE_SCIPY = False
 
 _X_TOTAL_EPS = 1e-12
+_TAP_RATIO_EPS = 1e-12
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,16 @@ class DCOperator:
     -----
     - bus_ids and line_ids are sorted to keep deterministic ordering.
     - slack bus is eliminated (reduced system).
+
+    Important modeling contract
+    ---------------------------
+    This operator models a *lossless DC* network with a single reference angle (slack).
+    Transformer tap ratios (if any) must be handled consistently with the OPF construction.
+
+    In this repository, we follow a MATPOWER-style DC approximation for 2-winding transformers:
+      - tap ratio is applied as a scaling of branch susceptance: b_eff = b / tap
+      - phase shift is currently ignored in the operator (sensitivities are still correct for Δp,
+        but absolute base-flow reconstruction with phase shifters would require extra constants).
     """
 
     bus_ids: tuple[int, ...]
@@ -271,6 +282,11 @@ def _line_b_mw_from_row(net: Any, line_row: Any) -> float:
     Compute DC branch coefficient b for a pandapower line in MW/rad.
 
     b ≈ V_kV^2 / X_ohm
+
+    Notes
+    -----
+    This matches the lossless DC approximation used in the OPF construction, under the
+    assumption that net.line connects buses on the same voltage level.
     """
     fb = int(line_row.get("from_bus", -1))
     vn_kv = _bus_vn_kv(net, fb)
@@ -324,12 +340,82 @@ def trafo_x_total_ohm(net: Any, trafo_row: Any) -> float:
     return float(x_ohm)
 
 
+def trafo_tap_ratio(trafo_row: Any) -> float:
+    """
+    Compute an *effective* transformer tap ratio magnitude from pandapower trafo fields.
+
+    Interpretation (pandapower-style)
+    ---------------------------------
+    When a transformer has a tap changer:
+      tap = 1 + (tap_pos - tap_neutral) * tap_step_percent / 100
+
+    If tap_side == "lv", we return 1/tap to represent the same ratio as a "hv-side"
+    tap in a MATPOWER-style DC approximation, to keep a single consistent convention.
+
+    Returns
+    -------
+    float
+        Tap ratio magnitude (>=0), defaults to 1.0 if no tap data is present.
+
+    Raises
+    ------
+    ValueError
+        If computed tap ratio is non-finite or <= 0.
+    """
+    try:
+        tap_side = str(trafo_row.get("tap_side", "")).strip().lower()
+    except Exception:  # noqa: BLE001
+        tap_side = ""
+
+    if tap_side not in {"hv", "lv"}:
+        return 1.0
+
+    try:
+        tap_step_percent = float(trafo_row.get("tap_step_percent", 0.0))
+    except (TypeError, ValueError):
+        tap_step_percent = 0.0
+    if not np.isfinite(tap_step_percent) or abs(tap_step_percent) <= _TAP_RATIO_EPS:
+        return 1.0
+
+    try:
+        tap_pos = float(trafo_row.get("tap_pos", 0.0))
+    except (TypeError, ValueError):
+        tap_pos = 0.0
+    try:
+        tap_neutral = float(trafo_row.get("tap_neutral", 0.0))
+    except (TypeError, ValueError):
+        tap_neutral = 0.0
+
+    if not np.isfinite(tap_neutral):
+        tap_neutral = 0.0
+    if not np.isfinite(tap_pos):
+        tap_pos = tap_neutral
+
+    delta = tap_pos - tap_neutral
+    tap = 1.0 + (delta * tap_step_percent / 100.0)
+
+    if not np.isfinite(tap) or tap <= 0.0:
+        raise ValueError(
+            "Invalid tap computed from tap_pos/tap_neutral/tap_step_percent: "
+            f"tap_side={tap_side!r}, tap_pos={tap_pos!r}, tap_neutral={tap_neutral!r}, tap_step_percent={tap_step_percent!r}, tap={tap!r}"
+        )
+
+    if tap_side == "lv":
+        tap = 1.0 / tap
+
+    return float(tap)
+
+
 def _trafo_b_mw_from_row(net: Any, trafo_row: Any) -> float:
     """
     Compute DC branch coefficient b for a pandapower transformer in MW/rad.
 
     Uses hv-side nominal voltage:
         b ≈ V_hv_kV^2 / X_ohm
+
+    Notes
+    -----
+    Tap ratios are handled outside of this function (see build_dc_operator).
     """
     hv_bus = int(trafo_row.get("hv_bus", -1))
 
@@ -445,7 +531,15 @@ def build_dc_operator(net, slack_bus: int = 0) -> DCOperator:
     Behavior
     --------
     - Monitored elements: net.line (ordering: sorted(net.line.index))
-    - B matrix assembly includes: net.line + net.trafo + net.impedance (in service, nonzero reactance)
+    - B matrix assembly includes: net.line + net.trafo + net.impedance
+      (in service, nonzero reactance).
+
+    Transformer taps
+    ----------------
+    For pandapower net.trafo entries, we apply a MATPOWER-style DC approximation:
+        b_eff = b / tap
+    where tap is derived from tap_pos/tap_step_percent (see trafo_tap_ratio()).
+    This improves consistency with DC-OPF formulations that account for tap ratios.
 
     Logging
     -------
@@ -560,10 +654,30 @@ def build_dc_operator(net, slack_bus: int = 0) -> DCOperator:
             lv = int(row.get("lv_bus", -1))
             if hv not in bus_pos or lv not in bus_pos:
                 continue
-            b_i = float(_trafo_b_mw_from_row(net, row))
-            if not np.isfinite(b_i) or abs(b_i) <= 0.0:
+
+            b_raw = float(_trafo_b_mw_from_row(net, row))
+            if not np.isfinite(b_raw) or abs(b_raw) <= 0.0:
                 continue
-            _add_branch(fpos=int(bus_pos[hv]), tpos=int(bus_pos[lv]), b_val=b_i)
+
+            try:
+                tap = float(trafo_tap_ratio(row))
+            except ValueError as e:
+                raise ValueError(
+                    f"Invalid tap ratio for pandapower trafo {tid}."
+                ) from e
+
+            b_eff = float(b_raw / tap)
+
+            if tap != 1.0:
+                logger.debug(
+                    "Trafo %d: applying DC tap ratio (MATPOWER-style): tap=%.6g, b_raw=%.6g, b_eff=%.6g",
+                    int(tid),
+                    float(tap),
+                    float(b_raw),
+                    float(b_eff),
+                )
+
+            _add_branch(fpos=int(bus_pos[hv]), tpos=int(bus_pos[lv]), b_val=b_eff)
             added_trafos_to_b += 1
 
     added_imps_to_b = 0

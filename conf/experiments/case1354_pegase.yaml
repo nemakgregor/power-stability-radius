@@ -1,0 +1,18 @@
+# Experiment config: case1354_pegase single-case run (demo) + optional Monte Carlo defaults.
+extends: ../config.yaml
+
+run_tests: 0
+
+logging:
+  run_dir_mode: overwrite
+  run_name: case1354_pegase
+
+demo:
+  input: data/input/pglib_opf_case1354_pegase.m
+  slack_bus: 0
+  export_results: verification/results/case1354_pegase.json
+
+monte_carlo:
+  results: verification/results/case1354_pegase.json
+  input: data/input/pglib_opf_case1354_pegase.m
+  slack_bus: 0

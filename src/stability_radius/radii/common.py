@@ -7,6 +7,8 @@ from typing import Sequence
 
 import numpy as np
 
+from stability_radius.config import DEFAULT_OPF, OPFConfig
+
 logger = logging.getLogger(__name__)
 
 
@@ -289,6 +291,7 @@ def get_line_base_quantities(
     *,
     margin_factor: float = 1.0,
     line_indices: Sequence[int] | None = None,
+    opf_cfg: OPFConfig | None = None,
 ) -> LineBaseQuantities:
     """
     Extract per-line base flows, limits, and margins around an OPF base point.
@@ -311,11 +314,15 @@ def get_line_base_quantities(
         Multiplier applied to extracted limits (e.g., 0.9 for conservative).
     line_indices:
         Optional explicit ordering of line indices. Defaults to sorted(net.line.index).
+    opf_cfg:
+        Optional OPF configuration (HiGHS options, unconstrained surrogate).
 
     Returns
     -------
     LineBaseQuantities
     """
+    cfg = opf_cfg if opf_cfg is not None else DEFAULT_OPF
+
     if margin_factor <= 0:
         raise ValueError("margin_factor must be positive.")
 
@@ -347,13 +354,16 @@ def get_line_base_quantities(
     from stability_radius.opf.pypsa_opf import solve_dc_opf_base_flows_from_pandapower
 
     logger.info(
-        "Solving OPF base point via PyPSA DC OPF (HiGHS, margin_factor=%s)...",
+        "Solving OPF base point via PyPSA DC OPF (solver=%s, threads=%d, margin_factor=%s)...",
+        str(cfg.highs.solver_name),
+        int(cfg.highs.threads),
         float(margin_factor),
     )
     opf_res = solve_dc_opf_base_flows_from_pandapower(
         net=net,
         line_indices=idx,
         line_limits_mw=limits,
+        opf_cfg=cfg,
     )
     flow0 = np.asarray(opf_res.line_flows_mw, dtype=float)
 

@@ -14,6 +14,7 @@ Logging design (deterministic, project-only)
 
 import logging
 import os
+import shutil
 import time
 from contextlib import contextmanager
 from datetime import datetime
@@ -106,6 +107,8 @@ def setup_logging(cfg: LoggingConfig) -> str:
           - runs_dir
           - level_console
           - level_file
+          - run_dir_mode: "timestamp" | "overwrite"
+          - run_name: used only for "overwrite"
 
     Returns
     -------
@@ -116,8 +119,19 @@ def setup_logging(cfg: LoggingConfig) -> str:
     if not runs_dir.is_absolute():
         runs_dir = (Path(os.getcwd()) / runs_dir).resolve()
 
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")
-    run_dir = _make_unique_run_dir(runs_dir, prefix=timestamp)
+    mode = str(getattr(cfg, "run_dir_mode", "timestamp")).strip().lower()
+    if mode not in {"timestamp", "overwrite"}:
+        raise ValueError("run_dir_mode must be 'timestamp' or 'overwrite'.")
+
+    if mode == "overwrite":
+        run_name = str(getattr(cfg, "run_name", "latest")).strip() or "latest"
+        run_dir = runs_dir / run_name
+        if run_dir.exists():
+            shutil.rmtree(run_dir)
+        run_dir.mkdir(parents=True, exist_ok=False)
+    else:
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")
+        run_dir = _make_unique_run_dir(runs_dir, prefix=timestamp)
 
     fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 

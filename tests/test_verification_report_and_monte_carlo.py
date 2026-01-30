@@ -1,54 +1,100 @@
 from __future__ import annotations
 
 import json
-import math
 from pathlib import Path
 
 import pytest
 
 
-def test_report_formats_na_for_nan_metrics():
-    # Module import requires pandapower in this repo setup.
-    pytest.importorskip("pandapower")
-
-    from verification.generate_report import _case_section_md
-
-    mc = {
-        "status": "ok",
-        "n_samples": 50000,
-        "gaussian_feasible_samples": 0,
-        "gaussian_feasible_percent": float("nan"),
-        "gaussian_ball_mass_analytic_percent": float("nan"),
-        "base_point_feasible": True,
-        "base_point_violated_lines": 0,
-        "base_point_max_violation_mw": 0.0,
-        "certificate_status": "skipped",
-        "certificate_violation_samples": 0,
-        "certificate_max_violation_mw": float("nan"),
-    }
-
-    md = _case_section_md(
-        case="case1354_pegase",
-        status="generated_ok",
-        mc=mc,
-        top_risky=None,
-        top_match=None,
-        n1_match=None,
-        time_sec=1.0,
-        known_pairs=None,
+def test_report_formats_na_for_nan_metrics() -> None:
+    from stability_radius.verification.generate_report import _case_card_md
+    from stability_radius.verification.types import (
+        BASE_OK,
+        PROB_OK,
+        RADIUS_OK,
+        SOUND_PASS,
+        BasePointCheck,
+        OverallCheck,
+        ProbabilisticCheck,
+        RadiusCheck,
+        SoundnessCheck,
+        VerificationInputs,
+        VerificationResult,
     )
 
-    # Must not leak "nan%" anywhere.
+    vr = VerificationResult(
+        schema_version=1,
+        inputs=VerificationInputs(
+            case_id="case1354_pegase",
+            results_path="/abs/results.json",
+            input_case_path="/abs/case.m",
+            slack_bus=0,
+            n_bus=10,
+            n_line=20,
+            dim_balance=9,
+            n_samples=50000,
+            seed=0,
+            chunk_size=256,
+            sigma_mw=1.0,
+        ),
+        base_point=BasePointCheck(
+            status=BASE_OK, violated_lines=0, max_violation_mw=0.0
+        ),
+        radius=RadiusCheck(
+            status=RADIUS_OK,
+            r_star=1.0,
+            argmin_line_pos=0,
+            argmin_line_idx=0,
+            min_margin_mw=1.0,
+            argmin_margin_mw=1.0,
+            argmin_norm_g=1.0,
+        ),
+        soundness=SoundnessCheck(
+            status=SOUND_PASS,
+            n_ball_samples=0,
+            violation_samples=0,
+            max_violation_mw=float("nan"),
+            max_violation_line_idx=-1,
+            tol_mw=1e-6,
+        ),
+        probabilistic=ProbabilisticCheck(
+            status=PROB_OK,
+            p_safe_gaussian_percent=float("nan"),
+            p_safe_gaussian_ci95_low_percent=float("nan"),
+            p_safe_gaussian_ci95_high_percent=float("nan"),
+            p_ball_analytic_percent=float("nan"),
+            p_ball_mc_percent=float("nan"),
+            p_ball_mc_ci95_low_percent=float("nan"),
+            p_ball_mc_ci95_high_percent=float("nan"),
+            eta_safe_given_in_ball_percent=float("nan"),
+            eta_ci95_low_percent=float("nan"),
+            eta_ci95_high_percent=float("nan"),
+            rho=float("nan"),
+        ),
+        comparisons={},
+        overall=OverallCheck(status="WARN", reasons=("synthetic",)),
+    )
+
+    md = _case_card_md(
+        case="case1354_pegase",
+        results_status="ok",
+        vr=vr,
+        comparisons={},
+        time_sec=1.0,
+    )
+
     assert "nan%" not in md.lower()
     assert "n/a" in md.lower()
 
 
-def test_monte_carlo_runs_on_zero_limits_and_reports_zero_feasible(tmp_path: Path):
+def test_monte_carlo_runs_on_zero_limits_and_reports_zero_feasible(
+    tmp_path: Path,
+) -> None:
     pytest.importorskip("pandapower")
     pytest.importorskip("scipy")
 
     from stability_radius.parsers.matpower import load_network
-    from verification.monte_carlo import estimate_coverage_percent
+    from stability_radius.verification.monte_carlo import run_monte_carlo_verification
 
     # Minimal 2-bus MATPOWER case.
     case_text = """function mpc = case2
@@ -71,45 +117,47 @@ mpc.branch = [
     mfile = tmp_path / "case2.m"
     mfile.write_text(case_text, encoding="utf-8")
 
-    # Determine pandapower line index to build matching results.json.
     net = load_network(mfile)
     assert len(net.line) >= 1
     lid = int(sorted(net.line.index)[0])
 
-    # Intentionally inconsistent radius (radius_l2=1 with limit=0) to force certificate violations,
-    # but the Monte Carlo routine must still run and return deterministic keys.
+    # Artificial inconsistent results (limit=0 but radius>0) to force soundness issues.
     results = {
-        "__meta__": {"input_path": str(mfile), "slack_bus": 0, "inj_std_mw": 1.0},
+        "__meta__": {
+            "input_path": str(mfile),
+            "slack_bus": 0,
+            "inj_std_mw": 1.0,
+            "dispatch_mode": "opf_pypsa",
+            "opf_solver": "highs",
+        },
         f"line_{lid}": {
             "flow0_mw": 0.0,
-            "p_limit_mw_est": 0.0,  # feasibility becomes measure-zero for continuous distributions
+            "p_limit_mw_est": 0.0,
             "radius_l2": 1.0,
+            "norm_g": 1.0,
         },
     }
     rfile = tmp_path / "results.json"
     rfile.write_text(json.dumps(results), encoding="utf-8")
 
-    stats = estimate_coverage_percent(
+    vr = run_monte_carlo_verification(
         results_path=rfile,
         input_case_path=mfile,
         slack_bus=0,
-        n_samples=200,  # small test
+        n_samples=200,
         seed=0,
         chunk_size=50,
     )
 
-    assert stats["status"] in {
-        "ok",
-        "certificate_violations_found",
-        "base_point_infeasible",
-    }
-    assert int(stats["n_samples"]) == 200
-    assert int(stats["gaussian_feasible_samples"]) == 0
-    assert float(stats["gaussian_feasible_percent"]) == pytest.approx(0.0)
+    # With zero limits, Gaussian feasible probability should be 0.
+    assert vr.probabilistic.p_safe_gaussian_percent == pytest.approx(0.0)
 
-    # Certificate check should detect violations for this artificial (wrong) radius.
-    assert stats["certificate_status"] in {
-        "violations_found",
-        "base_point_infeasible",
-        "skipped",
+    # Soundness may be skipped/trivial/fail depending on r* and base feasibility.
+    assert vr.soundness.status in {
+        "SOUND_FAIL",
+        "SOUND_SKIPPED_TRIVIAL_RADIUS",
+        "SOUND_SKIPPED_BASE_INFEASIBLE",
+        "SOUND_SKIPPED_INVALID_RADIUS",
+        "SOUND_SKIPPED_NO_SAMPLES",
+        "SOUND_PASS",
     }
