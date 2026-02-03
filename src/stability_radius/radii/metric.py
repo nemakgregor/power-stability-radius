@@ -124,7 +124,7 @@ def compute_metric_radius(
         results[k] = {
             "flow0_mw": float(base_q.flow0_mw[pos]),
             "p0_mw": float(base_q.p0_abs_mw[pos]),
-            "p_limit_mw_est": float(base_q.limit_mw_est[pos]),
+            "p_limit_mw_est": float(base_q.limit_mva_assumed_mw[pos]),
             "margin_mw": margin,
             "metric_denom": denom,
             "radius_metric": r,

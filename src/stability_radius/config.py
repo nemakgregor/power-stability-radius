@@ -197,10 +197,40 @@ class MonteCarloConfig:
     cert_max_samples: int = 5_000
 
 
+@dataclass(frozen=True)
+class UnitsConfig:
+    """
+    Unit/physics validation policy.
+
+    strict_units
+    ------------
+    When True, the library fails fast on non-physical or ambiguous quantities instead of
+    silently producing 0.0 coefficients.
+
+    Enforced conditions (high level)
+    --------------------------------
+    - vn_kv > 0
+    - x_ohm > 0 (for lossless DC branches)
+    - sn_mva > 0 (for transformer and system base quantities)
+
+    allow_phase_shift
+    -----------------
+    When False, transformers with non-zero shift_degree are rejected.
+
+    Rationale:
+    - The project's DCOperator/PTDF model currently ignores phase shifters.
+    - Ignoring shift_degree without an explicit opt-in leads to silent OPF/DC inconsistencies.
+    """
+
+    strict_units: bool = True
+    allow_phase_shift: bool = False
+
+
 DEFAULT_LOGGING = LoggingConfig()
 DEFAULT_OPF = OPFConfig()
 DEFAULT_DC = DCConfig()
 DEFAULT_MC = MonteCarloConfig()
+DEFAULT_UNITS = UnitsConfig()
 
 DEFAULT_TABLE_COLUMNS: Tuple[str, ...] = (
     "flow0_mw",

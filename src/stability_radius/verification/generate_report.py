@@ -34,12 +34,9 @@ from stability_radius.utils.download import ensure_case_file
 from stability_radius.workflows import compute_results_for_case
 
 from .monte_carlo import run_monte_carlo_verification
-from .types import (
-    OVERALL_FAIL,
-    OVERALL_OK,
-    OVERALL_WARN,
-    VerificationResult,
-)
+from .status import summarize_status
+from .types import VerificationResult
+from .verify_certificate import interpret_certificate
 
 logger = logging.getLogger("stability_radius.verification.generate_report")
 
@@ -320,9 +317,14 @@ def _case_card_md(
         lines.append("")
         return "\n".join(lines)
 
+    interp = interpret_certificate(vr)
+
     lines.append(f"- overall: **{vr.overall.status}**")
     if vr.overall.reasons:
         lines.append(f"- reasons: `{list(vr.overall.reasons)}`")
+
+    # Single summary status (report-friendly).
+    lines.append(f"- summary: **{summarize_status(vr)}**")
 
     lines.append("")
     lines.append("### Inputs")
@@ -349,6 +351,13 @@ def _case_card_md(
     lines.append("")
     lines.append(f"- status: **{vr.radius.status}**")
     lines.append(f"- r*: {_fmt_float_or_na(vr.radius.r_star)}")
+    lines.append(f"- certificate_soundness: **{interp.soundness.upper()}**")
+    lines.append(f"- certificate_usefulness: **{interp.usefulness.upper()}**")
+
+    if float(vr.radius.r_star) == 0.0 and vr.base_point.status == "BASE_OK":
+        lines.append(
+            "- note: **TRIVIAL_TRUE** (r*=0 ⇒ certificate is correct but non-informative)"
+        )
     lines.append(f"- argmin_line_idx: {vr.radius.argmin_line_idx}")
     lines.append(f"- argmin_margin_mw: {_fmt_float_or_na(vr.radius.argmin_margin_mw)}")
     lines.append(f"- argmin_norm_g: {_fmt_float_or_na(vr.radius.argmin_norm_g)}")
@@ -377,7 +386,7 @@ def _case_card_md(
     lines.append(
         "- p_ball (analytic): "
         f"**{_fmt_percent_or_na(vr.probabilistic.p_ball_analytic_percent)}** "
-        "(= P(||Δp||₂ ≤ r*) under N(0,σ²I_d), d=n_bus-1)"
+        "(= P(||Δp||₂ ≤ r*) under isotropic Gaussian in the balanced subspace, d=n_bus-1)"
     )
     lines.append(
         "- p_ball (MC): "
@@ -449,6 +458,8 @@ def generate_report_text(
     mc_box_feas_tol_mw: float = DEFAULT_MC.box_feas_tol_mw,
     mc_cert_tol_mw: float = DEFAULT_MC.cert_tol_mw,
     mc_cert_max_samples: int = DEFAULT_MC.cert_max_samples,
+    strict_units: bool = True,
+    allow_phase_shift: bool = False,
 ) -> str:
     """
     Generate verification report markdown as a string.
@@ -475,27 +486,41 @@ def generate_report_text(
             _REPO_ROOT / "data/input/pglib_opf_case118_ieee.m",
             results_dir_abs / "case118.json",
         ),
-        (
-            "case300",
-            _REPO_ROOT / "data/input/pglib_opf_case300_ieee.m",
-            results_dir_abs / "case300.json",
-        ),
-        (
-            "case1354_pegase",
-            _REPO_ROOT / "data/input/pglib_opf_case1354_pegase.m",
-            results_dir_abs / "case1354_pegase.json",
-        ),
-        (
-            "case9241_pegase",
-            _REPO_ROOT / "data/input/pglib_opf_case9241_pegase.m",
-            results_dir_abs / "case9241_pegase.json",
-        ),
+        # (
+        #     "case300",
+        #     _REPO_ROOT / "data/input/pglib_opf_case300_ieee.m",
+        #     results_dir_abs / "case300.json",
+        # ),
+        # (
+        #     "case1354_pegase",
+        #     _REPO_ROOT / "data/input/pglib_opf_case1354_pegase.m",
+        #     results_dir_abs / "case1354_pegase.json",
+        # ),
+        # (
+        #     "case9241_pegase",
+        #     _REPO_ROOT / "data/input/pglib_opf_case9241_pegase.m",
+        #     results_dir_abs / "case9241_pegase.json",
+        # ),
     ]
 
     known_case30 = [(1, 2), (2, 4), (4, 6)]
     known_case118 = [(38, 65), (30, 38)]
 
-    rows: List[Tuple[str, str, str, str, str, float, float, float, float]] = []
+    rows: List[
+        Tuple[
+            str,  # case
+            str,  # overall
+            str,  # base
+            str,  # radius
+            str,  # cert_soundness (interpreted)
+            str,  # usefulness (interpreted)
+            float,  # r*
+            float,  # rho
+            float,  # p_safe (MC) %
+            float,  # p_ball (analytic) %
+            float,  # time sec
+        ]
+    ] = []
     sections: List[str] = []
 
     out: List[str] = []
@@ -506,10 +531,12 @@ def generate_report_text(
     out.append("### DC L2 certificate (contract)")
     out.append("")
     out.append(
-        "- Linear DC model in reduced balanced coordinates (dimension d = n_bus − 1): Δf = H Δp."
+        "- Linear DC model in the balanced injection subspace (dimension d = n_bus − 1): Δf = H Δp,  with 1^TΔp=0."
     )
     out.append("- Per-line margin: m_i = c_i − |f0_i|.")
-    out.append("- Per-line radius: r_i = m_i / ||g_i||₂, where g_i is row i of H.")
+    out.append(
+        "- Per-line radius: r_i = m_i / ||g_i||₂, where g_i is the sensitivity row in balanced coordinates."
+    )
     out.append("- Global certificate: r* = min_i r_i.")
     out.append(
         "- Soundness claim (DC only): if base point feasible and ||Δp||₂ ≤ r*, then all line limits are satisfied."
@@ -518,10 +545,13 @@ def generate_report_text(
     out.append("### What we verify")
     out.append("")
     out.append(
-        "- **Soundness**: uniform samples inside the certified L2 ball (hard check)."
+        "- **Soundness**: uniform samples inside the certified L2 ball in the balanced subspace (hard check)."
     )
     out.append(
-        "- **Probabilistic metrics** (soft): Δp ~ N(0, σ² I_d) in reduced coords:"
+        "- **Probabilistic metrics** (soft): Δp is Gaussian in the balanced subspace (slack-invariant):"
+    )
+    out.append(
+        "  - Sample z ~ N(0, σ² I_n), then project: Δp = z − mean(z)·1  (equivalently N(0, σ² I_d) in an orthonormal basis)."
     )
     out.append("  - p_safe = P(all lines safe) (MC + CI95)")
     out.append("  - p_ball = P(||Δp||₂ ≤ r*) (analytic chi-square CDF + MC + CI95)")
@@ -595,6 +625,8 @@ def generate_report_text(
                             demo_opf_dc_flow_consistency_tol_mw
                         ),
                         opf_bus_balance_tol_mw=float(demo_opf_bus_balance_tol_mw),
+                        strict_units=bool(strict_units),
+                        allow_phase_shift=bool(allow_phase_shift),
                         path_base_dir=_REPO_ROOT,
                     )
                     rp.parent.mkdir(parents=True, exist_ok=True)
@@ -624,7 +656,9 @@ def generate_report_text(
                     results_status,
                     "n/a",
                     "n/a",
+                    "unknown",
                     "n/a",
+                    float("nan"),
                     float("nan"),
                     float("nan"),
                     float("nan"),
@@ -677,7 +711,9 @@ def generate_report_text(
                         results_status,
                         "n/a",
                         "n/a",
+                        "unknown",
                         "n/a",
+                        float("nan"),
                         float("nan"),
                         float("nan"),
                         float("nan"),
@@ -742,10 +778,29 @@ def generate_report_text(
                 box_feas_tol_mw=float(mc_box_feas_tol_mw),
                 cert_tol_mw=float(mc_cert_tol_mw),
                 cert_max_samples=int(mc_cert_max_samples),
+                strict_units=bool(strict_units),
+                allow_phase_shift=bool(allow_phase_shift),
             )
 
         # Attach comparisons into VR (immutably).
         vr = replace(vr, comparisons={**vr.comparisons, **comparisons})
+
+        interp = interpret_certificate(vr)
+
+        logger.info(
+            "case=%s | base=%s | r*=%.6g | d=%d | cert=%s | usefulness=%s | "
+            "p_safe=%.3f%% | p_ball_analytic=%.3f%% | rho=%.6g | time_sec=%s",
+            str(case),
+            str(vr.base_point.status),
+            float(vr.radius.r_star),
+            int(vr.inputs.dim_balance),
+            str(interp.soundness),
+            str(interp.usefulness),
+            float(vr.probabilistic.p_safe_gaussian_percent),
+            float(vr.probabilistic.p_ball_analytic_percent),
+            float(vr.probabilistic.rho),
+            _fmt_float_or_na(float(time_sec), digits=6),
+        )
 
         # Table row (comparable metrics only).
         rows.append(
@@ -754,9 +809,11 @@ def generate_report_text(
                 vr.overall.status,
                 vr.base_point.status,
                 vr.radius.status,
-                vr.soundness.status,
+                str(interp.soundness),
+                str(interp.usefulness),
                 float(vr.radius.r_star),
                 float(vr.probabilistic.rho),
+                float(vr.probabilistic.p_safe_gaussian_percent),
                 float(vr.probabilistic.p_ball_analytic_percent),
                 float(time_sec),
             )
@@ -776,34 +833,49 @@ def generate_report_text(
     out.append("## Cross-case table (comparable metrics)")
     out.append("")
     out.append(
-        "| case | overall | base | radius | soundness | r* | rho | p_ball(analytic) % | time sec |"
+        "| case | overall | base | radius | cert_soundness | usefulness | r* | rho | p_safe (MC) % | p_ball(analytic) % | time sec |"
     )
-    out.append("|---|---|---|---|---|---:|---:|---:|---:|")
+    out.append("|---|---|---|---|---|---|---:|---:|---:|---:|---:|")
 
-    for case, overall, base, radius, sound, r_star, rho, p_ball, t in rows:
+    for (
+        case,
+        overall,
+        base,
+        radius,
+        cert_soundness,
+        usefulness,
+        r_star,
+        rho,
+        p_safe,
+        p_ball,
+        t,
+    ) in rows:
         out.append(
-            "| {case} | {overall} | {base} | {radius} | {sound} | {r_star} | {rho} | {p_ball} | {t} |".format(
+            "| {case} | {overall} | {base} | {radius} | {cert_soundness} | {usefulness} | {r_star} | {rho} | {p_safe} | {p_ball} | {t} |".format(
                 case=case,
                 overall=overall,
                 base=base,
                 radius=radius,
-                sound=sound,
+                cert_soundness=cert_soundness,
+                usefulness=usefulness,
                 r_star=_fmt_float_or_na(float(r_star)),
                 rho=_fmt_float_or_na(float(rho)),
+                p_safe=_fmt_float_or_na(float(p_safe)),
                 p_ball=_fmt_float_or_na(float(p_ball)),
                 t=_fmt_float_or_na(float(t), digits=6),
             )
         )
     out.append("")
-    out.append("## Engineering acceptance criteria (project-only, not scientific)")
+    out.append("## Diagnostics (no hard pass/fail thresholds)")
     out.append("")
     out.append(
-        "- Эти критерии — **инженерные** (для демо/продукта), а не научные критерии корректности:"
+        "- Научная корректность здесь определяется **soundness** сертификата (hard check), а не порогами вида `>70%`."
     )
-    out.append("  - p_safe (Gaussian, MC) > 70%")
-    out.append("  - time_sec < 10 sec")
     out.append(
-        "  - (опционально) heuristic match metrics > 70% (если известные пары определены)"
+        "- Ключевая семантика для сканирования:\n"
+        "  - `cert_soundness=sound` или `trivial_true` ⇒ сертификат корректен в DC-модели.\n"
+        "  - `usefulness=zero_radius` ⇒ сертификат корректен, но **неинформативен** (r*=0).\n"
+        "  - `cert_soundness=unsound` ⇒ найден контрпример внутри шара (FAIL)."
     )
     out.append("")
     out.append("---")

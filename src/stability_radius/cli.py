@@ -53,6 +53,7 @@ from stability_radius.config import (
     DEFAULT_NMINUS1_ISLANDING,
     DEFAULT_OPF,
     DEFAULT_TABLE_COLUMNS,
+    DEFAULT_UNITS,
     HAVE_OMEGACONF,
     HiGHSConfig,
     LoggingConfig,
@@ -260,6 +261,32 @@ def build_parser(cfg: Any) -> argparse.ArgumentParser:
         type=int,
         default=int(_cfg_get(cfg, "run_tests", 1)),
         help="1: run pytest suite before executing any command, 0: skip.",
+    )
+
+    # Unit/physics validation policy
+    parser.add_argument(
+        "--strict-units",
+        type=int,
+        default=int(
+            _cfg_get(cfg, "units.strict_units", int(DEFAULT_UNITS.strict_units))
+        ),
+        help=(
+            "1: strict unit validation (vn_kv>0, x_ohm>0, sn_mva>0; no silent 0.0 fallbacks). "
+            "0: legacy permissive behavior (may skip invalid branches)."
+        ),
+    )
+    parser.add_argument(
+        "--allow-phase-shift",
+        type=int,
+        default=int(
+            _cfg_get(
+                cfg, "units.allow_phase_shift", int(DEFAULT_UNITS.allow_phase_shift)
+            )
+        ),
+        help=(
+            "1: allow transformers with non-zero shift_degree (phase shift is ignored by the project's DC model). "
+            "0: raise on shift_degree != 0 (recommended)."
+        ),
     )
 
     # OPF settings (constants previously hard-coded in DEFAULT_OPF)
@@ -697,6 +724,14 @@ def run_demo(
         "config_path": str(cfg_path),
         "command": "demo",
         "run_tests": int(getattr(args, "run_tests", 0)),
+        "units": {
+            "strict_units": int(
+                getattr(args, "strict_units", int(DEFAULT_UNITS.strict_units))
+            ),
+            "allow_phase_shift": int(
+                getattr(args, "allow_phase_shift", int(DEFAULT_UNITS.allow_phase_shift))
+            ),
+        },
         "logging": {
             "runs_dir": str(args.runs_dir),
             "run_dir_mode": str(args.run_dir_mode),
@@ -758,6 +793,8 @@ def run_demo(
         opf_cfg=opf_cfg,
         opf_dc_flow_consistency_tol_mw=float(args.opf_dc_flow_consistency_tol_mw),
         opf_bus_balance_tol_mw=float(args.opf_bus_balance_tol_mw),
+        strict_units=bool(int(args.strict_units)),
+        allow_phase_shift=bool(int(args.allow_phase_shift)),
         path_base_dir=Path.cwd(),
     )
 
@@ -831,6 +868,14 @@ def run_monte_carlo(
         "config_path": str(cfg_path),
         "command": "monte-carlo",
         "run_tests": int(getattr(args, "run_tests", 0)),
+        "units": {
+            "strict_units": int(
+                getattr(args, "strict_units", int(DEFAULT_UNITS.strict_units))
+            ),
+            "allow_phase_shift": int(
+                getattr(args, "allow_phase_shift", int(DEFAULT_UNITS.allow_phase_shift))
+            ),
+        },
         "logging": {
             "runs_dir": str(args.runs_dir),
             "run_dir_mode": str(args.run_dir_mode),
@@ -875,6 +920,8 @@ def run_monte_carlo(
             box_feas_tol_mw=float(args.box_feas_tol_mw),
             cert_tol_mw=float(args.cert_tol_mw),
             cert_max_samples=int(args.cert_max_samples),
+            strict_units=bool(int(args.strict_units)),
+            allow_phase_shift=bool(int(args.allow_phase_shift)),
         )
 
     stats_dict = vr.to_dict()
@@ -906,6 +953,14 @@ def run_report(
         "config_path": str(cfg_path),
         "command": "report",
         "run_tests": int(getattr(args, "run_tests", 0)),
+        "units": {
+            "strict_units": int(
+                getattr(args, "strict_units", int(DEFAULT_UNITS.strict_units))
+            ),
+            "allow_phase_shift": int(
+                getattr(args, "allow_phase_shift", int(DEFAULT_UNITS.allow_phase_shift))
+            ),
+        },
         "logging": {
             "runs_dir": str(args.runs_dir),
             "run_dir_mode": str(args.run_dir_mode),
@@ -994,6 +1049,8 @@ def run_report(
             mc_box_feas_tol_mw=float(args.box_feas_tol_mw),
             mc_cert_tol_mw=float(args.cert_tol_mw),
             mc_cert_max_samples=int(args.cert_max_samples),
+            strict_units=bool(int(args.strict_units)),
+            allow_phase_shift=bool(int(args.allow_phase_shift)),
         )
 
     with log_stage(logger, "Write Report"):

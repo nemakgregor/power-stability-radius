@@ -56,7 +56,7 @@ def test_build_dc_matrices_shape_and_slack_column():
     assert np.allclose(H[:, slack_pos], 0.0)
 
 
-def test_build_dc_operator_accepts_negative_reactance():
+def test_build_dc_operator_accepts_negative_reactance_when_strict_units_is_disabled():
     pytest.importorskip("scipy")
 
     from stability_radius.dc.dc_model import build_dc_operator
@@ -74,17 +74,20 @@ def test_build_dc_operator_accepts_negative_reactance():
         to_bus=b1,
         length_km=1.0,
         r_ohm_per_km=0.01,
-        x_ohm_per_km=-0.10,  # negative reactance should not be forced to b=0
+        x_ohm_per_km=-0.10,  # negative reactance (non-standard) allowed only in permissive mode
         c_nf_per_km=0.0,
         max_i_ka=1.0,
         max_loading_percent=100.0,
     )
 
-    op = build_dc_operator(net, slack_bus=b0)
+    op = build_dc_operator(net, slack_bus=b0, strict_units=False)
     assert op.n_bus == 2
     assert op.n_line == 1
     assert np.isfinite(op.b[0])
     assert op.b[0] < 0.0
+
+    with pytest.raises(ValueError, match=r"x_total_ohm.*>0|reactance"):
+        build_dc_operator(net, slack_bus=b0, strict_units=True)
 
 
 def test_build_dc_operator_uses_trafo_in_b_matrix_to_avoid_singularity():
@@ -143,5 +146,70 @@ def test_build_dc_operator_uses_trafo_in_b_matrix_to_avoid_singularity():
     )
 
     op = build_dc_operator(net, slack_bus=b_hv)
+    assert op.n_bus == 3
+    assert op.n_line == 1
+
+
+def test_build_dc_operator_rejects_phase_shifting_transformers_by_default():
+    """
+    Contract: phase shifts (shift_degree != 0) are not modeled by the project's DC operator.
+
+    Default behavior:
+    - allow_phase_shift=False => raise
+    - allow_phase_shift=True => allowed with a warning
+    """
+    pytest.importorskip("scipy")
+
+    from stability_radius.dc.dc_model import build_dc_operator
+
+    net = pp.create_empty_network(sn_mva=100.0)
+
+    b_hv = pp.create_bus(net, vn_kv=110.0)
+    b_lv = pp.create_bus(net, vn_kv=10.0)
+    b2 = pp.create_bus(net, vn_kv=10.0)
+
+    pp.create_ext_grid(net, b_hv, vm_pu=1.0)
+    pp.create_load(net, b2, p_mw=5.0, q_mvar=0.0)
+
+    pp.create_transformer_from_parameters(
+        net,
+        hv_bus=b_hv,
+        lv_bus=b_lv,
+        sn_mva=40.0,
+        vn_hv_kv=110.0,
+        vn_lv_kv=10.0,
+        vk_percent=10.0,
+        vkr_percent=0.5,
+        pfe_kw=0.0,
+        i0_percent=0.0,
+        shift_degree=5.0,  # phase shifter (unsupported by DC model)
+        tap_side="hv",
+        tap_neutral=0,
+        tap_min=0,
+        tap_max=0,
+        tap_step_percent=1.0,
+        tap_pos=0,
+    )
+
+    pp.create_line_from_parameters(
+        net,
+        from_bus=b_lv,
+        to_bus=b2,
+        length_km=1.0,
+        r_ohm_per_km=0.01,
+        x_ohm_per_km=0.10,
+        c_nf_per_km=0.0,
+        max_i_ka=1.0,
+        max_loading_percent=100.0,
+    )
+
+    with pytest.raises(ValueError, match=r"shift_degree"):
+        build_dc_operator(
+            net, slack_bus=b_hv, strict_units=True, allow_phase_shift=False
+        )
+
+    op = build_dc_operator(
+        net, slack_bus=b_hv, strict_units=True, allow_phase_shift=True
+    )
     assert op.n_bus == 3
     assert op.n_line == 1

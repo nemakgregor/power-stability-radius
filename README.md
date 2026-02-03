@@ -1,15 +1,19 @@
 # power-stability-radius
 
-Compute simple “stability radius” (robustness margins) for power grids using a DC sensitivity (PTDF-like) model and per-line radii:
+Compute simple per-line “stability radius” (robustness margins) for power grids using a DC sensitivity (PTDF-like) model:
+
 - `radius_l2` (L2 ball)
-- `radius_metric` (weighted/metric)
+- `radius_metric` (weighted/metric; in the default workflow equals `radius_l2`)
 - `radius_sigma` + overload probability (Gaussian injections)
-- `radius_nminus1` (effective N-1 via LODF)
+- `radius_nminus1` (effective N-1 via LODF; requires materializing `H_full`)
 
 All workflows are launched via a **single entrypoint**:
 `src/power_stability_radius.py`
 
-The main demo writes results into `runs/<timestamp>/`.
+Defaults are stored in an **OmegaConf/Hydra-style YAML config**:
+`conf/config.yaml`
+
+CLI flags override config values (config → defaults, CLI → override).
 
 ---
 
@@ -21,9 +25,65 @@ poetry install
 
 ---
 
-## Quickstart (single case)
+## Configuration (OmegaConf/Hydra-style + minimal inheritance)
 
-### Option A (default): PF-based base point
+Default config file: `conf/config.yaml`
+
+### Using experiment configs (extends main config)
+
+In addition to plain YAML configs, the CLI supports a small deterministic inheritance mechanism:
+
+- `extends: ../config.yaml` at the top level of a YAML file.
+- The base config is loaded first, then the experiment file overrides it.
+- `extends` paths are resolved relative to the experiment file location.
+
+Examples are provided under `conf/experiments/`.
+
+Example (run case118 with its experiment config):
+
+```bash
+poetry run python src/power_stability_radius.py --config conf/experiments/case118.yaml demo
+```
+
+### Optional: default command in config (omit subcommand)
+
+You can specify a default subcommand at the top level of a config:
+
+```yaml
+command: report   # or demo / monte-carlo / table
+```
+
+Then you can run without typing the subcommand explicitly:
+
+```bash
+poetry run python src/power_stability_radius.py --config conf/experiments/report.yaml
+```
+
+The explicit form still works and overrides config:
+
+```bash
+poetry run python src/power_stability_radius.py --config conf/experiments/report.yaml report
+```
+
+---
+
+## Outputs (runs directory)
+
+Each command creates a run folder under `runs/` and writes:
+
+- `run.log` — full log
+- `config.yaml` — effective config used for the run (after CLI overrides)
+- `config_source.yaml` — the original config file used (copied)
+- `argv.txt` — the exact CLI argv for reproducibility
+
+Output folder behavior is configurable:
+
+- `logging.run_dir_mode: timestamp` → `runs/<timestamp>/` (default)
+- `logging.run_dir_mode: overwrite` → `runs/<run_name>/` (folder is deleted/recreated)
+
+---
+
+## Quickstart (single case)
 
 ```bash
 poetry run python src/power_stability_radius.py demo --input data/input/pglib_opf_case30_ieee.m
@@ -32,116 +92,36 @@ poetry run python src/power_stability_radius.py demo --input data/input/pglib_op
 What it does:
 1) Ensures an input MATPOWER/PGLib `.m` case file exists (downloads if needed)
 2) Loads the case into pandapower
-3) Runs AC/DC PF once and extracts base flows / estimated limits
-4) Builds DC sensitivity matrix `H_full`
-5) Computes all radii per line
-6) Writes outputs under `runs/<timestamp>/`
-
-### Option B: OPF-based base point (recommended for PGLib-OPF verification)
-
-PGLib-OPF “as-loaded” cases are OPF benchmarks; the base dispatch stored in the case file
-is often **not feasible** w.r.t. thermal limits. In that regime Monte Carlo coverage can be `n/a`.
-
-To use an **OPF solution as the base point**, solve a single-snapshot DC OPF with **PyPSA**:
-
-```bash
-poetry run python src/power_stability_radius.py demo \
-  --input data/input/pglib_opf_case30_ieee.m \
-  --dispatch-mode opf_pypsa \
-  --opf-solver highs
-```
-
-Requirements:
-- `pypsa` installed
-- a linear solver supported by your PyPSA version (e.g. HiGHS via `highspy`)
+3) Solves a single-snapshot **DC OPF via PyPSA + HiGHS** to get a feasible base point
+4) Builds a DC sensitivity model (`DCOperator` or dense `H_full`)
+5) Computes radii per monitored line
+6) Writes outputs under the run folder
 
 ---
 
-## Outputs in `runs/<timestamp>/`
-
-- `results.json` — all per-line fields + `__meta__`
-- `results_table.csv` — CSV export (same columns/order as the internal table)
-- `run.log` — file log (**all project log levels**; third-party logs are filtered).  
-  The large ASCII results table is written **only to run.log** (never printed to console, never saved as `.txt`).
-
----
-
-## Demo CLI options
+## Demo options
 
 ```bash
 poetry run python src/power_stability_radius.py demo --help
 ```
 
-Common options:
+Key options:
+- `--dc-mode operator|materialize`
+  - `operator` (default): fast, does not materialize `H_full`, no N-1
+  - `materialize`: builds dense `H_full` (memory heavy), enables N-1
 
-### Input / outputs
-- `--input` — path to case file  
-- `--export-results` — additionally copy `results.json` to a fixed path (useful for verification)
-  ```bash
-  poetry run python src/power_stability_radius.py demo \
-    --input data/input/pglib_opf_case30_ieee.m \
-    --export-results verification/results/case30.json
-  ```
-
-### Base point (PF vs OPF)
-- `--dispatch-mode` — `pf` (default) or `opf_pypsa`
-- `--opf-solver` — solver name for PyPSA (e.g. `highs`)
-
-### Power flow / model
-- `--slack-bus` — slack bus id/position (consistent with `build_dc_matrices`)
-- `--margin-factor` — multiplies estimated line limits (e.g. 0.9 more conservative)
-
-### Probabilistic
-- `--inj-std-mw` — per-bus stddev for diagonal Sigma (MW)
-
-### N-1
-- `--nminus1-update-sensitivities` — 1/0
-- `--nminus1-islanding` — `skip` or `raise`
-
-### Table export/logging
-- `--table-columns a,b,c` — comma-separated list of table columns (default: full set)
-- `--max-rows N` — limit rows in the logged/saved table
-- `--save-csv 1/0`
-
-### Logging
-- `--log-level` — console log level
-- `--log-file-level` — file log level (keep DEBUG to include the full table)
+- `--compute-nminus1 1` (requires `--dc-mode materialize`)
+- `--margin-factor` (e.g. `0.9` more conservative)
+- `--inj-std-mw` for probabilistic radii
 
 ---
 
-## Printing/exporting a table from an existing `results.json`
+## Monte Carlo verification (single case)
 
-```bash
-poetry run python src/power_stability_radius.py table runs/<timestamp>/results.json
-```
+You can provide required paths either via CLI flags or via config keys
+(`monte_carlo.results`, `monte_carlo.input`).
 
-Options:
-- `--max-rows N`
-- `--radius-field radius_l2|radius_metric|radius_sigma|radius_nminus1`
-- `--columns a,b,c` (comma-separated)
-- `--table-out path/to/table.txt`
-- `--csv-out path/to/table.csv`
-
----
-
-## Verification workflow (multiple cases + report)
-
-### 1) Generate per-case results files
-
-Example (case30 + case118):
-```bash
-poetry run python src/power_stability_radius.py demo \
-  --input data/input/pglib_opf_case30_ieee.m \
-  --dispatch-mode opf_pypsa --opf-solver highs \
-  --export-results verification/results/case30.json
-
-poetry run python src/power_stability_radius.py demo \
-  --input data/input/pglib_opf_case118_ieee.m \
-  --dispatch-mode opf_pypsa --opf-solver highs \
-  --export-results verification/results/case118.json
-```
-
-### 2) Monte Carlo coverage for a single case
+Example via CLI flags:
 
 ```bash
 poetry run python src/power_stability_radius.py monte-carlo \
@@ -153,9 +133,17 @@ poetry run python src/power_stability_radius.py monte-carlo \
   --chunk-size 256
 ```
 
-### 3) Generate the aggregated verification report
+Example via experiment config:
 
-By default, report auto-generation uses **OPF base point** (PyPSA):
+```bash
+poetry run python src/power_stability_radius.py --config conf/experiments/case30.yaml monte-carlo
+```
+
+The command prints JSON to stdout and also saves `monte_carlo_stats.json` into the run folder.
+
+---
+
+## Verification report (multiple cases)
 
 ```bash
 poetry run python src/power_stability_radius.py report \
@@ -163,12 +151,26 @@ poetry run python src/power_stability_radius.py report \
   --out verification/report.md
 ```
 
-You can force PF-based generation (legacy behavior) by:
+Or using the provided experiment config (subcommand can be omitted because it has `command: report`):
+
 ```bash
-poetry run python src/power_stability_radius.py report \
-  --demo-dispatch-mode pf \
-  --results-dir verification/results \
-  --out verification/report.md
+poetry run python src/power_stability_radius.py --config conf/experiments/report.yaml
 ```
 
-A copy is also written into `runs/<timestamp>/verification_report.md` together with `run.log`.
+Also writes a copy to `<run_dir>/verification_report.md`.
+
+---
+
+## Print/export a table from an existing results.json
+
+```bash
+poetry run python src/power_stability_radius.py table runs/<timestamp>/results.json
+```
+
+Options:
+- `--max-rows N`
+- `--radius-field radius_l2|radius_metric|radius_sigma|radius_nminus1`
+- `--columns a,b,c` (comma-separated)
+- `--table-out path/to/table.txt`
+- `--csv-out path/to/table.csv`
+```

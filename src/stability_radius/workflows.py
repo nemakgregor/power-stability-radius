@@ -16,7 +16,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 import numpy as np
 
@@ -31,7 +31,6 @@ from stability_radius.radii.common import (
 from stability_radius.radii.l2 import compute_l2_radius
 from stability_radius.radii.nminus1 import compute_nminus1_l2_radius
 from stability_radius.radii.probabilistic import (
-    compute_sigma_radius,
     overload_probability_symmetric_limit,
     sigma_radius,
 )
@@ -148,6 +147,98 @@ def _merge_line_results(*dicts: dict[str, dict[str, Any]]) -> dict[str, dict[str
     return merged
 
 
+def _compute_projected_norms_from_operator(*, dc_op, chunk_size: int) -> np.ndarray:
+    """
+    Compute per-line sensitivity norms for the balanced subspace sum(Δp)=0.
+
+    Norm definition
+    ---------------
+    For a row g in full bus coordinates (defined up to adding a constant 1-vector),
+    the correct dual norm on the balanced subspace (with full Euclidean norm) is:
+
+        ||Proj(g)||_2 = ||g - mean(g)*1||_2
+
+    Using the identity:
+        ||Proj(g)||^2 = ||g||^2 - (sum(g))^2 / n_bus
+
+    Implementation notes
+    --------------------
+    - DCOperator provides g values for non-slack buses only, with slack component == 0.
+      This is a valid representative of the equivalence class modulo constants.
+    - We therefore compute:
+        ||Proj(g)||^2 = sum(g_red^2) - (sum(g_red))^2 / n_bus
+    """
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive.")
+
+    m = int(dc_op.n_line)
+    n_bus = int(dc_op.n_bus)
+    norms = np.zeros(m, dtype=float)
+
+    start = 0
+    while start < m:
+        end = min(m, start + int(chunk_size))
+        block = np.arange(start, end, dtype=int)
+
+        # Y: (n_bus-1, k), column j is g_red^T for the corresponding line.
+        Y = dc_op.row_sensitivities_transposed(block)
+
+        t = np.sum(Y * Y, axis=0)  # ||g||^2 (slack component is 0)
+        s = np.sum(Y, axis=0)  # sum(g) (slack component is 0)
+
+        # Projected norm^2 = ||g||^2 - sum(g)^2 / n_bus
+        proj2 = t - (s * s) / float(n_bus)
+        norms[start:end] = np.sqrt(np.maximum(proj2, 0.0))
+
+        start = end
+
+    return norms
+
+
+def _compute_sigma_from_l2_results(
+    *, l2_results: dict[str, dict[str, Any]], inj_std_mw: float
+) -> dict[str, dict[str, Any]]:
+    """
+    Compute sigma-radii and overload probabilities using the L2 row norms.
+
+    Assumes the probabilistic model used throughout the project:
+    - Δp is Gaussian in the balanced subspace sum(Δp)=0
+    - isotropic with parameter sigma_mw in an orthonormal basis (d = n_bus - 1)
+
+    Then for each line:
+        sigma_flow = sigma_mw * ||Proj(g)||_2
+        radius_sigma = margin / sigma_flow
+    """
+    sigma: dict[str, dict[str, Any]] = {}
+
+    s = float(inj_std_mw)
+    if not np.isfinite(s) or s <= 0.0:
+        raise ValueError("inj_std_mw must be finite and positive.")
+
+    for k, row in l2_results.items():
+        if not isinstance(row, dict):
+            continue
+
+        margin = float(row.get("margin_mw", float("nan")))
+        norm_g = float(row.get("norm_g", float("nan")))
+        flow0 = float(row.get("flow0_mw", float("nan")))
+        limit = float(row.get("p_limit_mw_est", float("nan")))
+
+        sigma_flow = s * norm_g
+        r_sigma = sigma_radius(margin, sigma_flow)
+        prob = overload_probability_symmetric_limit(
+            flow0=flow0, limit=limit, sigma=sigma_flow
+        )
+
+        sigma[k] = {
+            "sigma_flow": float(sigma_flow),
+            "radius_sigma": float(r_sigma),
+            "overload_probability": float(prob),
+        }
+
+    return sigma
+
+
 def _compute_radii_operator_path(
     *,
     dc_op,
@@ -158,11 +249,17 @@ def _compute_radii_operator_path(
     """
     Compute L2/metric/sigma radii without materializing H_full (operator path).
 
+    Disturbance model (project-wide)
+    --------------------------------
+    - Δp is constrained to the balanced subspace: sum(Δp)=0.
+    - Disturbance size is measured in the full-bus Euclidean norm ||Δp||_2.
+    - Sensitivity norms use the projected norm ||Proj(g)||_2, which is slack-invariant.
+
     Notes
     -----
-    - Uses ||g_l||_2 from LU solves (chunked).
+    - Uses LU solves via DCOperator to obtain g rows (chunked).
     - Default workflow uses M=I => radius_metric == radius_l2.
-    - For Sigma = inj_std^2 I: sigma_flow = inj_std * ||g_l||_2.
+    - Gaussian model in balanced subspace: sigma_flow = inj_std * ||Proj(g)||_2.
     """
     if dc_chunk_size <= 0:
         raise ValueError("dc_chunk_size must be positive.")
@@ -174,7 +271,9 @@ def _compute_radii_operator_path(
             "This indicates an internal consistency bug."
         )
 
-    norms = dc_op.row_norms_l2(chunk_size=int(dc_chunk_size))
+    norms = _compute_projected_norms_from_operator(
+        dc_op=dc_op, chunk_size=int(dc_chunk_size)
+    )
     if norms.shape != (len(base.line_indices),):
         raise ValueError("Unexpected norms shape from DC operator.")
 
@@ -188,7 +287,7 @@ def _compute_radii_operator_path(
         sigma_flow = float(inj_std_mw) * norm_g
         r_sigma = sigma_radius(margin, sigma_flow)
 
-        c = float(base.limit_mw_est[pos])
+        c = float(base.limit_mva_assumed_mw[pos])
         f0 = float(base.flow0_mw[pos])
         prob = overload_probability_symmetric_limit(flow0=f0, limit=c, sigma=sigma_flow)
 
@@ -196,7 +295,7 @@ def _compute_radii_operator_path(
         out[k] = {
             "flow0_mw": float(base.flow0_mw[pos]),
             "p0_mw": float(base.p0_abs_mw[pos]),
-            "p_limit_mw_est": float(base.limit_mw_est[pos]),
+            "p_limit_mw_est": float(base.limit_mva_assumed_mw[pos]),
             "margin_mw": margin,
             "norm_g": norm_g,
             "radius_l2": r_l2,
@@ -405,6 +504,8 @@ def compute_results_for_case(
     opf_cfg: OPFConfig | None = None,
     opf_dc_flow_consistency_tol_mw: float = _DEFAULT_OPF_DC_FLOW_CONSISTENCY_TOL_MW,
     opf_bus_balance_tol_mw: float = _DEFAULT_OPF_BUS_BALANCE_TOL_MW,
+    strict_units: bool = True,
+    allow_phase_shift: bool = False,
     path_base_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """
@@ -419,6 +520,22 @@ def compute_results_for_case(
     --------------
     - dc_mode="materialize": materialize H_full and compute all radii (including N-1 if requested)
     - dc_mode="operator": compute L2/metric/sigma radii via operator norms (no N-1)
+
+    Disturbance / norm convention (important)
+    -----------------------------------------
+    The L2 certificate is defined on **balanced** injections:
+        sum(Δp) = 0
+    with the full-bus Euclidean norm ||Δp||_2. Sensitivity norms therefore use the
+    projected norm ||g - mean(g)*1||_2 (slack-invariant).
+
+    Units
+    -----
+    See UNITS_CONTRACT.md in the repository root.
+
+    Unit validation
+    ---------------
+    - strict_units=True: fail fast on vn_kv<=0, x_ohm<=0, sn_mva<=0 (no silent 0.0 fallbacks)
+    - allow_phase_shift=False: reject any transformer with shift_degree != 0 (recommended)
 
     Correctness checks
     ------------------
@@ -466,7 +583,11 @@ def compute_results_for_case(
         f"{case_tag}: Solve DC OPF (PyPSA, solver={cfg.highs.solver_name})",
     ):
         base = get_line_base_quantities(
-            net, margin_factor=float(margin_factor), opf_cfg=cfg
+            net,
+            margin_factor=float(margin_factor),
+            opf_cfg=cfg,
+            strict_units=bool(strict_units),
+            allow_phase_shift=bool(allow_phase_shift),
         )
 
     H_full = None
@@ -477,6 +598,8 @@ def compute_results_for_case(
             H_full, dc_op = build_dc_matrices(
                 net,
                 slack_bus=int(slack_bus),
+                strict_units=bool(strict_units),
+                allow_phase_shift=bool(allow_phase_shift),
                 chunk_size=int(dc_chunk_size),
                 dtype=dc_dtype,
             )
@@ -489,7 +612,12 @@ def compute_results_for_case(
                 H_full.dtype,
             )
         else:
-            dc_op = build_dc_operator(net, slack_bus=int(slack_bus))
+            dc_op = build_dc_operator(
+                net,
+                slack_bus=int(slack_bus),
+                strict_units=bool(strict_units),
+                allow_phase_shift=bool(allow_phase_shift),
+            )
             n_bus = int(dc_op.n_bus)
             m_line = int(dc_op.n_line)
             logger.debug("Built DC operator: n_bus=%d, n_line=%d", n_bus, m_line)
@@ -522,9 +650,8 @@ def compute_results_for_case(
                 for k, v in l2.items()
             }
 
-            Sigma_diag = (float(inj_std_mw) ** 2) * np.ones(n_bus, dtype=float)
-            sigma = compute_sigma_radius(
-                net, H_full, Sigma_diag, margin_factor=float(margin_factor), base=base
+            sigma = _compute_sigma_from_l2_results(
+                l2_results=l2, inj_std_mw=float(inj_std_mw)
             )
 
             if bool(compute_nminus1):
@@ -587,6 +714,8 @@ def compute_results_for_case(
             "dc_chunk_size": int(dc_chunk_size),
             "margin_factor": float(margin_factor),
             "inj_std_mw": float(inj_std_mw),
+            "strict_units": bool(strict_units),
+            "allow_phase_shift": bool(allow_phase_shift),
             "compute_time_sec": elapsed_sec,
             "n_bus": int(n_bus),
             "n_line": int(m_line),

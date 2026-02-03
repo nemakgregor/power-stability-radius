@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from typing import Any, Tuple
 
@@ -20,6 +21,16 @@ except ImportError:
 
 _X_TOTAL_EPS = 1e-12
 _TAP_RATIO_EPS = 1e-12
+_SHIFT_DEG_EPS = 1e-9
+
+
+def _pp_row_id(row: Any) -> str:
+    """Best-effort row id for diagnostics (works for pandas Series/DataFrame rows)."""
+    try:
+        name = getattr(row, "name", None)
+        return str(name) if name is not None else "unknown"
+    except Exception:  # noqa: BLE001
+        return "unknown"
 
 
 @dataclass(frozen=True)
@@ -43,8 +54,18 @@ class DCOperator:
 
     In this repository, we follow a MATPOWER-style DC approximation for 2-winding transformers:
       - tap ratio is applied as a scaling of branch susceptance: b_eff = b / tap
-      - phase shift is currently ignored in the operator (sensitivities are still correct for Δp,
-        but absolute base-flow reconstruction with phase shifters would require extra constants).
+      - phase shift (shift_degree) is NOT modeled by this operator. If you have phase shifters,
+        you must either:
+          * reject them (default, recommended), or
+          * explicitly allow and accept that shift is ignored (allow_phase_shift=True).
+
+    Units
+    -----
+    - vn_kv: kV
+    - x/r: Ohm
+    - theta: rad
+    - p / f: MW
+    - b: MW/rad (computed as V_kV^2 / X_ohm)
     """
 
     bus_ids: tuple[int, ...]
@@ -263,43 +284,81 @@ def _bus_vn_kv(net: Any, bus_id: int) -> float:
     return float("nan")
 
 
-def _line_x_total_ohm(line_row: Any) -> float:
-    """Compute total series reactance of a pandapower line in Ohm."""
+def _line_x_total_ohm(line_row: Any, *, strict_units: bool) -> float:
+    """
+    Compute total series reactance of a pandapower line in Ohm.
+
+    strict_units behavior
+    ---------------------
+    - If strict_units=True: raises ValueError on non-finite, near-zero, or non-positive x_ohm.
+    - If strict_units=False: returns 0.0 for non-finite/near-zero x_ohm (legacy behavior),
+      and allows negative x_ohm.
+    """
     x_ohm_per_km = float(line_row.get("x_ohm_per_km", 0.0))
     length_km = float(line_row.get("length_km", 0.0))
     parallel = float(line_row.get("parallel", 1.0))
     if not np.isfinite(parallel) or parallel <= 0:
+        if strict_units:
+            raise ValueError(
+                f"Line {_pp_row_id(line_row)}: parallel must be finite and >0; got {parallel!r}"
+            )
         parallel = 1.0
 
     x_total = x_ohm_per_km * length_km / parallel
-    if not np.isfinite(x_total) or abs(x_total) <= _X_TOTAL_EPS:
+    if (not np.isfinite(x_total)) or abs(float(x_total)) <= _X_TOTAL_EPS:
+        if strict_units:
+            raise ValueError(
+                f"Line {_pp_row_id(line_row)}: x_total_ohm must be finite and non-zero; got {x_total!r} "
+                f"(x_ohm_per_km={x_ohm_per_km!r}, length_km={length_km!r}, parallel={parallel!r})"
+            )
         return 0.0
+
+    if strict_units and float(x_total) <= 0.0:
+        raise ValueError(
+            f"Line {_pp_row_id(line_row)}: x_total_ohm must be >0 (strict_units); got {x_total!r}"
+        )
+
     return float(x_total)
 
 
-def _line_b_mw_from_row(net: Any, line_row: Any) -> float:
+def _line_b_mw_from_row(net: Any, line_row: Any, *, strict_units: bool) -> float:
     """
     Compute DC branch coefficient b for a pandapower line in MW/rad.
 
     b ≈ V_kV^2 / X_ohm
 
-    Notes
-    -----
-    This matches the lossless DC approximation used in the OPF construction, under the
-    assumption that net.line connects buses on the same voltage level.
+    strict_units behavior
+    ---------------------
+    - vn_kv must be finite and >0
+    - x_ohm must be finite and >0
     """
     fb = int(line_row.get("from_bus", -1))
     vn_kv = _bus_vn_kv(net, fb)
-    x_ohm = _line_x_total_ohm(line_row)
-    if not np.isfinite(vn_kv) or vn_kv <= 0:
+    if not np.isfinite(vn_kv) or float(vn_kv) <= 0.0:
+        if strict_units:
+            raise ValueError(
+                f"Line {_pp_row_id(line_row)}: from_bus={fb} has invalid vn_kv={vn_kv!r} (must be >0)."
+            )
         return 0.0
-    if not np.isfinite(x_ohm) or abs(x_ohm) <= _X_TOTAL_EPS:
+
+    x_ohm = _line_x_total_ohm(line_row, strict_units=bool(strict_units))
+    if not np.isfinite(x_ohm) or abs(float(x_ohm)) <= _X_TOTAL_EPS:
+        if strict_units:
+            raise ValueError(
+                f"Line {_pp_row_id(line_row)}: invalid x_total_ohm={x_ohm!r}."
+            )
         return 0.0
+
+    if strict_units and float(x_ohm) <= 0.0:
+        # Should already be caught in _line_x_total_ohm, keep defensive.
+        raise ValueError(
+            f"Line {_pp_row_id(line_row)}: x_total_ohm must be >0 (strict_units); got {x_ohm!r}"
+        )
 
     return float((vn_kv * vn_kv) / x_ohm)
 
 
-def trafo_x_total_ohm(net: Any, trafo_row: Any) -> float:
+def trafo_x_total_ohm(net: Any, trafo_row: Any, *, strict_units: bool = False) -> float:
     """
     Approximate transformer series reactance in Ohms from pandapower trafo parameters.
 
@@ -309,34 +368,62 @@ def trafo_x_total_ohm(net: Any, trafo_row: Any) -> float:
       x_pu = sqrt(max(z_pu^2 - r_pu^2, 0))
       Z_base = (V_kV^2) / S_MVA   [Ohm]
       x_ohm = x_pu * Z_base
+
+    strict_units behavior
+    ---------------------
+    - sn_mva must be finite and >0
+    - vn_hv_kv must be finite and >0 (either trafo field or hv bus)
+    - x_ohm must be finite and >0
     """
-    if not np.isfinite(float(trafo_row.get("vk_percent", np.nan))):
-        return 0.0
-    if not np.isfinite(float(trafo_row.get("sn_mva", np.nan))):
+    vk_percent = float(trafo_row.get("vk_percent", np.nan))
+    if not np.isfinite(vk_percent):
+        if strict_units:
+            raise ValueError(
+                f"Trafo {_pp_row_id(trafo_row)}: missing/invalid vk_percent={vk_percent!r}"
+            )
         return 0.0
 
-    z_pu = float(trafo_row["vk_percent"]) / 100.0
+    sn_mva = float(trafo_row.get("sn_mva", np.nan))
+    if not np.isfinite(sn_mva) or float(sn_mva) <= 0.0:
+        if strict_units:
+            raise ValueError(
+                f"Trafo {_pp_row_id(trafo_row)}: sn_mva must be finite and >0; got {sn_mva!r}"
+            )
+        return 0.0
+
+    z_pu = float(vk_percent) / 100.0
     r_pu = float(trafo_row.get("vkr_percent", 0.0)) / 100.0
     x_pu2 = z_pu * z_pu - r_pu * r_pu
     x_pu = float(np.sqrt(max(float(x_pu2), 0.0)))
 
-    sn_mva = float(trafo_row["sn_mva"])
-    if not np.isfinite(sn_mva) or sn_mva <= 0:
-        return 0.0
-
     vn_hv_kv = float(trafo_row.get("vn_hv_kv", np.nan))
-    if not np.isfinite(vn_hv_kv) or vn_hv_kv <= 0:
+    if not np.isfinite(vn_hv_kv) or float(vn_hv_kv) <= 0.0:
         hv_bus = int(trafo_row.get("hv_bus", -1))
         vn_hv_kv = _bus_vn_kv(net, hv_bus)
 
-    if not np.isfinite(vn_hv_kv) or vn_hv_kv <= 0:
+    if not np.isfinite(vn_hv_kv) or float(vn_hv_kv) <= 0.0:
+        if strict_units:
+            raise ValueError(
+                f"Trafo {_pp_row_id(trafo_row)}: vn_hv_kv must be finite and >0; got {vn_hv_kv!r}"
+            )
         return 0.0
 
-    z_base_ohm = (vn_hv_kv * vn_hv_kv) / sn_mva
-    x_ohm = x_pu * z_base_ohm
+    z_base_ohm = (float(vn_hv_kv) * float(vn_hv_kv)) / float(sn_mva)
+    x_ohm = float(x_pu) * float(z_base_ohm)
 
-    if not np.isfinite(x_ohm) or abs(x_ohm) <= _X_TOTAL_EPS:
+    if (not np.isfinite(x_ohm)) or abs(float(x_ohm)) <= _X_TOTAL_EPS:
+        if strict_units:
+            raise ValueError(
+                f"Trafo {_pp_row_id(trafo_row)}: x_ohm must be finite and non-zero; got {x_ohm!r}"
+            )
         return 0.0
+
+    if strict_units and float(x_ohm) <= 0.0:
+        # Defensive (x_pu and z_base are non-negative in the formula).
+        raise ValueError(
+            f"Trafo {_pp_row_id(trafo_row)}: x_ohm must be >0 (strict_units); got {x_ohm!r}"
+        )
+
     return float(x_ohm)
 
 
@@ -406,7 +493,7 @@ def trafo_tap_ratio(trafo_row: Any) -> float:
     return float(tap)
 
 
-def _trafo_b_mw_from_row(net: Any, trafo_row: Any) -> float:
+def _trafo_b_mw_from_row(net: Any, trafo_row: Any, *, strict_units: bool) -> float:
     """
     Compute DC branch coefficient b for a pandapower transformer in MW/rad.
 
@@ -423,42 +510,83 @@ def _trafo_b_mw_from_row(net: Any, trafo_row: Any) -> float:
     if not np.isfinite(vn_kv) or vn_kv <= 0:
         vn_kv = _bus_vn_kv(net, hv_bus)
 
-    x_ohm = float(trafo_x_total_ohm(net, trafo_row))
-    if not np.isfinite(vn_kv) or vn_kv <= 0:
+    if not np.isfinite(vn_kv) or float(vn_kv) <= 0.0:
+        if strict_units:
+            raise ValueError(
+                f"Trafo {_pp_row_id(trafo_row)}: invalid hv-side vn_kv={vn_kv!r} (must be >0)."
+            )
         return 0.0
+
+    x_ohm = float(trafo_x_total_ohm(net, trafo_row, strict_units=bool(strict_units)))
     if not np.isfinite(x_ohm) or abs(x_ohm) <= _X_TOTAL_EPS:
+        if strict_units:
+            raise ValueError(
+                f"Trafo {_pp_row_id(trafo_row)}: invalid/zero x_ohm={x_ohm!r}."
+            )
         return 0.0
+
+    if strict_units and float(x_ohm) <= 0.0:
+        raise ValueError(
+            f"Trafo {_pp_row_id(trafo_row)}: x_ohm must be >0 (strict_units); got {x_ohm!r}"
+        )
 
     return float((vn_kv * vn_kv) / x_ohm)
 
 
-def _impedance_x_total_ohm(net: Any, imp_row: Any) -> float:
+def _impedance_x_total_ohm(net: Any, imp_row: Any, *, strict_units: bool) -> float:
     """
     Approximate impedance element series reactance in Ohms.
 
     x_ohm ≈ x_pu * (V_kV^2 / S_MVA)
     """
     x_pu = float(imp_row.get("xft_pu", np.nan))
-    if not np.isfinite(x_pu) or abs(x_pu) <= _X_TOTAL_EPS:
+    if not np.isfinite(x_pu) or abs(float(x_pu)) <= _X_TOTAL_EPS:
+        if strict_units:
+            raise ValueError(
+                f"Impedance {_pp_row_id(imp_row)}: xft_pu must be finite and non-zero; got {x_pu!r}"
+            )
         return 0.0
 
+    if strict_units and float(x_pu) <= 0.0:
+        raise ValueError(
+            f"Impedance {_pp_row_id(imp_row)}: xft_pu must be >0 (strict_units); got {x_pu!r}"
+        )
+
     sn_mva = float(getattr(net, "sn_mva", np.nan))
-    if not np.isfinite(sn_mva) or sn_mva <= 0:
+    if not np.isfinite(sn_mva) or float(sn_mva) <= 0.0:
+        if strict_units:
+            raise ValueError(
+                f"pandapower net.sn_mva must be finite and >0 (strict_units); got {sn_mva!r}"
+            )
         return 0.0
 
     fb = int(imp_row.get("from_bus", -1))
     vn_kv = _bus_vn_kv(net, fb)
-    if not np.isfinite(vn_kv) or vn_kv <= 0:
+    if not np.isfinite(vn_kv) or float(vn_kv) <= 0.0:
+        if strict_units:
+            raise ValueError(
+                f"Impedance {_pp_row_id(imp_row)}: from_bus={fb} has invalid vn_kv={vn_kv!r}."
+            )
         return 0.0
 
-    z_base_ohm = (vn_kv * vn_kv) / sn_mva
-    x_ohm = x_pu * z_base_ohm
-    if not np.isfinite(x_ohm) or abs(x_ohm) <= _X_TOTAL_EPS:
+    z_base_ohm = (float(vn_kv) * float(vn_kv)) / float(sn_mva)
+    x_ohm = float(x_pu) * float(z_base_ohm)
+    if (not np.isfinite(x_ohm)) or abs(float(x_ohm)) <= _X_TOTAL_EPS:
+        if strict_units:
+            raise ValueError(
+                f"Impedance {_pp_row_id(imp_row)}: x_ohm must be finite and non-zero; got {x_ohm!r}"
+            )
         return 0.0
+
+    if strict_units and float(x_ohm) <= 0.0:
+        raise ValueError(
+            f"Impedance {_pp_row_id(imp_row)}: x_ohm must be >0 (strict_units); got {x_ohm!r}"
+        )
+
     return float(x_ohm)
 
 
-def _impedance_b_mw_from_row(net: Any, imp_row: Any) -> float:
+def _impedance_b_mw_from_row(net: Any, imp_row: Any, *, strict_units: bool) -> float:
     """
     Compute DC branch coefficient b for a pandapower impedance element in MW/rad.
 
@@ -468,11 +596,25 @@ def _impedance_b_mw_from_row(net: Any, imp_row: Any) -> float:
     fb = int(imp_row.get("from_bus", -1))
 
     vn_kv = _bus_vn_kv(net, fb)
-    x_ohm = float(_impedance_x_total_ohm(net, imp_row))
-    if not np.isfinite(vn_kv) or vn_kv <= 0:
+    if not np.isfinite(vn_kv) or float(vn_kv) <= 0.0:
+        if strict_units:
+            raise ValueError(
+                f"Impedance {_pp_row_id(imp_row)}: from_bus={fb} has invalid vn_kv={vn_kv!r}."
+            )
         return 0.0
+
+    x_ohm = float(_impedance_x_total_ohm(net, imp_row, strict_units=bool(strict_units)))
     if not np.isfinite(x_ohm) or abs(x_ohm) <= _X_TOTAL_EPS:
+        if strict_units:
+            raise ValueError(
+                f"Impedance {_pp_row_id(imp_row)}: invalid/zero x_ohm={x_ohm!r}."
+            )
         return 0.0
+
+    if strict_units and float(x_ohm) <= 0.0:
+        raise ValueError(
+            f"Impedance {_pp_row_id(imp_row)}: x_ohm must be >0 (strict_units); got {x_ohm!r}"
+        )
 
     return float((vn_kv * vn_kv) / x_ohm)
 
@@ -520,7 +662,13 @@ def _check_connected_to_slack(
         raise ValueError(msg)
 
 
-def build_dc_operator(net, slack_bus: int = 0) -> DCOperator:
+def build_dc_operator(
+    net,
+    slack_bus: int = 0,
+    *,
+    strict_units: bool = True,
+    allow_phase_shift: bool = False,
+) -> DCOperator:
     """
     Build a DCOperator for a pandapower network.
 
@@ -541,6 +689,20 @@ def build_dc_operator(net, slack_bus: int = 0) -> DCOperator:
     where tap is derived from tap_pos/tap_step_percent (see trafo_tap_ratio()).
     This improves consistency with DC-OPF formulations that account for tap ratios.
 
+    Phase shifts (shift_degree)
+    ---------------------------
+    The project's DC model does NOT model phase shifts. Therefore:
+    - if allow_phase_shift=False (default): any in-service transformer with shift_degree != 0 raises ValueError.
+    - if allow_phase_shift=True: we log a WARNING and ignore the phase shift.
+
+    strict_units
+    ------------
+    When True (default), this function fails fast on invalid units/physics:
+    - vn_kv must be >0
+    - x_ohm must be >0
+    - sn_mva must be >0
+    and it does not silently return 0.0 branch coefficients.
+
     Logging
     -------
     Uses DEBUG-level logs for normal progress to keep CLI output clean.
@@ -549,6 +711,9 @@ def build_dc_operator(net, slack_bus: int = 0) -> DCOperator:
         raise ImportError(
             "SciPy is required for DCOperator and DC matrices in this project. Install scipy."
         )
+
+    strict = bool(strict_units)
+    allow_shift = bool(allow_phase_shift)
 
     bus_ids = [int(x) for x in sorted(net.bus.index)]
     n_bus = len(bus_ids)
@@ -593,7 +758,17 @@ def build_dc_operator(net, slack_bus: int = 0) -> DCOperator:
         if not _is_in_service(row):
             continue
 
-        b_i = float(_line_b_mw_from_row(net, row))
+        try:
+            b_i = float(_line_b_mw_from_row(net, row, strict_units=strict))
+        except ValueError as e:
+            logger.error(
+                "Unit/parameter validation failed for monitored line %d (strict_units=%s): %s",
+                int(lid),
+                bool(strict),
+                str(e),
+            )
+            raise
+
         if not np.isfinite(b_i) or abs(b_i) <= 0.0:
             raise ValueError(
                 f"Monitored in-service line {lid} has invalid/zero reactance or voltage (b={b_i})."
@@ -638,9 +813,22 @@ def build_dc_operator(net, slack_bus: int = 0) -> DCOperator:
         tb = int(row.get("to_bus", -1))
         if fb not in bus_pos or tb not in bus_pos:
             continue
-        b_i = float(_line_b_mw_from_row(net, row))
+
+        try:
+            b_i = float(_line_b_mw_from_row(net, row, strict_units=strict))
+        except ValueError as e:
+            logger.error(
+                "Unit/parameter validation failed for line %d used in B matrix (strict_units=%s): %s",
+                int(lid),
+                bool(strict),
+                str(e),
+            )
+            raise
+
         if not np.isfinite(b_i) or abs(b_i) <= 0.0:
+            # Legacy permissive behavior: skip invalid branches if strict_units=False.
             continue
+
         _add_branch(fpos=int(bus_pos[fb]), tpos=int(bus_pos[tb]), b_val=b_i)
         added_lines_to_b += 1
 
@@ -655,7 +843,41 @@ def build_dc_operator(net, slack_bus: int = 0) -> DCOperator:
             if hv not in bus_pos or lv not in bus_pos:
                 continue
 
-            b_raw = float(_trafo_b_mw_from_row(net, row))
+            # Phase shifting transformer is not modeled by this project's DC operator.
+            try:
+                shift_deg = float(row.get("shift_degree", 0.0))
+            except (TypeError, ValueError):
+                shift_deg = 0.0
+            if not np.isfinite(shift_deg):
+                if strict:
+                    raise ValueError(
+                        f"Trafo {tid}: shift_degree must be finite (strict_units); got {shift_deg!r}"
+                    )
+                shift_deg = 0.0
+
+            if abs(float(shift_deg)) > _SHIFT_DEG_EPS:
+                if not allow_shift:
+                    raise ValueError(
+                        f"Trafo {tid}: non-zero shift_degree={shift_deg} deg is not supported by the project's DC model. "
+                        "Set allow_phase_shift=True only if you explicitly accept ignoring phase shifters."
+                    )
+                logger.warning(
+                    "Trafo %d has non-zero shift_degree=%.6g deg; phase shift is ignored (allow_phase_shift=1).",
+                    int(tid),
+                    float(shift_deg),
+                )
+
+            try:
+                b_raw = float(_trafo_b_mw_from_row(net, row, strict_units=strict))
+            except ValueError as e:
+                logger.error(
+                    "Unit/parameter validation failed for trafo %d used in B matrix (strict_units=%s): %s",
+                    int(tid),
+                    bool(strict),
+                    str(e),
+                )
+                raise
+
             if not np.isfinite(b_raw) or abs(b_raw) <= 0.0:
                 continue
 
@@ -690,7 +912,18 @@ def build_dc_operator(net, slack_bus: int = 0) -> DCOperator:
             tb = int(row.get("to_bus", -1))
             if fb not in bus_pos or tb not in bus_pos:
                 continue
-            b_i = float(_impedance_b_mw_from_row(net, row))
+
+            try:
+                b_i = float(_impedance_b_mw_from_row(net, row, strict_units=strict))
+            except ValueError as e:
+                logger.error(
+                    "Unit/parameter validation failed for impedance %d used in B matrix (strict_units=%s): %s",
+                    int(iid),
+                    bool(strict),
+                    str(e),
+                )
+                raise
+
             if not np.isfinite(b_i) or abs(b_i) <= 0.0:
                 continue
             _add_branch(fpos=int(bus_pos[fb]), tpos=int(bus_pos[tb]), b_val=b_i)
@@ -704,7 +937,7 @@ def build_dc_operator(net, slack_bus: int = 0) -> DCOperator:
 
     logger.debug(
         "DCOperator summary: buses=%d, monitored_lines=%d (valid=%d), B-branches=%d "
-        "[lines=%d, trafos=%d, impedances=%d]",
+        "[lines=%d, trafos=%d, impedances=%d] strict_units=%s allow_phase_shift=%s",
         n_bus,
         m_line,
         valid_monitored,
@@ -712,6 +945,8 @@ def build_dc_operator(net, slack_bus: int = 0) -> DCOperator:
         added_lines_to_b,
         added_trafos_to_b,
         added_imps_to_b,
+        bool(strict),
+        bool(allow_shift),
     )
 
     _check_connected_to_slack(
@@ -769,6 +1004,8 @@ def build_dc_matrices(
     net,
     slack_bus: int = 0,
     *,
+    strict_units: bool = True,
+    allow_phase_shift: bool = False,
     chunk_size: int = 256,
     dtype: np.dtype = np.float64,
 ) -> Tuple[np.ndarray, object]:
@@ -776,6 +1013,13 @@ def build_dc_matrices(
     Build a dense DC PTDF-like sensitivity matrix `H_full` for pandapower networks.
 
     This function always uses the SciPy-backed `DCOperator` to materialize H_full.
+
+    Parameters
+    ----------
+    strict_units:
+        See `build_dc_operator`.
+    allow_phase_shift:
+        See `build_dc_operator`.
     """
     if chunk_size <= 0:
         raise ValueError("chunk_size must be positive.")
@@ -785,6 +1029,11 @@ def build_dc_matrices(
             "SciPy is required for build_dc_matrices in this project. Install scipy."
         )
 
-    op = build_dc_operator(net, slack_bus=int(slack_bus))
+    op = build_dc_operator(
+        net,
+        slack_bus=int(slack_bus),
+        strict_units=bool(strict_units),
+        allow_phase_shift=bool(allow_phase_shift),
+    )
     H_full = op.materialize_H_full(dtype=dtype, chunk_size=int(chunk_size))
     return H_full, op

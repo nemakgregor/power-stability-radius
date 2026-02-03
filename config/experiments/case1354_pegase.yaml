@@ -1,4 +1,0 @@
-defaults:
-  - main
-  - experiments: case1354_pegase
-  - _self_

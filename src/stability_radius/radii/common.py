@@ -21,7 +21,8 @@ class LineBaseQuantities:
     -----
     - flow0_mw is signed (PyPSA's convention for Line.p0 with bus0->bus1 direction).
     - p0_abs_mw is abs(flow0_mw).
-    - limit_mw_est is the thermal limit from the case (treated as MW proxy).
+    - limit_mva_assumed_mw is the thermal limit extracted from the case (typically MVA),
+      and then used as MW under the DC PF=1 convention.
     - margin_mw = max(limit - abs(flow0), 0).
 
     OPF metadata
@@ -36,12 +37,18 @@ class LineBaseQuantities:
     - bus_ids is the stable bus ordering used across the project (sorted pandapower net.bus.index).
     - bus_injections_mw is aligned with bus_ids and corresponds to the OPF dispatch result
       (sum gens at bus - sum loads at bus), used to validate OPF -> DCOperator consistency.
+
+    Units (project contract)
+    ------------------------
+    - P, f0, Δp, c, margin: MW
+    - rateA/sn_mva/max_mva: MVA in source data
+      (used as MW under PF=1 assumption in lossless DC)
     """
 
     line_indices: list[int]
     flow0_mw: np.ndarray  # shape (m,)
     p0_abs_mw: np.ndarray  # shape (m,)
-    limit_mw_est: np.ndarray  # shape (m,)
+    limit_mva_assumed_mw: np.ndarray  # shape (m,)
     margin_mw: np.ndarray  # shape (m,)
 
     opf_status: str | None = None
@@ -49,6 +56,17 @@ class LineBaseQuantities:
 
     bus_ids: list[int] | None = None
     bus_injections_mw: np.ndarray | None = None
+
+    @property
+    def limit_mw_est(self) -> np.ndarray:
+        """
+        Backward-compatible alias.
+
+        Historically, this project used the name `limit_mw_est` for line limits extracted
+        from MATPOWER/PGLib ratings. The extracted values are in MVA, and in the DC model
+        we assume PF=1, thus treating MVA as MW.
+        """
+        return self.limit_mva_assumed_mw
 
 
 def _line_row_id(line_row: object) -> str:
@@ -184,6 +202,11 @@ def estimate_line_limit_mva(net, line_row) -> float:
     -------
     float
         Limit in MVA (or +inf for unconstrained).
+
+    Notes (DC PF=1 convention)
+    --------------------------
+    Downstream, the DC model uses active power only, and we assume PF=1, thus:
+        P_limit_mw := S_limit_mva
     """
     try:
         max_loading_percent = float(line_row.get("max_loading_percent", 100.0))
@@ -292,6 +315,8 @@ def get_line_base_quantities(
     margin_factor: float = 1.0,
     line_indices: Sequence[int] | None = None,
     opf_cfg: OPFConfig | None = None,
+    strict_units: bool = True,
+    allow_phase_shift: bool = False,
 ) -> LineBaseQuantities:
     """
     Extract per-line base flows, limits, and margins around an OPF base point.
@@ -304,7 +329,7 @@ def get_line_base_quantities(
     Limits
     ------
     Extracted only from explicit converted data (`estimate_line_limit_mva`).
-    If rating information is missing/invalid, ValueError is raised.
+    In the DC model we assume PF=1, therefore MVA limits are treated as MW limits.
 
     Parameters
     ----------
@@ -316,6 +341,10 @@ def get_line_base_quantities(
         Optional explicit ordering of line indices. Defaults to sorted(net.line.index).
     opf_cfg:
         Optional OPF configuration (HiGHS options, unconstrained surrogate).
+    strict_units:
+        Passed to OPF construction (see solve_dc_opf_base_flows_from_pandapower).
+    allow_phase_shift:
+        Passed to OPF construction (see solve_dc_opf_base_flows_from_pandapower).
 
     Returns
     -------
@@ -332,20 +361,26 @@ def get_line_base_quantities(
         else [int(x) for x in line_indices]
     )
 
-    limits = np.empty(len(idx), dtype=float)
+    # Extract ratings in MVA, then use as MW under PF=1 DC convention.
+    limits_mva = np.empty(len(idx), dtype=float)
     for pos, (_, line_row) in enumerate(net.line.loc[idx].iterrows()):
-        s_limit = estimate_line_limit_mva(net, line_row)
-        limits[pos] = float(s_limit) * float(margin_factor)
+        s_limit_mva = estimate_line_limit_mva(net, line_row)
+        limits_mva[pos] = float(s_limit_mva) * float(margin_factor)
 
-    if np.isnan(limits).any():
-        bad = np.where(np.isnan(limits))[0]
+    # Explicit conversion point (contract): MVA -> MW under PF=1.
+    limits_mva_assumed_mw = limits_mva.copy()
+
+    if np.isnan(limits_mva_assumed_mw).any():
+        bad = np.where(np.isnan(limits_mva_assumed_mw))[0]
         raise ValueError(
             "Line limit extraction produced NaN. This indicates invalid rating data. "
             f"Bad line positions count={int(bad.size)} (first 10: {bad[:10].tolist()})."
         )
 
-    if np.any(np.isfinite(limits) & (limits < 0.0)):
-        bad = np.where(np.isfinite(limits) & (limits < 0.0))[0]
+    if np.any(np.isfinite(limits_mva_assumed_mw) & (limits_mva_assumed_mw < 0.0)):
+        bad = np.where(
+            np.isfinite(limits_mva_assumed_mw) & (limits_mva_assumed_mw < 0.0)
+        )[0]
         raise ValueError(
             "Negative line limit encountered after scaling. "
             f"Bad line positions count={int(bad.size)} (first 10: {bad[:10].tolist()})."
@@ -354,21 +389,25 @@ def get_line_base_quantities(
     from stability_radius.opf.pypsa_opf import solve_dc_opf_base_flows_from_pandapower
 
     logger.info(
-        "Solving OPF base point via PyPSA DC OPF (solver=%s, threads=%d, margin_factor=%s)...",
+        "Solving OPF base point via PyPSA DC OPF (solver=%s, threads=%d, margin_factor=%s, strict_units=%s, allow_phase_shift=%s)...",
         str(cfg.highs.solver_name),
         int(cfg.highs.threads),
         float(margin_factor),
+        bool(strict_units),
+        bool(allow_phase_shift),
     )
     opf_res = solve_dc_opf_base_flows_from_pandapower(
         net=net,
         line_indices=idx,
-        line_limits_mw=limits,
+        line_limits_mw=limits_mva_assumed_mw,
         opf_cfg=cfg,
+        strict_units=bool(strict_units),
+        allow_phase_shift=bool(allow_phase_shift),
     )
     flow0 = np.asarray(opf_res.line_flows_mw, dtype=float)
 
     p0_abs = np.abs(flow0)
-    margins = np.maximum(limits - p0_abs, 0.0)
+    margins = np.maximum(limits_mva_assumed_mw - p0_abs, 0.0)
 
     # Keep stable bus ordering for cross-module checks.
     bus_ids = [int(x) for x in sorted(net.bus.index)]
@@ -388,7 +427,7 @@ def get_line_base_quantities(
         line_indices=idx,
         flow0_mw=flow0,
         p0_abs_mw=p0_abs,
-        limit_mw_est=limits,
+        limit_mva_assumed_mw=limits_mva_assumed_mw,
         margin_mw=margins,
         opf_status=str(opf_res.status),
         opf_objective=float(opf_res.objective),

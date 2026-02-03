@@ -87,6 +87,10 @@ def overload_probability_symmetric_limit(
     Then:
         P(|F| > c) = Q((c - |f0|)/sigma) + Q((c + |f0|)/sigma)
 
+    Units
+    -----
+    - flow0, limit, sigma: MW
+
     Edge cases:
     - sigma==0: returns 1.0 if |f0|>c else 0.0
     """
@@ -169,7 +173,7 @@ def compute_sigma_radius(
         margin = float(base_q.margin_mw[pos])
         r = sigma_radius(margin, sig)
 
-        c = float(base_q.limit_mw_est[pos])
+        c = float(base_q.limit_mva_assumed_mw[pos])
         f0 = float(base_q.flow0_mw[pos])
         prob = overload_probability_symmetric_limit(flow0=f0, limit=c, sigma=sig)
 

@@ -5,6 +5,16 @@
 
 run_tests: true
 
+units:
+  # 1 -> fail fast on invalid/ambiguous electrical quantities (recommended)
+  # 0 -> legacy permissive behavior (may silently skip invalid branches)
+  strict_units: 1
+
+  # Phase shifting transformers (shift_degree != 0) are NOT modeled by the project's DC model.
+  # By default we fail fast to avoid silently inconsistent OPF/DCOperator behavior.
+  # Set to 1 only if you explicitly accept "phase shift is ignored".
+  allow_phase_shift: 0
+
 logging:
   runs_dir: runs
   level_console: INFO

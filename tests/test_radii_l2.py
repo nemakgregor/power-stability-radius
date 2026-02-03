@@ -49,7 +49,7 @@ def _make_base_for_tests(net):
         line_indices=idx,
         flow0_mw=flow0,
         p0_abs_mw=np.abs(flow0),
-        limit_mw_est=limits,
+        limit_mva_assumed_mw=limits,
         margin_mw=limits.copy(),
         opf_status="test",
         opf_objective=0.0,

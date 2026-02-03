@@ -147,12 +147,22 @@ def effective_nminus1_l2_radii(
         f^(k) = f + LODF[:,k] * f_k, and f_k^(k)=0
         g_m^(k) = g_m + LODF[m,k] * g_k
 
+    Balanced-norm consistency
+    ------------------------
+    This project measures disturbances in the **balanced** subspace sum(Δp)=0 with the
+    full Euclidean norm over all buses. Therefore the effective sensitivity norm used here is:
+
+        ||Proj(g)||_2  where Proj(g) = g - mean(g)*1
+
+    which can be computed as:
+        ||Proj(g)||_2^2 = ||g||_2^2 - (sum(g))^2 / n_bus
+
     Parameters
     ----------
     base_flows:
         Signed base flows f (m,).
     limits:
-        Symmetric thermal limits c (m,).
+        Symmetric thermal limits c (m,) in MW (MVA assumed MW under PF=1).
     G:
         Sensitivity matrix (m,n) mapping injection perturbations to line flow perturbations.
     lodf:
@@ -181,11 +191,18 @@ def effective_nminus1_l2_radii(
     if L.shape != (m, m):
         raise ValueError(f"lodf must have shape ({m},{m}); got {L.shape}.")
 
+    n_bus = int(Gm.shape[1])
+    if n_bus <= 0:
+        raise ValueError("G must have a positive bus dimension.")
+
     best = np.full(m, float("inf"), dtype=float)
     argmin = np.full(m, -1, dtype=int)
 
-    # Precompute base norms
+    # Precompute base norms and sums for projected (balanced) norms.
     g_norm2 = np.sum(Gm * Gm, axis=1)  # (m,)
+    g_sum = np.sum(Gm, axis=1)  # (m,)
+    g_proj_norm2 = g_norm2 - (g_sum * g_sum) / float(n_bus)
+    g_proj_norm2 = np.maximum(g_proj_norm2, 0.0)
 
     for k in range(m):
         alpha = L[:, k]
@@ -204,11 +221,19 @@ def effective_nminus1_l2_radii(
         if update_sensitivities:
             gk = Gm[k, :]  # (n,)
             dots = Gm @ gk  # (m,)
+
+            # Raw ||g_m + alpha_m*gk||^2
             norm2_post = g_norm2 + 2.0 * alpha * dots + (alpha * alpha) * g_norm2[k]
             norm2_post = np.maximum(norm2_post, 0.0)
-            denom = np.sqrt(norm2_post)
+
+            # Projected norm: ||Proj(v)||^2 = ||v||^2 - sum(v)^2 / n
+            sum_post = g_sum + alpha * g_sum[k]
+            proj_norm2_post = norm2_post - (sum_post * sum_post) / float(n_bus)
+            proj_norm2_post = np.maximum(proj_norm2_post, 0.0)
+
+            denom = np.sqrt(proj_norm2_post)
         else:
-            denom = np.sqrt(g_norm2)
+            denom = np.sqrt(g_proj_norm2)
 
         radii_k = np.full(m, float("inf"), dtype=float)
         np.divide(margin_post, denom, out=radii_k, where=denom > eps)
@@ -277,7 +302,7 @@ def compute_nminus1_l2_radius(
 
     best_r, argmin = effective_nminus1_l2_radii(
         base_flows=base_q.flow0_mw,
-        limits=base_q.limit_mw_est,
+        limits=base_q.limit_mva_assumed_mw,
         G=H_full,
         lodf=lodf_res.lodf,
         update_sensitivities=update_sensitivities,
@@ -296,7 +321,7 @@ def compute_nminus1_l2_radius(
         results[k] = {
             "flow0_mw": float(base_q.flow0_mw[pos]),
             "p0_mw": float(base_q.p0_abs_mw[pos]),
-            "p_limit_mw_est": float(base_q.limit_mw_est[pos]),
+            "p_limit_mw_est": float(base_q.limit_mva_assumed_mw[pos]),
             "margin_mw": float(base_q.margin_mw[pos]),
             "radius_nminus1": float(best_r[pos]),
             "worst_contingency": worst_pos,  # position in base_q.line_indices

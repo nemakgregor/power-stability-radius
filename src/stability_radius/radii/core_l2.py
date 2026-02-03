@@ -29,19 +29,84 @@ Global certificate:
 If the base point is feasible (m_i >= 0), then for any Δp with ||Δp||_2 <= r*,
 all line constraints are satisfied in this linear model (by Cauchy–Schwarz).
 
-Notes
------
-- If some m_i < 0, the base point violates limits; the "radius around a feasible point"
-  interpretation breaks. We intentionally do NOT clip margins here: the caller must
-  handle base feasibility explicitly.
-- If ||g_i||_2 == 0: that line is insensitive to Δp in this model; the corresponding
-  r_i is +inf if m_i > 0, and 0 if m_i == 0.
+Balanced (sum-zero) disturbance norm helper
+-------------------------------------------
+In power-grid robustness, injections are often constrained to the balanced subspace:
+  1^T Δp = 0.
+
+For a row sensitivity vector g (defined up to adding a constant 1-vector), the correct
+dual norm on that subspace (with the standard Euclidean norm in R^n) is:
+
+  ||Proj(g)||_2, where Proj(g) = g - mean(g) * 1
+
+Equivalently:
+  ||Proj(g)||_2^2 = ||g||_2^2 - (sum(g))^2 / n
+
+We expose helpers for this projection norm to support:
+- slack-invariant certificates (angle slack is only a reference)
+- deterministic unit tests of slack invariance
 """
 
 import math
 from dataclasses import dataclass
 
 import numpy as np
+
+
+def l2_norm_projected_ones_complement(v: np.ndarray) -> float:
+    """
+    Compute ||v - mean(v) * 1||_2.
+
+    This is the L2 norm of the projection of v onto the hyperplane:
+        {x : sum(x) = 0}.
+
+    Notes
+    -----
+    The closed-form is:
+        ||Proj(v)||_2^2 = ||v||_2^2 - (sum(v))^2 / n
+
+    Returns
+    -------
+    float
+        Non-negative projected norm.
+    """
+    vv = np.asarray(v, dtype=float).reshape(-1)
+    n = int(vv.size)
+    if n <= 0:
+        return 0.0
+
+    s = float(np.sum(vv))
+    t = float(np.dot(vv, vv))
+    val = t - (s * s) / float(n)
+    return math.sqrt(max(val, 0.0))
+
+
+def row_l2_norms_projected_ones_complement(H: np.ndarray) -> np.ndarray:
+    """
+    Compute per-row projected norms ||row - mean(row)*1||_2 for a matrix H.
+
+    Parameters
+    ----------
+    H:
+        Matrix (m, n).
+
+    Returns
+    -------
+    np.ndarray
+        Vector (m,) of non-negative projected norms.
+    """
+    Hm = np.asarray(H, dtype=float)
+    if Hm.ndim != 2:
+        raise ValueError(f"H must be 2D, got shape={Hm.shape}")
+
+    m, n = int(Hm.shape[0]), int(Hm.shape[1])
+    if n <= 0:
+        return np.zeros(m, dtype=float)
+
+    s = np.sum(Hm, axis=1)
+    t = np.sum(Hm * Hm, axis=1)
+    val = t - (s * s) / float(n)
+    return np.sqrt(np.maximum(val, 0.0))
 
 
 @dataclass(frozen=True)
@@ -108,13 +173,13 @@ def compute_l2_certificate_from_H(
     nonzero = row_norms > float(eps_norm)
     radii[nonzero] = margins[nonzero] / row_norms[nonzero]
 
-    # For zero-norm rows: r=+inf if margin>0, r=0 if margin==0, r=-inf if margin<0
+    # For zero-norm rows: treat as non-restrictive (radius=+inf) if margin>=0.
     zero = ~nonzero
     if bool(np.any(zero)):
         radii[zero] = np.where(
-            margins[zero] > 0.0,
+            margins[zero] >= 0.0,
             float("inf"),
-            np.where(margins[zero] < 0.0, float("-inf"), 0.0),
+            float("-inf"),
         )
 
     finite = np.isfinite(radii)
