@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import math
+
+import numpy as np
 import pytest
 
 pp = pytest.importorskip("pandapower")
@@ -25,16 +27,46 @@ def _make_small_net():
         max_i_ka=1.0,
         max_loading_percent=100.0,
     )
+
+    net.line.loc[:, "rateA"] = 100.0
+
     return net, b0
 
 
+def _make_base_for_tests(net):
+    from stability_radius.radii.common import (
+        LineBaseQuantities,
+        estimate_line_limit_mva,
+    )
+
+    idx = [int(x) for x in sorted(net.line.index)]
+    limits = np.array(
+        [estimate_line_limit_mva(net, net.line.loc[lid]) for lid in idx], dtype=float
+    )
+
+    flow0 = np.zeros(len(idx), dtype=float)
+    return LineBaseQuantities(
+        line_indices=idx,
+        flow0_mw=flow0,
+        p0_abs_mw=np.abs(flow0),
+        limit_mw_est=limits,
+        margin_mw=limits.copy(),
+        opf_status="test",
+        opf_objective=0.0,
+    )
+
+
 def test_compute_l2_radius_returns_expected_keys():
+    pytest.importorskip("scipy")
+
     from stability_radius.dc.dc_model import build_dc_matrices
     from stability_radius.radii.l2 import compute_l2_radius
 
     net, slack_bus = _make_small_net()
     H, _ = build_dc_matrices(net, slack_bus=slack_bus)
-    res = compute_l2_radius(net, H, margin_factor=1.0)
+    base = _make_base_for_tests(net)
+
+    res = compute_l2_radius(net, H, margin_factor=1.0, base=base)
 
     assert len(res) == len(net.line)
     key = f"line_{net.line.index[0]}"
@@ -51,7 +83,6 @@ def test_compute_l2_radius_returns_expected_keys():
 
 def test_compute_l2_radius_validates_margin_factor():
     from stability_radius.radii.l2 import compute_l2_radius
-    import numpy as np
 
     net, _ = _make_small_net()
     H = np.zeros((len(net.line), len(net.bus)))

@@ -96,7 +96,8 @@ def compute_metric_radius(
             f"H_full row count ({H_full.shape[0]}) does not match net.line count ({len(base_q.line_indices)})."
         )
 
-    logger.info("Computing metric radii (n_bus=%d)...", n_bus)
+    # Keep CLI output compact: detailed progress goes to DEBUG.
+    logger.debug("Computing metric radii (n_bus=%d)...", n_bus)
 
     # Factor once for all lines
     try:
@@ -121,6 +122,7 @@ def compute_metric_radius(
 
         k = line_key(lid)
         results[k] = {
+            "flow0_mw": float(base_q.flow0_mw[pos]),
             "p0_mw": float(base_q.p0_abs_mw[pos]),
             "p_limit_mw_est": float(base_q.limit_mw_est[pos]),
             "margin_mw": margin,

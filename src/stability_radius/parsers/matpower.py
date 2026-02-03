@@ -1,49 +1,24 @@
 from __future__ import annotations
 
-import inspect
 import logging
 import re
-import warnings
 from pathlib import Path
-from typing import Any, Dict, Union
+from typing import Any
 
 import numpy as np
-from pandapower.converter.matpower import from_mpc
 
 logger = logging.getLogger(__name__)
 
+_EPS_TAP = 1e-12
+
 
 def _strip_matpower_comments(text: str) -> str:
-    """
-    Remove MATPOWER comments from text.
-
-    MATPOWER uses `%` for comments. This function removes everything from `%` to
-    end of line.
-    """
+    """Remove MATPOWER comments (% ... end-of-line)."""
     return re.sub(r"%.*$", "", text, flags=re.MULTILINE)
 
 
 def _extract_scalar(text: str, name: str) -> str:
-    """
-    Extract a scalar assignment like `mpc.baseMVA = 100;` from MATPOWER case text.
-
-    Parameters
-    ----------
-    text:
-        MATPOWER case file contents (comments already stripped is recommended).
-    name:
-        Field name under `mpc.<name>`.
-
-    Returns
-    -------
-    str
-        Raw scalar value as string (caller converts to numeric if needed).
-
-    Raises
-    ------
-    ValueError
-        If the scalar cannot be found.
-    """
+    """Extract `mpc.<name> = <value>;` scalar assignment from MATPOWER case text."""
     pattern = re.compile(
         rf"\bmpc\.{re.escape(name)}\s*=\s*([^;]+?)\s*;", flags=re.MULTILINE
     )
@@ -54,26 +29,7 @@ def _extract_scalar(text: str, name: str) -> str:
 
 
 def _extract_matrix(text: str, name: str) -> np.ndarray:
-    """
-    Extract a numeric matrix like `mpc.bus = [ ... ];` from MATPOWER case text.
-
-    Parameters
-    ----------
-    text:
-        MATPOWER case file contents (comments already stripped is recommended).
-    name:
-        One of `bus`, `gen`, `branch`, etc.
-
-    Returns
-    -------
-    np.ndarray
-        2D float array.
-
-    Raises
-    ------
-    ValueError
-        If the matrix cannot be found or parsed.
-    """
+    """Extract numeric matrix `mpc.<name> = [ ... ];` as 2D float array."""
     pattern = re.compile(
         rf"\bmpc\.{re.escape(name)}\s*=\s*\[(.*?)\]\s*;",
         flags=re.MULTILINE | re.DOTALL,
@@ -83,15 +39,14 @@ def _extract_matrix(text: str, name: str) -> np.ndarray:
         raise ValueError(f"Could not find matrix 'mpc.{name}' in MATPOWER case.")
 
     body = m.group(1)
-    body = body.replace("...", " ")
-    body = body.replace(",", " ")
+    body = body.replace("...", " ").replace(",", " ")
     body = re.sub(r"\s+", " ", body).strip()
 
     if not body:
         return np.zeros((0, 0), dtype=float)
 
     rows_raw = [r.strip() for r in body.split(";") if r.strip()]
-    rows = []
+    rows: list[list[float]] = []
     for r in rows_raw:
         parts = [p for p in r.split(" ") if p]
         try:
@@ -111,17 +66,16 @@ def _extract_matrix(text: str, name: str) -> np.ndarray:
     return np.asarray(rows, dtype=float)
 
 
-def _parse_matpower_m_file_to_ppc(path: Path) -> Dict[str, Any]:
+def _parse_matpower_m_file_to_ppc(path: Path) -> dict[str, Any]:
     """
-    Parse a MATPOWER `.m` case file into a pypower-like PPC dict.
+    Parse a MATPOWER `.m` case file into a minimal PPC dict.
 
-    This is a fallback for environments where pandapower's `.m` converter requires
-    the optional `matpowercaseframes` dependency.
-
-    Notes
-    -----
-    This parser is intentionally minimal: it reads baseMVA, version, bus, gen, branch.
-    It is sufficient for standard IEEE MATPOWER cases.
+    Fields:
+      - version
+      - baseMVA
+      - bus
+      - gen
+      - branch
     """
     text = path.read_text(encoding="utf-8", errors="replace")
     text = _strip_matpower_comments(text)
@@ -155,121 +109,110 @@ def _parse_matpower_m_file_to_ppc(path: Path) -> Dict[str, Any]:
     }
 
 
-def _suppress_known_pandapower_pandas_warnings() -> None:
-    """
-    Suppress known noisy FutureWarnings emitted inside pandapower converters.
-
-    These warnings come from pandapower internals interacting with newer pandas.
-    They are not actionable within this project without pinning/upgrading pandapower.
-    """
-    warnings.filterwarnings(
-        "ignore",
-        category=FutureWarning,
-        message=r"The behavior of DataFrame concatenation with empty or all-NA entries is deprecated\..*",
-    )
-    warnings.filterwarnings(
-        "ignore",
-        category=FutureWarning,
-        message=r"Setting an item of incompatible dtype is deprecated and will raise an error in a future version of pandas\..*",
-    )
-
-
-def _from_ppc_to_pandapower(ppc: Dict[str, Any], f_hz: float):
+def _from_ppc_to_pandapower(ppc: dict[str, Any], f_hz: float):
     """
     Convert a PPC dict to a pandapower network.
 
-    The signature of `pandapower.converter.pypower.from_ppc` differs across pandapower
-    versions; this helper passes only supported kwargs.
+    This project targets a single modern pandapower API:
+      pandapower.converter.pypower.from_ppc.from_ppc(ppc, f_hz=..., validate_conversion=False)
     """
-    from pandapower.converter.pypower.from_ppc import (
-        from_ppc,
-    )  # local import on purpose
+    from pandapower.converter.pypower.from_ppc import from_ppc
 
-    sig = inspect.signature(from_ppc)
-    kwargs: Dict[str, Any] = {}
-
-    if "f_hz" in sig.parameters:
-        kwargs["f_hz"] = f_hz
-    if "validate_conversion" in sig.parameters:
-        kwargs["validate_conversion"] = False
-
-    with warnings.catch_warnings():
-        _suppress_known_pandapower_pandas_warnings()
-        return from_ppc(ppc, **kwargs)
+    return from_ppc(ppc, f_hz=float(f_hz), validate_conversion=False)
 
 
-def _from_mpc_to_pandapower(path: Path, f_hz: float):
-    """Call pandapower's from_mpc with version-tolerant kwargs."""
-    sig = inspect.signature(from_mpc)
-    kwargs: Dict[str, Any] = {}
-    if "f_hz" in sig.parameters:
-        kwargs["f_hz"] = f_hz
-    if "validate_conversion" in sig.parameters:
-        kwargs["validate_conversion"] = False
-
-    with warnings.catch_warnings():
-        _suppress_known_pandapower_pandas_warnings()
-        return from_mpc(str(path), **kwargs)
-
-
-def load_network(file_path: Union[str, Path], f_hz: float = 50.0):
+def _attach_matpower_rateA_to_net_lines(*, ppc: dict[str, Any], net: Any) -> None:
     """
-    Load a MATPOWER `.m`/`.mat` case file into a pandapower network.
+    Ensure MATPOWER/PGLib thermal limits (branch.rateA) are available on pandapower net.line.
 
-    Behavior
-    --------
-    1) Tries `pandapower.converter.matpower.from_mpc`.
-    2) If pandapower raises `NotImplementedError` due to missing optional
-       dependency `matpowercaseframes`, falls back to an internal `.m` parser
-       and converts via `pandapower.converter.pypower.from_ppc`.
+    Why
+    ---
+    pandapower's from_ppc() does not always preserve MATPOWER branch ratings into
+    net.line columns. For PGLib-OPF workflows we need rateA to build consistent
+    thermal constraints (OPF + radii + MC).
 
-    Parameters
-    ----------
-    file_path:
-        Path to the MATPOWER case file.
-    f_hz:
-        Network frequency in Hz.
+    Mapping rule (explicit, MATPOWER-consistent)
+    -------------------------------------------
+    We treat PPC branches with TAP == 0 (or NaN) as "lines" (no transformer).
+    These are mapped in-order to net.line entries (also in-order by index).
 
-    Returns
-    -------
-    pandapowerNet
-        Converted pandapower network.
+    If counts mismatch, we log a warning and do NOT attach values (fallback remains max_i_ka-based
+    if available, otherwise radii pipeline will fail with an explicit error).
+    """
+    if not hasattr(net, "line") or net.line is None or len(net.line) == 0:
+        return
+
+    branch = np.asarray(ppc.get("branch", np.zeros((0, 0))), dtype=float)
+    if branch.ndim != 2 or branch.shape[0] == 0 or branch.shape[1] <= 5:
+        return
+
+    rateA = np.asarray(branch[:, 5], dtype=float)  # RATE_A column (MVA)
+    tap = (
+        np.asarray(branch[:, 8], dtype=float)
+        if branch.shape[1] > 8
+        else np.zeros(branch.shape[0], dtype=float)
+    )
+
+    mask_line = (~np.isfinite(tap)) | (np.abs(tap) <= _EPS_TAP)
+    rateA_lines = rateA[mask_line]
+
+    if int(rateA_lines.size) != int(len(net.line)):
+        logger.warning(
+            "MATPOWER->pandapower: cannot map branch.rateA to net.line. "
+            "Expected line-like branches count=%d (tap==0), but net.line count=%d. "
+            "Will rely on other rating sources (e.g., max_i_ka) if present.",
+            int(rateA_lines.size),
+            int(len(net.line)),
+        )
+        return
+
+    idx = [int(x) for x in sorted(net.line.index)]
+    net.line.loc[idx, "rateA"] = rateA_lines
+    logger.debug(
+        "Attached MATPOWER branch.rateA into net.line['rateA'] for %d lines.", len(idx)
+    )
+
+
+def load_network(file_path: str | Path, f_hz: float = 50.0):
+    """
+    Load a MATPOWER/PGLib `.m` case file into a pandapower network.
+
+    Deterministic policy
+    --------------------
+    - Uses the internal deterministic `.m` parser from this repository.
+    - Converts PPC -> pandapower via pandapower's pypower converter.
+    - No optional fallbacks.
+
+    Post-processing (important)
+    ---------------------------
+    - Propagates MATPOWER branch rateA into pandapower net.line['rateA'] where possible,
+      to ensure consistent thermal limit extraction for OPF/radii pipelines.
 
     Raises
     ------
-    FileNotFoundError
-        If the file does not exist.
-    RuntimeError
-        If conversion fails.
+    FileNotFoundError:
+        If file does not exist.
+    ValueError:
+        If extension is not `.m`.
+    RuntimeError:
+        If parsing or conversion fails.
     """
     path = Path(file_path)
     if not path.exists():
         raise FileNotFoundError(str(path))
 
+    if path.suffix.lower() != ".m":
+        raise ValueError(f"Only MATPOWER/PGLib .m files are supported. Got: {path}")
+
     try:
-        net = _from_mpc_to_pandapower(path, f_hz=f_hz)
-        logger.info("Network loaded: %d buses, %d lines", len(net.bus), len(net.line))
+        ppc = _parse_matpower_m_file_to_ppc(path)
+        net = _from_ppc_to_pandapower(ppc, f_hz=float(f_hz))
+
+        # Ensure MATPOWER thermal ratings are available for downstream limit extraction.
+        _attach_matpower_rateA_to_net_lines(ppc=ppc, net=net)
+
+        logger.debug("Network loaded: %d buses, %d lines", len(net.bus), len(net.line))
         return net
-    except NotImplementedError as e:
-        # pandapower's from_mpc raises this when matpowercaseframes is not installed.
-        logger.info(
-            "pandapower from_mpc() is not available (%s). Using internal MATPOWER .m parser fallback.",
-            str(e),
-        )
-        try:
-            ppc = _parse_matpower_m_file_to_ppc(path)
-            net = _from_ppc_to_pandapower(ppc, f_hz=f_hz)
-            logger.info(
-                "Network loaded (fallback parser): %d buses, %d lines",
-                len(net.bus),
-                len(net.line),
-            )
-            return net
-        except Exception as e2:
-            logger.exception("Fallback MATPOWER .m parsing failed for %s", str(path))
-            raise RuntimeError(
-                f"Failed to load MATPOWER case (fallback parser): {path}"
-            ) from e2
     except Exception as e:
         logger.exception("Failed to load MATPOWER case: %s", str(path))
         raise RuntimeError(f"Failed to load MATPOWER case: {path}") from e

@@ -1,0 +1,21 @@
+# Experiment config: verification report run.
+#
+# Usage (command can be omitted because it is specified below):
+#   poetry run python src/power_stability_radius.py --config conf/experiments/report.yaml
+#
+# Equivalent explicit form:
+#   poetry run python src/power_stability_radius.py --config conf/experiments/report.yaml report
+extends: ../config.yaml
+
+# Default CLI command for this config (optional feature).
+command: report
+
+run_tests: 0
+
+logging:
+  run_dir_mode: overwrite
+  run_name: verification_report
+
+report:
+  results_dir: verification/results
+  out: verification/report.md

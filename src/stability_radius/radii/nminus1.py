@@ -87,9 +87,11 @@ def lodf_from_ptdf(
         lodf[k, k] = -1.0
 
     if islanded:
-        logger.info(
-            "LODF: skipped %d islanded/undefined contingencies: %s",
+        # This is important information for interpretation of results.
+        logger.warning(
+            "LODF: skipped %d islanded/undefined contingencies (islanding=%s). First: %s",
             len(islanded),
+            islanding,
             islanded[:20],
         )
 
@@ -100,15 +102,15 @@ def incidence_from_pandapower_net(
     net, *, line_indices: list[int] | None = None
 ) -> np.ndarray:
     """
-    Build oriented incidence E (m x n) for pandapower net lines, matching `list(net.line.index)` ordering.
+    Build oriented incidence E (m x n) for pandapower net lines.
 
     For each line (from_bus -> to_bus): row has +1 at from_bus position and -1 at to_bus position.
     Out-of-service lines are represented as all-zero rows (consistent with DC matrix builder behavior).
     """
-    bus_index = list(net.bus.index)
+    bus_index = sorted(net.bus.index)
     bus_pos = {int(bid): pos for pos, bid in enumerate(bus_index)}
 
-    idx = list(net.line.index) if line_indices is None else list(line_indices)
+    idx = sorted(net.line.index) if line_indices is None else list(line_indices)
     m = len(idx)
     n = len(bus_index)
     E = np.zeros((m, n), dtype=float)
@@ -208,8 +210,6 @@ def effective_nminus1_l2_radii(
         else:
             denom = np.sqrt(g_norm2)
 
-        # IMPORTANT: avoid `np.where(margin_post / denom, ...)` because it evaluates the division
-        # on the full array and triggers RuntimeWarning for denom==0.
         radii_k = np.full(m, float("inf"), dtype=float)
         np.divide(margin_post, denom, out=radii_k, where=denom > eps)
 
@@ -241,24 +241,19 @@ def compute_nminus1_l2_radius(
       4) compute PTDF (line transfers) and LODF
       5) compute effective N-1 radii using `effective_nminus1_l2_radii`
 
-    Parameters
-    ----------
-    net:
-        pandapower network.
-    H_full:
-        Sensitivity matrix (m_lines x n_buses).
-    margin_factor:
-        Applied to estimated limits.
-    update_sensitivities:
-        If True, uses g-update via LODF; otherwise reuses g_m.
-    islanding:
-        How to handle islanding contingencies in LODF.
-    base:
-        Optional precomputed per-line base quantities (to avoid repeated runpp()).
+    Notes
+    -----
+    The returned `worst_contingency` is the contingency *position* (0..m-1) in the
+    internal line ordering (base_q.line_indices). For convenience, we also return
+    the mapped pandapower line index in `worst_contingency_line_idx`.
 
     Returns
     -------
     dict mapping "line_{idx}" -> metrics (includes 'radius_nminus1' and 'worst_contingency').
+
+    Logging
+    -------
+    Uses DEBUG-level logs for normal progress to keep CLI output clean.
     """
     base_q = (
         base
@@ -270,7 +265,7 @@ def compute_nminus1_l2_radius(
             f"H_full row count ({H_full.shape[0]}) does not match net.line count ({len(base_q.line_indices)})."
         )
 
-    logger.info(
+    logger.debug(
         "Computing N-1 effective L2 radii (update_sensitivities=%s, islanding=%s)...",
         update_sensitivities,
         islanding,
@@ -290,6 +285,13 @@ def compute_nminus1_l2_radius(
 
     results: Dict[str, Dict[str, Any]] = {}
     for pos, lid in enumerate(base_q.line_indices):
+        worst_pos = int(argmin[pos])
+        worst_line_idx = (
+            int(base_q.line_indices[worst_pos])
+            if 0 <= worst_pos < len(base_q.line_indices)
+            else -1
+        )
+
         k = line_key(lid)
         results[k] = {
             "flow0_mw": float(base_q.flow0_mw[pos]),
@@ -297,8 +299,8 @@ def compute_nminus1_l2_radius(
             "p_limit_mw_est": float(base_q.limit_mw_est[pos]),
             "margin_mw": float(base_q.margin_mw[pos]),
             "radius_nminus1": float(best_r[pos]),
-            "worst_contingency": int(argmin[pos]),
-            "islanded_contingencies": list(lodf_res.islanded_contingencies),
+            "worst_contingency": worst_pos,  # position in base_q.line_indices
+            "worst_contingency_line_idx": worst_line_idx,
         }
 
     return results

@@ -158,7 +158,8 @@ def compute_sigma_radius(
             f"H_full row count ({H_full.shape[0]}) does not match net.line count ({len(base_q.line_indices)})."
         )
 
-    logger.info("Computing sigma radii (Sigma ndim=%d)...", int(Sigma_arr.ndim))
+    # Keep CLI output compact: detailed progress goes to DEBUG.
+    logger.debug("Computing sigma radii (Sigma ndim=%d)...", int(Sigma_arr.ndim))
 
     results: Dict[str, Dict[str, Any]] = {}
     for pos, lid in enumerate(base_q.line_indices):

@@ -5,22 +5,12 @@ import pytest
 pp = pytest.importorskip("pandapower")
 
 
-def test_load_network_fallback_parses_m_file(tmp_path, monkeypatch):
+def test_load_network_parses_m_file(tmp_path):
     """
-    Ensure we can load a MATPOWER .m file even when pandapower's from_mpc path is unavailable.
-
-    We force the fallback by monkeypatching stability_radius.parsers.matpower.from_mpc
-    to raise NotImplementedError (similar to pandapower behavior when matpowercaseframes
-    isn't installed).
+    Ensure we can load a MATPOWER .m file using the internal deterministic parser.
+    Also ensure MATPOWER branch rateA is propagated for downstream thermal limit extraction.
     """
     from stability_radius.parsers import matpower as mp
-
-    def _raise_not_implemented(*args, **kwargs):
-        raise NotImplementedError(
-            "matpowercaseframes is used to convert .m file. Please install that python package."
-        )
-
-    monkeypatch.setattr(mp, "from_mpc", _raise_not_implemented)
 
     case_text = """function mpc = case2
 mpc.version = '2';
@@ -46,3 +36,8 @@ mpc.branch = [
     assert len(net.bus) == 2
     # Converter should create a single branch element (usually a line).
     assert len(net.line) + len(getattr(net, "impedance", [])) >= 1
+
+    if len(net.line) >= 1:
+        assert "rateA" in net.line.columns
+        lid = int(sorted(net.line.index)[0])
+        assert float(net.line.loc[lid, "rateA"]) == pytest.approx(100.0)

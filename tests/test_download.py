@@ -26,6 +26,24 @@ class _FakeSession:
         return _FakeResponse(self._response_text)
 
 
+class _FailFirstThenSucceedSession:
+    """
+    Fake session used to validate deterministic URL fallback:
+    - First URL that contains "raw.githubusercontent.com" fails.
+    - Second candidate succeeds.
+    """
+
+    def __init__(self, response_text: str):
+        self._response_text = response_text
+        self.calls: List[Tuple[str, float]] = []
+
+    def get(self, url: str, timeout: float):
+        self.calls.append((url, timeout))
+        if "raw.githubusercontent.com" in url:
+            raise RuntimeError("Simulated DNS failure for raw.githubusercontent.com")
+        return _FakeResponse(self._response_text)
+
+
 def test_download_ieee_case_validates_case_number():
     from stability_radius.utils.download import download_ieee_case
 
@@ -61,3 +79,24 @@ def test_download_ieee_case_skips_when_exists(tmp_path):
     assert path == str(target)
     assert target.read_text(encoding="utf-8") == "existing"
     assert fake.calls == []
+
+
+def test_download_pglib_opf_case_falls_back_from_raw_to_github(tmp_path):
+    from stability_radius.utils.download import download_pglib_opf_case
+
+    target = tmp_path / "pglib_opf_case30_ieee.m"
+    fake = _FailFirstThenSucceedSession("pglib-case-content")
+
+    path = download_pglib_opf_case(
+        case_filename="pglib_opf_case30_ieee.m",
+        target_path=str(target),
+        session=fake,
+        base_url="https://raw.githubusercontent.com/power-grid-lib/pglib-opf/master",
+    )
+    assert path == str(target)
+    assert target.read_text(encoding="utf-8") == "pglib-case-content"
+
+    # Must attempt raw first, then github raw.
+    assert len(fake.calls) == 2
+    assert "raw.githubusercontent.com" in fake.calls[0][0]
+    assert "github.com" in fake.calls[1][0]
