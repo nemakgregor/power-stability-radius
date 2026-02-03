@@ -56,7 +56,7 @@ def compute_metric_radius(
     H_full: np.ndarray,
     M: np.ndarray,
     *,
-    margin_factor: float = 1.0,
+    limit_factor: float = 1.0,
     base: LineBaseQuantities | None = None,
 ) -> Dict[str, Dict[str, Any]]:
     """
@@ -73,10 +73,10 @@ def compute_metric_radius(
         Sensitivity matrix (m_lines x n_buses).
     M:
         SPD weight matrix defining ||dp||_M = sqrt(dp^T M dp).
-    margin_factor:
-        Applied to estimated limits.
+    limit_factor:
+        Applied to extracted limits when base is not provided.
     base:
-        Optional precomputed per-line base quantities (to avoid repeated runpp()).
+        Optional precomputed per-line base quantities (to avoid repeated OPF).
 
     Returns
     -------
@@ -86,7 +86,7 @@ def compute_metric_radius(
     base_q = (
         base
         if base is not None
-        else get_line_base_quantities(net, margin_factor=margin_factor)
+        else get_line_base_quantities(net, limit_factor=float(limit_factor))
     )
     n_bus = int(H_full.shape[1])
     M = as_2d_square_matrix(np.asarray(M, dtype=float), n_bus, name="M")

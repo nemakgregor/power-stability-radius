@@ -66,7 +66,7 @@ def test_compute_l2_radius_returns_expected_keys():
     H, _ = build_dc_matrices(net, slack_bus=slack_bus)
     base = _make_base_for_tests(net)
 
-    res = compute_l2_radius(net, H, margin_factor=1.0, base=base)
+    res = compute_l2_radius(net, H, limit_factor=1.0, base=base)
 
     assert len(res) == len(net.line)
     key = f"line_{net.line.index[0]}"
@@ -81,11 +81,11 @@ def test_compute_l2_radius_returns_expected_keys():
     assert math.isfinite(row["radius_l2"]) or math.isinf(row["radius_l2"])
 
 
-def test_compute_l2_radius_validates_margin_factor():
+def test_compute_l2_radius_validates_limit_factor():
     from stability_radius.radii.l2 import compute_l2_radius
 
     net, _ = _make_small_net()
     H = np.zeros((len(net.line), len(net.bus)))
 
     with pytest.raises(ValueError):
-        compute_l2_radius(net, H, margin_factor=0.0)
+        compute_l2_radius(net, H, limit_factor=0.0)

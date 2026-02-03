@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 def compute_l2_radius(
     net,
     H_full: np.ndarray,
-    margin_factor: float = 1.0,
+    limit_factor: float = 1.0,
     *,
     base: LineBaseQuantities | None = None,
 ) -> Dict[str, Dict[str, Any]]:
@@ -47,10 +47,9 @@ def compute_l2_radius(
     net:
         pandapower network.
     H_full:
-        Sensitivity matrix (m_lines x n_buses). (Slack choice may change H_full columns,
-        but the projected norms are slack-invariant.)
-    margin_factor:
-        Multiplier applied to estimated limits (e.g., 0.9 for conservative, 1.1 for relaxed).
+        Sensitivity matrix (m_lines x n_buses).
+    limit_factor:
+        Multiplier applied to extracted limits (default 1.0).
     base:
         Optional precomputed per-line base quantities (to avoid repeated OPF).
 
@@ -62,7 +61,7 @@ def compute_l2_radius(
     base_q = (
         base
         if base is not None
-        else get_line_base_quantities(net, margin_factor=margin_factor)
+        else get_line_base_quantities(net, limit_factor=float(limit_factor))
     )
 
     H = np.asarray(H_full, dtype=float)

@@ -3,17 +3,6 @@ from __future__ import annotations
 """
 Monte Carlo verification for the DC L2-ball robustness certificate.
 
-Key design changes (2026-01-30)
--------------------------------
-- The verification code now lives under `stability_radius.verification` to make it
-  importable from the unified CLI (src-layout packaging).
-- Output is a structured `VerificationResult` (component statuses + reasons),
-  instead of a flat dict with an overloaded "status" string.
-- "Coverage" terminology is avoided: we report
-    * P_safe under a chosen distribution (Gaussian in the balanced subspace)
-    * certified ball mass (analytic + MC)
-    * soundness check inside the certified ball (hard check)
-
 Distribution used (slack-invariant)
 -----------------------------------
 We work in the balanced injection subspace of dimension:
@@ -30,17 +19,6 @@ This is equivalent to Δp ~ N(0, σ^2 I_d) in any orthonormal basis of the balan
 
 Certified ball:
   {Δp : ||Δp||_2 <= r*  and 1^T Δp = 0}
-
-This definition is independent of the angle slack choice (slack is only a reference).
-
-Computation with DCOperator
----------------------------
-DCOperator solves a reduced system (slack angle eliminated). For balanced Δp, line flow
-changes depend only on Δp on non-slack buses; the slack component is redundant.
-
-We therefore:
-  - sample Δp in full bus coordinates (balanced),
-  - drop the slack component when computing flows via DCOperator.
 
 Determinism
 -----------
@@ -252,10 +230,7 @@ def _flows_from_delta_injections_reduced(*, dc_op, delta_red: np.ndarray) -> np.
     """
     Compute Δf for reduced injections Δp_red (non-slack buses).
 
-    This avoids allocating a full (n_bus) delta array. The DCOperator reduced system is:
-        rhs = Δp_red^T  (shape (n-1, k))
-        theta = solve(Bred, rhs)
-        Δf = (W @ theta)^T
+    This avoids allocating a full (n_bus) delta array.
     """
     dp = np.asarray(delta_red, dtype=float)
     if dp.ndim != 2:
@@ -383,12 +358,9 @@ def _compute_r_star_and_argmin(
     )
     min_margin = float(np.min(margins_raw)) if margins_raw.size else float("nan")
 
-    # Status classification (explicit, minimal heuristics).
     if not math.isfinite(r_star) or r_star < 0.0:
         status = RADIUS_INVALID
     elif r_star == 0.0:
-        # Distinguish a truly binding line at the limit vs. bad limits / infeasible base.
-        # If base is feasible and some margin is ~0 => binding.
         if (
             base_status == BASE_OK
             and math.isfinite(argmin_margin)
@@ -400,7 +372,6 @@ def _compute_r_star_and_argmin(
     else:
         status = RADIUS_OK
 
-    # If margin itself is NaN/inf, the radius interpretation is broken.
     if not math.isfinite(min_margin):
         status = RADIUS_UNKNOWN
 
@@ -645,30 +616,19 @@ def run_monte_carlo_verification(
     n_samples: int = DEFAULT_MC.n_samples,
     seed: int = DEFAULT_MC.seed,
     chunk_size: int = DEFAULT_MC.chunk_size,
-    box_radius_quantile: float = DEFAULT_MC.box_radius_quantile,  # legacy (ignored)
-    box_feas_tol_mw: float = DEFAULT_MC.box_feas_tol_mw,
+    feas_tol_mw: float = DEFAULT_MC.feas_tol_mw,
     cert_tol_mw: float = DEFAULT_MC.cert_tol_mw,
     cert_max_samples: int = DEFAULT_MC.cert_max_samples,
     sigma_override_mw: float | None = None,
-    strict_units: bool = True,
-    allow_phase_shift: bool = False,
 ) -> VerificationResult:
     """
     Run verification for a single case.
 
     Notes
     -----
-    - `box_radius_quantile` is ignored (kept only for backward CLI compatibility).
     - `sigma_override_mw` (if provided) overrides results.json meta inj_std_mw for MC evaluation,
       enabling cross-case comparable experiments (e.g., fixed rho targets).
-
-    Unit policy
-    -----------
-    - strict_units / allow_phase_shift are passed to DCOperator construction to ensure the
-      verification model matches the project's unit/physics contract.
     """
-    _ = float(box_radius_quantile)
-
     rp = Path(results_path).resolve()
     ip = Path(input_case_path).resolve()
 
@@ -677,9 +637,9 @@ def run_monte_carlo_verification(
     if chunk_size <= 0:
         raise ValueError("chunk_size must be positive.")
 
-    tol_feas = float(box_feas_tol_mw)
+    tol_feas = float(feas_tol_mw)
     if not math.isfinite(tol_feas) or tol_feas < 0.0:
-        raise ValueError("box_feas_tol_mw must be finite and non-negative.")
+        raise ValueError("feas_tol_mw must be finite and non-negative.")
 
     tol_cert = float(cert_tol_mw)
     if not math.isfinite(tol_cert) or tol_cert < 0.0:
@@ -704,14 +664,9 @@ def run_monte_carlo_verification(
 
     with log_stage(
         logger,
-        f"Build DC Model (DCOperator, slack_bus={slack_bus}, strict_units={bool(strict_units)}, allow_phase_shift={bool(allow_phase_shift)})",
+        f"Build DC Model (DCOperator, slack_bus={slack_bus})",
     ):
-        dc_op = build_dc_operator(
-            net,
-            slack_bus=int(slack_bus),
-            strict_units=bool(strict_units),
-            allow_phase_shift=bool(allow_phase_shift),
-        )
+        dc_op = build_dc_operator(net, slack_bus=int(slack_bus))
 
     line_indices, f0, c, r, margin_raw, norm_g = _extract_line_arrays(
         results=results, net=net
@@ -916,7 +871,6 @@ def run_monte_carlo_verification(
         sigma_mw=float(sigma_mw),
     )
 
-    # Keep a few useful diagnostics in comparisons for debugging (stage outputs are deterministic anyway).
     comparisons: dict[str, Any] = {
         "certificate_soundness": str(cert_interp.soundness),
         "certificate_usefulness": str(cert_interp.usefulness),
@@ -927,8 +881,6 @@ def run_monte_carlo_verification(
         "gaussian_worst_sample_l2": float(gauss_worst_sample_l2),
         "feas_tol_mw": float(tol_feas),
         "sigma_source": str(sigma_source),
-        "strict_units": bool(strict_units),
-        "allow_phase_shift": bool(allow_phase_shift),
     }
 
     logger.info(

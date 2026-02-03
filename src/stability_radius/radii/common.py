@@ -57,6 +57,9 @@ class LineBaseQuantities:
     bus_ids: list[int] | None = None
     bus_injections_mw: np.ndarray | None = None
 
+    # Optional diagnostics (not required by radii computations).
+    opf_limits_mw: np.ndarray | None = None
+
     @property
     def limit_mw_est(self) -> np.ndarray:
         """
@@ -312,11 +315,9 @@ def estimate_line_limit_mva(net, line_row) -> float:
 def get_line_base_quantities(
     net,
     *,
-    margin_factor: float = 1.0,
+    limit_factor: float = 1.0,
     line_indices: Sequence[int] | None = None,
     opf_cfg: OPFConfig | None = None,
-    strict_units: bool = True,
-    allow_phase_shift: bool = False,
 ) -> LineBaseQuantities:
     """
     Extract per-line base flows, limits, and margins around an OPF base point.
@@ -326,25 +327,25 @@ def get_line_base_quantities(
     Base point is ALWAYS:
       - PyPSA DC OPF solved by HiGHS
 
-    Limits
-    ------
-    Extracted only from explicit converted data (`estimate_line_limit_mva`).
-    In the DC model we assume PF=1, therefore MVA limits are treated as MW limits.
+    Limits and headroom
+    -------------------
+    - Limits are extracted from explicit converted data (`estimate_line_limit_mva`) and treated
+      as MW under the DC PF=1 assumption.
+    - Radii and margins are computed w.r.t. the extracted limits (optionally scaled by `limit_factor`).
+    - OPF is solved with tightened line limits:
+        c_opf = opf_cfg.headroom_factor * c
+      to enforce a security headroom in the base point.
 
     Parameters
     ----------
     net:
         pandapower network.
-    margin_factor:
-        Multiplier applied to extracted limits (e.g., 0.9 for conservative).
+    limit_factor:
+        Multiplier applied to extracted limits for radii/margins (default 1.0).
     line_indices:
         Optional explicit ordering of line indices. Defaults to sorted(net.line.index).
     opf_cfg:
-        Optional OPF configuration (HiGHS options, unconstrained surrogate).
-    strict_units:
-        Passed to OPF construction (see solve_dc_opf_base_flows_from_pandapower).
-    allow_phase_shift:
-        Passed to OPF construction (see solve_dc_opf_base_flows_from_pandapower).
+        Optional OPF configuration (HiGHS options, unconstrained surrogate, headroom factor).
 
     Returns
     -------
@@ -352,8 +353,12 @@ def get_line_base_quantities(
     """
     cfg = opf_cfg if opf_cfg is not None else DEFAULT_OPF
 
-    if margin_factor <= 0:
-        raise ValueError("margin_factor must be positive.")
+    if limit_factor <= 0:
+        raise ValueError("limit_factor must be positive.")
+
+    opf_headroom = float(getattr(cfg, "headroom_factor", 1.0))
+    if not math.isfinite(opf_headroom) or opf_headroom <= 0.0:
+        raise ValueError("opf_cfg.headroom_factor must be finite and >0.")
 
     idx = (
         sorted(net.line.index)
@@ -365,7 +370,7 @@ def get_line_base_quantities(
     limits_mva = np.empty(len(idx), dtype=float)
     for pos, (_, line_row) in enumerate(net.line.loc[idx].iterrows()):
         s_limit_mva = estimate_line_limit_mva(net, line_row)
-        limits_mva[pos] = float(s_limit_mva) * float(margin_factor)
+        limits_mva[pos] = float(s_limit_mva) * float(limit_factor)
 
     # Explicit conversion point (contract): MVA -> MW under PF=1.
     limits_mva_assumed_mw = limits_mva.copy()
@@ -386,23 +391,25 @@ def get_line_base_quantities(
             f"Bad line positions count={int(bad.size)} (first 10: {bad[:10].tolist()})."
         )
 
+    # OPF limits are tightened (headroom) for finite limits only.
+    opf_limits = limits_mva_assumed_mw.copy()
+    finite = np.isfinite(opf_limits)
+    opf_limits[finite] = opf_limits[finite] * float(opf_headroom)
+
     from stability_radius.opf.pypsa_opf import solve_dc_opf_base_flows_from_pandapower
 
     logger.info(
-        "Solving OPF base point via PyPSA DC OPF (solver=%s, threads=%d, margin_factor=%s, strict_units=%s, allow_phase_shift=%s)...",
+        "Solving OPF base point via PyPSA DC OPF (solver=%s, threads=%d, headroom_factor=%s, limit_factor=%s)...",
         str(cfg.highs.solver_name),
         int(cfg.highs.threads),
-        float(margin_factor),
-        bool(strict_units),
-        bool(allow_phase_shift),
+        float(opf_headroom),
+        float(limit_factor),
     )
     opf_res = solve_dc_opf_base_flows_from_pandapower(
         net=net,
         line_indices=idx,
-        line_limits_mw=limits_mva_assumed_mw,
+        line_limits_mw=opf_limits,
         opf_cfg=cfg,
-        strict_units=bool(strict_units),
-        allow_phase_shift=bool(allow_phase_shift),
     )
     flow0 = np.asarray(opf_res.line_flows_mw, dtype=float)
 
@@ -433,6 +440,7 @@ def get_line_base_quantities(
         opf_objective=float(opf_res.objective),
         bus_ids=bus_ids,
         bus_injections_mw=bus_inj,
+        opf_limits_mw=opf_limits,
     )
 
 

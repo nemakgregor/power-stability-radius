@@ -16,7 +16,7 @@ def _make_small_net():
     pp.create_load(net, b1, p_mw=10.0, q_mvar=0.0)
     pp.create_load(net, b2, p_mw=5.0, q_mvar=0.0)
 
-    # Use parameters that produce a valid runpp and valid x_total for DC.
+    # Use parameters that produce a valid x_total for DC.
     pp.create_line_from_parameters(
         net,
         from_bus=b0,
@@ -51,12 +51,18 @@ def test_build_dc_matrices_shape_and_slack_column():
     H, _ = build_dc_matrices(net, slack_bus=slack_bus)
 
     assert H.shape == (len(net.line), len(net.bus))
-    # Slack column should be all zeros
     slack_pos = list(net.bus.index).index(slack_bus)
     assert np.allclose(H[:, slack_pos], 0.0)
 
 
-def test_build_dc_operator_accepts_negative_reactance_when_strict_units_is_disabled():
+def test_build_dc_operator_accepts_negative_reactance():
+    """
+    Negative reactance can appear in some datasets (series compensation / capacitive modeling).
+
+    Contract:
+    - x must be non-zero (sign is allowed)
+    - build_dc_operator must build a consistent operator (b<0 if x<0).
+    """
     pytest.importorskip("scipy")
 
     from stability_radius.dc.dc_model import build_dc_operator
@@ -74,20 +80,17 @@ def test_build_dc_operator_accepts_negative_reactance_when_strict_units_is_disab
         to_bus=b1,
         length_km=1.0,
         r_ohm_per_km=0.01,
-        x_ohm_per_km=-0.10,  # negative reactance (non-standard) allowed only in permissive mode
+        x_ohm_per_km=-0.10,  # negative reactance (allowed)
         c_nf_per_km=0.0,
         max_i_ka=1.0,
         max_loading_percent=100.0,
     )
 
-    op = build_dc_operator(net, slack_bus=b0, strict_units=False)
+    op = build_dc_operator(net, slack_bus=b0)
     assert op.n_bus == 2
     assert op.n_line == 1
     assert np.isfinite(op.b[0])
     assert op.b[0] < 0.0
-
-    with pytest.raises(ValueError, match=r"x_total_ohm.*>0|reactance"):
-        build_dc_operator(net, slack_bus=b0, strict_units=True)
 
 
 def test_build_dc_operator_uses_trafo_in_b_matrix_to_avoid_singularity():
@@ -111,7 +114,6 @@ def test_build_dc_operator_uses_trafo_in_b_matrix_to_avoid_singularity():
     pp.create_ext_grid(net, b_hv, vm_pu=1.0)
     pp.create_load(net, b2, p_mw=5.0, q_mvar=0.0)
 
-    # Transformer connects slack component to the line component.
     pp.create_transformer_from_parameters(
         net,
         hv_bus=b_hv,
@@ -132,7 +134,6 @@ def test_build_dc_operator_uses_trafo_in_b_matrix_to_avoid_singularity():
         tap_pos=0,
     )
 
-    # Monitored line is only on LV side; without trafo in B it would be disconnected from slack.
     pp.create_line_from_parameters(
         net,
         from_bus=b_lv,
@@ -150,13 +151,10 @@ def test_build_dc_operator_uses_trafo_in_b_matrix_to_avoid_singularity():
     assert op.n_line == 1
 
 
-def test_build_dc_operator_rejects_phase_shifting_transformers_by_default():
+def test_build_dc_operator_rejects_phase_shifting_transformers():
     """
     Contract: phase shifts (shift_degree != 0) are not modeled by the project's DC operator.
-
-    Default behavior:
-    - allow_phase_shift=False => raise
-    - allow_phase_shift=True => allowed with a warning
+    Therefore the operator must fail fast.
     """
     pytest.importorskip("scipy")
 
@@ -182,7 +180,7 @@ def test_build_dc_operator_rejects_phase_shifting_transformers_by_default():
         vkr_percent=0.5,
         pfe_kw=0.0,
         i0_percent=0.0,
-        shift_degree=5.0,  # phase shifter (unsupported by DC model)
+        shift_degree=5.0,  # unsupported
         tap_side="hv",
         tap_neutral=0,
         tap_min=0,
@@ -204,12 +202,4 @@ def test_build_dc_operator_rejects_phase_shifting_transformers_by_default():
     )
 
     with pytest.raises(ValueError, match=r"shift_degree"):
-        build_dc_operator(
-            net, slack_bus=b_hv, strict_units=True, allow_phase_shift=False
-        )
-
-    op = build_dc_operator(
-        net, slack_bus=b_hv, strict_units=True, allow_phase_shift=True
-    )
-    assert op.n_bus == 3
-    assert op.n_line == 1
+        build_dc_operator(net, slack_bus=b_hv)

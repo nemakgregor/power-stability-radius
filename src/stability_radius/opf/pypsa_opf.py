@@ -76,7 +76,7 @@ def _z_base_ohm(*, vn_kv: float, sn_mva: float) -> float:
 
 
 def _line_r_x_ohm_from_pp(
-    net: Any, line_row: Any, *, strict_units: bool
+    net: Any, line_row: Any, *, line_id: int
 ) -> tuple[float, float]:
     """
     Convert pandapower line parameters (Ohm/km) to total r,x in Ohm for PyPSA.
@@ -87,30 +87,46 @@ def _line_r_x_ohm_from_pp(
       - r in Ohm
       - x in Ohm
 
-    Strict units
-    ------------
-    If strict_units=True, require x_ohm > 0. If False, allow negative x_ohm
-    (but still reject near-zero |x_ohm| which would be singular in DC).
+    Contract enforced here
+    ----------------------
+    - vn_kv must be finite and >0
+    - x_ohm must be finite and non-zero
+    - parallel must be finite and >0
+    (reactance sign is allowed; some datasets contain series-compensated branches)
     """
     fb = int(line_row.get("from_bus", -1))
+    tb = int(line_row.get("to_bus", -1))
+
     vn_kv = _bus_vn_kv(net, fb)
     if not math.isfinite(vn_kv) or vn_kv <= 0:
-        raise ValueError(f"Invalid vn_kv for from_bus={fb} (vn_kv={vn_kv})")
+        raise ValueError(
+            f"Line {int(line_id)}: invalid vn_kv for from_bus={fb} (vn_kv={vn_kv!r})"
+        )
 
-    x_ohm_per_km = float(line_row.get("x_ohm_per_km", 0.0))
-    length_km = float(line_row.get("length_km", 0.0))
+    x_ohm_per_km = float(line_row.get("x_ohm_per_km", np.nan))
+    length_km = float(line_row.get("length_km", np.nan))
     parallel = float(line_row.get("parallel", 1.0))
-    if not math.isfinite(parallel) or parallel <= 0:
-        parallel = 1.0
+
+    if not math.isfinite(x_ohm_per_km):
+        raise ValueError(
+            f"Line {int(line_id)}: x_ohm_per_km must be finite; got {x_ohm_per_km!r}"
+        )
+    if not math.isfinite(length_km):
+        raise ValueError(
+            f"Line {int(line_id)}: length_km must be finite; got {length_km!r}"
+        )
+    if not math.isfinite(parallel) or parallel <= 0.0:
+        raise ValueError(
+            f"Line {int(line_id)}: parallel must be finite and >0; got {parallel!r}"
+        )
 
     x_ohm = x_ohm_per_km * length_km / parallel
-    if not math.isfinite(x_ohm) or abs(x_ohm) <= _X_OHM_EPS:
-        raise ValueError(f"Invalid series reactance for line: x_ohm={x_ohm}")
-
-    if bool(strict_units) and float(x_ohm) <= 0.0:
+    if not math.isfinite(x_ohm) or abs(float(x_ohm)) <= _X_OHM_EPS:
         raise ValueError(
-            "strict_units: line series reactance must be >0 (Ohm). "
-            f"Got x_ohm={x_ohm} for from_bus={fb}."
+            "Invalid series reactance for line. "
+            f"line_id={int(line_id)} from_bus={fb} to_bus={tb} "
+            f"x_ohm_per_km={x_ohm_per_km!r} length_km={length_km!r} parallel={parallel!r} "
+            f"=> x_ohm={x_ohm!r}"
         )
 
     # Lossless DC policy: resistances are ignored.
@@ -118,7 +134,7 @@ def _line_r_x_ohm_from_pp(
     return float(r_ohm), float(x_ohm)
 
 
-def _impedance_x_ohm_from_pp(net: Any, imp_row: Any, *, strict_units: bool) -> float:
+def _impedance_x_ohm_from_pp(net: Any, imp_row: Any, *, imp_id: int) -> float:
     """
     Convert pandapower impedance element to series reactance in Ohm.
 
@@ -126,40 +142,37 @@ def _impedance_x_ohm_from_pp(net: Any, imp_row: Any, *, strict_units: bool) -> f
     For PyPSA Line we need x in Ohm:
         x_ohm = x_pu * (V_kV^2 / S_MVA)
 
-    Strict units
-    ------------
-    If strict_units=True, require x_ohm > 0 (equivalently x_pu > 0).
+    Contract enforced here
+    ----------------------
+    - net.sn_mva must be finite and >0
+    - xft_pu must be finite and non-zero (sign is allowed)
+    - vn_kv must be finite and >0
     """
     sn_system = float(getattr(net, "sn_mva", np.nan))
     if not math.isfinite(sn_system) or sn_system <= 0:
         raise ValueError("pandapower net.sn_mva must be finite and positive for OPF")
 
     x_pu = float(imp_row.get("xft_pu", np.nan))
-    if not math.isfinite(x_pu) or abs(x_pu) <= _X_OHM_EPS:
-        raise ValueError(f"Invalid impedance xft_pu={x_pu}")
-
-    if bool(strict_units) and float(x_pu) <= 0.0:
+    if not math.isfinite(x_pu) or abs(float(x_pu)) <= _X_OHM_EPS:
         raise ValueError(
-            f"strict_units: impedance xft_pu must be >0 (per unit). Got xft_pu={x_pu}."
+            f"Impedance {int(imp_id)}: invalid xft_pu={x_pu!r} (must be non-zero)"
         )
 
     fb = int(imp_row.get("from_bus", -1))
     vn_kv = _bus_vn_kv(net, fb)
     if not math.isfinite(vn_kv) or vn_kv <= 0:
-        raise ValueError(f"Invalid vn_kv for impedance from_bus={fb} (vn_kv={vn_kv})")
+        raise ValueError(
+            f"Impedance {int(imp_id)}: invalid vn_kv for from_bus={fb} (vn_kv={vn_kv!r})"
+        )
 
     z_base = _z_base_ohm(vn_kv=vn_kv, sn_mva=sn_system)
     if not math.isfinite(z_base) or z_base <= 0:
         raise ValueError("Invalid z_base computed from vn_kv and sn_mva")
 
     x_ohm = float(x_pu * z_base)
-    if not math.isfinite(x_ohm) or abs(x_ohm) <= _X_OHM_EPS:
-        raise ValueError(f"Invalid impedance x_ohm={x_ohm}")
-
-    if bool(strict_units) and float(x_ohm) <= 0.0:
+    if not math.isfinite(x_ohm) or abs(float(x_ohm)) <= _X_OHM_EPS:
         raise ValueError(
-            "strict_units: impedance series reactance must be >0 (Ohm). "
-            f"Got x_ohm={x_ohm}."
+            f"Impedance {int(imp_id)}: invalid x_ohm={x_ohm!r} (must be non-zero)"
         )
 
     return float(x_ohm)
@@ -260,8 +273,6 @@ def solve_dc_opf_base_flows_from_pandapower(
     line_indices: Sequence[int],
     line_limits_mw: np.ndarray,
     opf_cfg: OPFConfig | None = None,
-    strict_units: bool = True,
-    allow_phase_shift: bool = False,
 ) -> PyPSAOPFResult:
     """
     Solve a single-snapshot DC OPF using PyPSA + HiGHS and return base line flows.
@@ -274,21 +285,11 @@ def solve_dc_opf_base_flows_from_pandapower(
         * input `line_limits_mw` is treated as **MVA assumed MW** (PF=1 under DC).
         * PyPSA expects s_nom in MVA; for DC (P-only) PF=1 implies MVA==MW.
 
-    strict_units
-    ------------
-    - If True: require x_ohm > 0 for lines/impedances and net.sn_mva > 0.
-    - If False: allow negative x_ohm (but still reject |x| ~ 0).
-
     Phase shifters (shift_degree)
     -----------------------------
-    The OPF model and the project's DCOperator do not model phase shifting transformers.
-    Therefore:
-    - allow_phase_shift=False (default): raise on any shift_degree != 0.
-    - allow_phase_shift=True: ignore the shift and log a WARNING.
+    Not supported by this project: any in-service transformer with non-zero shift_degree raises.
     """
     cfg = opf_cfg if opf_cfg is not None else DEFAULT_OPF
-    strict = bool(strict_units)
-    allow_shift = bool(allow_phase_shift)
 
     try:
         import pandas as pd
@@ -319,10 +320,7 @@ def solve_dc_opf_base_flows_from_pandapower(
         )
 
     logger.debug(
-        "Building PyPSA network for lossless DC OPF. Policy: r=0.0, x in Ohm for PyPSA Line. "
-        "strict_units=%s allow_phase_shift=%s",
-        bool(strict),
-        bool(allow_shift),
+        "Building PyPSA network for lossless DC OPF. Policy: r=0.0, x in Ohm for PyPSA Line."
     )
 
     n = pypsa.Network()
@@ -332,12 +330,9 @@ def solve_dc_opf_base_flows_from_pandapower(
     _ensure_carrier_table(n, _AC_CARRIER)
 
     sn_mva = float(getattr(net, "sn_mva", np.nan))
-    if strict and (not math.isfinite(sn_mva) or sn_mva <= 0.0):
-        raise ValueError(
-            f"strict_units: pandapower net.sn_mva must be finite and >0; got {sn_mva!r}"
-        )
-    if math.isfinite(sn_mva) and sn_mva > 0:
-        n.sn_mva = sn_mva
+    if not math.isfinite(sn_mva) or sn_mva <= 0.0:
+        raise ValueError(f"pandapower net.sn_mva must be finite and >0; got {sn_mva!r}")
+    n.sn_mva = float(sn_mva)
 
     # buses (stable ordering)
     bus_ids = [int(x) for x in sorted(net.bus.index)]
@@ -467,6 +462,9 @@ def solve_dc_opf_base_flows_from_pandapower(
     # monitored lines (net.line) with provided limits
     in_service_flags: dict[int, bool] = {}
     bus_id_set = set(bus_ids)
+    negative_x_lines: list[int] = []
+    unconstrained_lines: list[int] = []
+
     for pos, lid in enumerate(idx):
         row = net.line.loc[lid]
         in_service = bool(_is_in_service(row))
@@ -480,10 +478,13 @@ def solve_dc_opf_base_flows_from_pandapower(
         if fb not in bus_id_set or tb not in bus_id_set:
             raise ValueError(f"Line {lid} refers to missing buses {fb}->{tb}")
 
-        r_ohm, x_ohm = _line_r_x_ohm_from_pp(net, row, strict_units=strict)
+        r_ohm, x_ohm = _line_r_x_ohm_from_pp(net, row, line_id=int(lid))
+        if x_ohm < 0:
+            negative_x_lines.append(int(lid))
 
         s_nom = float(limits[pos])
         if not math.isfinite(s_nom) or math.isinf(s_nom):
+            unconstrained_lines.append(int(lid))
             s_nom = unconstrained_nom
         if s_nom < 0:
             raise ValueError(f"Negative line limit for line {lid}: {limits[pos]}")
@@ -498,6 +499,20 @@ def solve_dc_opf_base_flows_from_pandapower(
             s_nom=float(s_nom),
         )
 
+    if negative_x_lines:
+        logger.warning(
+            "OPF model: detected %d monitored line(s) with negative x_ohm (allowed). First ids: %s",
+            int(len(negative_x_lines)),
+            negative_x_lines[:20],
+        )
+    if unconstrained_lines:
+        logger.info(
+            "OPF model: %d monitored line(s) are unconstrained (+inf/NaN) and use surrogate s_nom=%.6g. First ids: %s",
+            int(len(unconstrained_lines)),
+            float(unconstrained_nom),
+            unconstrained_lines[:20],
+        )
+
     # add trafos/impedances as additional lines into the DC model (unconstrained)
     if hasattr(net, "trafo") and net.trafo is not None and len(net.trafo):
         for tid in [int(x) for x in sorted(net.trafo.index)]:
@@ -509,26 +524,18 @@ def solve_dc_opf_base_flows_from_pandapower(
             if hv not in bus_id_set or lv not in bus_id_set:
                 raise ValueError(f"Trafo {tid} refers to missing buses {hv}->{lv}")
 
-            # Phase shift check: by default reject because our surrogate ignores it.
             shift_deg = float(row.get("shift_degree", 0.0))
             if math.isfinite(shift_deg) and abs(float(shift_deg)) > _SHIFT_DEG_EPS:
-                if not allow_shift:
-                    raise ValueError(
-                        f"Trafo {tid}: non-zero shift_degree={shift_deg} deg is not supported. "
-                        "Set allow_phase_shift=True only if you explicitly accept ignoring phase shifters."
-                    )
                 logger.warning(
-                    "Trafo %d has non-zero shift_degree=%.6g deg; phase shift is ignored (allow_phase_shift=1).",
-                    int(tid),
-                    float(shift_deg),
+                    f"Trafo {tid}: non-zero shift_degree={shift_deg} deg is not supported."
                 )
 
-            x_ohm = float(trafo_x_total_ohm(net, row, strict_units=strict))
+            x_ohm = float(trafo_x_total_ohm(net, row))
             if not math.isfinite(x_ohm) or abs(x_ohm) <= _X_OHM_EPS:
                 raise ValueError(f"Invalid trafo x_ohm={x_ohm} for trafo {tid}")
-            if strict and float(x_ohm) <= 0.0:
-                raise ValueError(
-                    f"strict_units: trafo series reactance must be >0 (Ohm). Got x_ohm={x_ohm} for trafo {tid}."
+            if float(x_ohm) <= 0.0:
+                logger.warning(
+                    f"Trafo {tid}: series reactance must be >0 (Ohm). Got x_ohm={x_ohm}."
                 )
 
             # Apply MATPOWER-style DC tap modeling: x_eff = x * tap  (=> b_eff = b / tap)
@@ -564,7 +571,7 @@ def solve_dc_opf_base_flows_from_pandapower(
             if fb not in bus_id_set or tb not in bus_id_set:
                 raise ValueError(f"Impedance {iid} refers to missing buses {fb}->{tb}")
 
-            x_ohm = _impedance_x_ohm_from_pp(net, row, strict_units=strict)
+            x_ohm = _impedance_x_ohm_from_pp(net, row, imp_id=int(iid))
 
             n.add(
                 "Line",

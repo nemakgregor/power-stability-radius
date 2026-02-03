@@ -10,13 +10,9 @@ The report explicitly separates:
 2) Probabilistic metrics under a chosen Δp distribution (soft indicators)
 3) Heuristic comparisons (optional, not used as correctness signals)
 4) Literature notes (only with an explicit disclaimer about non-comparability)
-
-This avoids mixing:
-- "certificate is correct" vs
-- "certificate covers meaningful probability mass" vs
-- "this matches some external benchmark"
 """
 
+import csv
 import json
 import logging
 import math
@@ -40,7 +36,25 @@ from .verify_certificate import interpret_certificate
 
 logger = logging.getLogger("stability_radius.verification.generate_report")
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+@dataclass(frozen=True)
+class ReportCaseSpec:
+    """
+    Report case specification.
+
+    Notes
+    -----
+    This is intentionally simple and JSON/YAML-friendly:
+    - `results_path` is the results.json path for this case
+    - `input_case_path` is the MATPOWER/PGLib .m file path
+    - `known_critical_pairs` is optional and used only for heuristic comparisons
+      (top-k risky line recall).
+    """
+
+    case_id: str
+    input_case_path: Path
+    results_path: Path
+    known_critical_pairs: tuple[tuple[int, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -65,6 +79,24 @@ class NMinus1MatchStats:
     selected_lines: int
     evaluated_lines: int
     hits: int
+
+
+@dataclass(frozen=True)
+class MarginVsRadiusArtifacts:
+    """
+    Per-line margin vs radius distribution artifacts (CSV + optional scatter plot).
+
+    Paths are stored as *relative* paths intended to be embedded into the Markdown report.
+    """
+
+    radius_field: str
+    csv_rel_path: str
+    plot_rel_path: str | None
+    plot_status: str  # ok | skipped_no_matplotlib | skipped_no_finite_points | error
+    n_lines: int
+    n_plotted: int
+    skipped_nonfinite: int
+    note: str = ""
 
 
 def _load_results(path: Path) -> Dict[str, Any]:
@@ -95,12 +127,282 @@ def _fmt_percent_or_na(x: float, *, decimals: int = 3) -> str:
     return f"{float(x):.{decimals}f}%"
 
 
+def _csv_float(x: Any) -> str:
+    """Deterministic float formatting for CSV artifacts (round-trip friendly)."""
+    try:
+        xf = float(x)
+    except (TypeError, ValueError):
+        return str(x)
+
+    if math.isinf(xf):
+        return "inf" if xf > 0 else "-inf"
+    if math.isnan(xf):
+        return "nan"
+    return format(xf, ".17g")
+
+
+def _save_margin_vs_radius_plot(
+    *,
+    out_path: Path,
+    margins: np.ndarray,
+    radii: np.ndarray,
+    case_id: str,
+    radius_field: str,
+) -> None:
+    """
+    Save a scatter plot: x=margin_mw, y=<radius_field> for all finite points.
+
+    Notes
+    -----
+    - Uses matplotlib if installed.
+    - Uses a non-interactive backend when possible.
+    """
+    try:
+        import matplotlib  # type: ignore
+
+        try:
+            matplotlib.use(
+                "Agg"
+            )  # must be called before importing pyplot in most cases
+        except Exception:  # noqa: BLE001
+            # Backend might already be set by the environment; proceed best-effort.
+            pass
+
+        import matplotlib.pyplot as plt  # type: ignore
+    except Exception as e:  # noqa: BLE001
+        raise ImportError(
+            "matplotlib is required to generate plots for the report assets "
+            "(install `matplotlib`)."
+        ) from e
+
+    x = np.asarray(margins, dtype=float).reshape(-1)
+    y = np.asarray(radii, dtype=float).reshape(-1)
+    if x.size != y.size:
+        raise ValueError("Internal error: margins and radii array size mismatch.")
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(6.5, 4.5), dpi=160)
+    ax.scatter(x, y, s=8, alpha=0.45, edgecolors="none")
+    ax.set_xlabel("load margin (MW)")
+    ax.set_ylabel(f"{radius_field} (MW)")
+    ax.set_title(f"{case_id}: load margin vs {radius_field}")
+    ax.grid(True, alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(out_path)
+    plt.close(fig)
+
+
+def save_margin_vs_radius_distribution(
+    *,
+    case_id: str,
+    results: Dict[str, Any],
+    net: Any,
+    out_dir: Path,
+    assets_rel_dir: str,
+    radius_field: str = "radius_l2",
+) -> MarginVsRadiusArtifacts:
+    """
+    Save per-line distribution artifacts: CSV + scatter plot (if possible).
+
+    CSV columns
+    ----------
+    - line_idx, from_bus, to_bus
+    - flow0_mw, p0_mw, p_limit_mw_est, margin_mw
+    - <radius_field>
+
+    Plot
+    ----
+    Scatter: x=margin_mw, y=<radius_field>, finite points only.
+
+    Failure modes
+    -------------
+    - CSV write errors: raised to the caller (reported as error in Markdown).
+    - Plot errors (missing matplotlib / no finite points): reported via plot_status, report still continues.
+    """
+    radius_field_eff = str(radius_field).strip()
+    if not radius_field_eff:
+        raise ValueError("radius_field must be a non-empty string.")
+
+    assets_rel_dir_eff = str(assets_rel_dir).strip()
+    if not assets_rel_dir_eff:
+        raise ValueError("assets_rel_dir must be a non-empty relative directory name.")
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    csv_name = f"{case_id}_margin_vs_{radius_field_eff}.csv"
+    plot_name = f"{case_id}_margin_vs_{radius_field_eff}.png"
+
+    csv_path = (out_dir / csv_name).resolve()
+    plot_path = (out_dir / plot_name).resolve()
+
+    csv_rel = f"{assets_rel_dir_eff}/{csv_name}"
+    plot_rel = f"{assets_rel_dir_eff}/{plot_name}"
+
+    line_indices = _sorted_line_indices(net)
+    n_lines = int(len(line_indices))
+
+    # Collect finite points for plotting.
+    x_margin: list[float] = []
+    y_radius: list[float] = []
+    skipped = 0
+
+    # Use stable ordering to make artifacts reproducible.
+    line_tbl = net.line.loc[line_indices, ["from_bus", "to_bus"]]
+
+    with csv_path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f, lineterminator="\n")
+        writer.writerow(
+            [
+                "line_idx",
+                "from_bus",
+                "to_bus",
+                "flow0_mw",
+                "p0_mw",
+                "p_limit_mw_est",
+                "margin_mw",
+                radius_field_eff,
+            ]
+        )
+
+        for lid, fb, tb in line_tbl.itertuples():
+            lid_i = int(lid)
+            key = line_key(lid_i)
+            row = results.get(key)
+            if not isinstance(row, dict):
+                raise KeyError(
+                    f"results.json is missing required per-line entry: {key}"
+                )
+
+            try:
+                flow0 = float(row.get("flow0_mw", float("nan")))
+            except (TypeError, ValueError):
+                flow0 = float("nan")
+            try:
+                p0 = float(
+                    row.get(
+                        "p0_mw",
+                        abs(flow0) if math.isfinite(flow0) else float("nan"),
+                    )
+                )
+            except (TypeError, ValueError):
+                p0 = float("nan")
+            try:
+                limit = float(row.get("p_limit_mw_est", float("nan")))
+            except (TypeError, ValueError):
+                limit = float("nan")
+
+            if "margin_mw" in row:
+                try:
+                    margin = float(row.get("margin_mw", float("nan")))
+                except (TypeError, ValueError):
+                    margin = float("nan")
+            else:
+                margin = (
+                    float(limit - abs(flow0))
+                    if (math.isfinite(limit) and math.isfinite(flow0))
+                    else float("nan")
+                )
+
+            try:
+                radius = float(row.get(radius_field_eff, float("nan")))
+            except (TypeError, ValueError):
+                radius = float("nan")
+
+            writer.writerow(
+                [
+                    str(lid_i),
+                    str(int(fb)),
+                    str(int(tb)),
+                    _csv_float(flow0),
+                    _csv_float(p0),
+                    _csv_float(limit),
+                    _csv_float(margin),
+                    _csv_float(radius),
+                ]
+            )
+
+            if math.isfinite(margin) and math.isfinite(radius):
+                x_margin.append(float(margin))
+                y_radius.append(float(radius))
+            else:
+                skipped += 1
+
+    logger.info(
+        "case=%s: saved per-line margin vs %s CSV (%d lines): %s",
+        str(case_id),
+        radius_field_eff,
+        n_lines,
+        str(csv_path),
+    )
+
+    note = ""
+    plot_status = "skipped_no_matplotlib"
+    plot_rel_path: str | None = None
+
+    if x_margin:
+        try:
+            _save_margin_vs_radius_plot(
+                out_path=plot_path,
+                margins=np.asarray(x_margin, dtype=float),
+                radii=np.asarray(y_radius, dtype=float),
+                case_id=str(case_id),
+                radius_field=radius_field_eff,
+            )
+            plot_status = "ok"
+            plot_rel_path = plot_rel
+            logger.info(
+                "case=%s: saved per-line margin vs %s plot (%d points): %s",
+                str(case_id),
+                radius_field_eff,
+                int(len(x_margin)),
+                str(plot_path),
+            )
+        except ImportError as e:
+            plot_status = "skipped_no_matplotlib"
+            note = str(e)
+            logger.error(
+                "case=%s: plot skipped (matplotlib missing). Install matplotlib to enable plots.",
+                str(case_id),
+            )
+        except Exception as e:  # noqa: BLE001
+            plot_status = "error"
+            note = f"{type(e).__name__}: {e}"
+            logger.exception(
+                "case=%s: failed to generate plot margin vs %s.",
+                str(case_id),
+                radius_field_eff,
+            )
+    else:
+        plot_status = "skipped_no_finite_points"
+        note = "no finite (margin, radius) points to plot"
+        logger.warning(
+            "case=%s: plot skipped (no finite points). Non-finite points skipped=%d/%d.",
+            str(case_id),
+            int(skipped),
+            int(n_lines),
+        )
+
+    return MarginVsRadiusArtifacts(
+        radius_field=radius_field_eff,
+        csv_rel_path=csv_rel,
+        plot_rel_path=plot_rel_path,
+        plot_status=str(plot_status),
+        n_lines=int(n_lines),
+        n_plotted=int(len(x_margin)),
+        skipped_nonfinite=int(skipped),
+        note=str(note),
+    )
+
+
 def _results_config_matches(
     *,
     results: Dict[str, Any],
     expected_dc_mode: str,
     expected_slack_bus: int,
     expected_compute_nminus1: bool,
+    expected_inj_std_mw: float,
+    expected_opf_headroom_factor: float,
 ) -> tuple[bool, str]:
     meta = _get_meta(results)
 
@@ -126,6 +428,25 @@ def _results_config_matches(
     n1 = bool(meta.get("nminus1_computed", False))
     if n1 != bool(expected_compute_nminus1):
         return False, f"nminus1_computed={n1} != {bool(expected_compute_nminus1)}"
+
+    try:
+        inj_std = float(meta.get("inj_std_mw", float("nan")))
+    except (TypeError, ValueError):
+        inj_std = float("nan")
+    if not math.isfinite(inj_std) or abs(inj_std - float(expected_inj_std_mw)) > 1e-12:
+        return False, f"inj_std_mw={inj_std!r} != {float(expected_inj_std_mw)!r}"
+
+    try:
+        head = float(meta.get("opf_headroom_factor", float("nan")))
+    except (TypeError, ValueError):
+        head = float("nan")
+    if (not math.isfinite(head)) or abs(
+        head - float(expected_opf_headroom_factor)
+    ) > 1e-12:
+        return (
+            False,
+            f"opf_headroom_factor={head!r} != {float(expected_opf_headroom_factor)!r}",
+        )
 
     return True, "ok"
 
@@ -306,6 +627,7 @@ def _case_card_md(
     vr: Optional[VerificationResult],
     comparisons: dict[str, Any],
     time_sec: float,
+    margin_vs_radius: MarginVsRadiusArtifacts | None = None,
 ) -> str:
     lines: List[str] = []
     lines.append(f"## {case}")
@@ -323,7 +645,6 @@ def _case_card_md(
     if vr.overall.reasons:
         lines.append(f"- reasons: `{list(vr.overall.reasons)}`")
 
-    # Single summary status (report-friendly).
     lines.append(f"- summary: **{summarize_status(vr)}**")
 
     lines.append("")
@@ -414,6 +735,33 @@ def _case_card_md(
         lines.append("- n/a")
     lines.append("")
 
+    if margin_vs_radius is not None:
+        lines.append("### Per-line distribution (load margin vs stability radius)")
+        lines.append("")
+        lines.append(f"- radius_field: `{margin_vs_radius.radius_field}`")
+        if margin_vs_radius.csv_rel_path:
+            lines.append(f"- table_csv: `{margin_vs_radius.csv_rel_path}`")
+        else:
+            lines.append("- table_csv: n/a")
+
+        if margin_vs_radius.plot_rel_path:
+            lines.append(
+                "- plot_png: "
+                f"`{margin_vs_radius.plot_rel_path}` "
+                f"(points={margin_vs_radius.n_plotted}/{margin_vs_radius.n_lines}, "
+                f"skipped_nonfinite={margin_vs_radius.skipped_nonfinite})"
+            )
+            lines.append("")
+            lines.append(
+                f"![{case} margin_vs_{margin_vs_radius.radius_field}]({margin_vs_radius.plot_rel_path})"
+            )
+        else:
+            note = f", note={margin_vs_radius.note}" if margin_vs_radius.note else ""
+            lines.append(
+                f"- plot_png: n/a (status={margin_vs_radius.plot_status}{note})"
+            )
+        lines.append("")
+
     lines.append("### Limitations")
     lines.append("")
     lines.append(
@@ -427,9 +775,9 @@ def _case_card_md(
     lines.append("")
 
     if math.isfinite(float(time_sec)):
-        lines.append(f"- demo time_sec: **{time_sec:.3f}**")
+        lines.append(f"- compute time_sec: **{time_sec:.3f}**")
     else:
-        lines.append("- demo time_sec: n/a")
+        lines.append("- compute time_sec: n/a")
     lines.append("")
 
     return "\n".join(lines)
@@ -437,74 +785,71 @@ def _case_card_md(
 
 def generate_report_text(
     *,
-    results_dir: Path,
+    cases: Sequence[ReportCaseSpec],
     n_samples: int,
     seed: int,
     chunk_size: int,
     generate_missing_results: bool,
-    demo_dc_mode: str,
-    demo_slack_bus: int,
-    demo_compute_nminus1: bool,
-    demo_dc_chunk_size: int = 256,
-    demo_dc_dtype: np.dtype = np.float64,
-    demo_margin_factor: float = 1.0,
-    demo_inj_std_mw: float = 1.0,
-    demo_nminus1_update_sensitivities: bool = True,
-    demo_nminus1_islanding: str = "skip",
-    demo_opf_cfg: OPFConfig | None = None,
-    demo_opf_dc_flow_consistency_tol_mw: float = 1e-3,
-    demo_opf_bus_balance_tol_mw: float = 1e-6,
-    mc_box_radius_quantile: float = DEFAULT_MC.box_radius_quantile,  # legacy (ignored)
-    mc_box_feas_tol_mw: float = DEFAULT_MC.box_feas_tol_mw,
+    compute_dc_mode: str,
+    compute_slack_bus: int,
+    compute_compute_nminus1: bool,
+    compute_dc_chunk_size: int = 256,
+    compute_dc_dtype: np.dtype = np.float64,
+    compute_inj_std_mw: float = 1.0,
+    compute_nminus1_update_sensitivities: bool = True,
+    compute_nminus1_islanding: str = "skip",
+    compute_opf_cfg: OPFConfig | None = None,
+    compute_opf_dc_flow_consistency_tol_mw: float = 1e-3,
+    compute_opf_bus_balance_tol_mw: float = 1e-6,
+    mc_feas_tol_mw: float = DEFAULT_MC.feas_tol_mw,
     mc_cert_tol_mw: float = DEFAULT_MC.cert_tol_mw,
     mc_cert_max_samples: int = DEFAULT_MC.cert_max_samples,
-    strict_units: bool = True,
-    allow_phase_shift: bool = False,
+    path_base_dir: Path | None = None,
+    per_line_artifacts_dir: Path | None = None,
+    per_line_radius_field: str = "radius_l2",
+    per_line_assets_rel_dir: str | None = None,
 ) -> str:
     """
     Generate verification report markdown as a string.
+
+    Parameters
+    ----------
+    cases:
+        Case list (configured in YAML). No hard-coded cases in code.
+    path_base_dir:
+        Base directory for resolving relative paths in meta/input specs.
+        If None, uses current working directory.
+    per_line_artifacts_dir:
+        If provided, saves per-line artifacts (margin vs radius CSV and plot) into this directory.
+    per_line_radius_field:
+        Which radius field to use for the per-line scatter plot and CSV (default: radius_l2).
+    per_line_assets_rel_dir:
+        Relative directory name used in Markdown links to artifacts. If None, uses `per_line_artifacts_dir.name`.
     """
-    _ = float(mc_box_radius_quantile)
+    base_dir = (
+        Path(path_base_dir).resolve() if path_base_dir is not None else Path.cwd()
+    )
+    compute_dc_mode_eff = str(compute_dc_mode).strip().lower()
+    if compute_dc_mode_eff not in ("materialize", "operator"):
+        raise ValueError("compute_dc_mode must be materialize|operator")
 
-    demo_dc_mode_eff = str(demo_dc_mode).strip().lower()
-    if demo_dc_mode_eff not in ("materialize", "operator"):
-        raise ValueError("demo_dc_mode must be materialize|operator")
+    opf_cfg = compute_opf_cfg if compute_opf_cfg is not None else DEFAULT_OPF
 
-    opf_cfg = demo_opf_cfg if demo_opf_cfg is not None else DEFAULT_OPF
+    if not cases:
+        raise ValueError("report requires a non-empty cases list.")
 
-    results_dir_abs = Path(results_dir).resolve()
-
-    # Deterministic case list.
-    cases = [
-        (
-            "case30",
-            _REPO_ROOT / "data/input/pglib_opf_case30_ieee.m",
-            results_dir_abs / "case30.json",
-        ),
-        (
-            "case118",
-            _REPO_ROOT / "data/input/pglib_opf_case118_ieee.m",
-            results_dir_abs / "case118.json",
-        ),
-        # (
-        #     "case300",
-        #     _REPO_ROOT / "data/input/pglib_opf_case300_ieee.m",
-        #     results_dir_abs / "case300.json",
-        # ),
-        # (
-        #     "case1354_pegase",
-        #     _REPO_ROOT / "data/input/pglib_opf_case1354_pegase.m",
-        #     results_dir_abs / "case1354_pegase.json",
-        # ),
-        # (
-        #     "case9241_pegase",
-        #     _REPO_ROOT / "data/input/pglib_opf_case9241_pegase.m",
-        #     results_dir_abs / "case9241_pegase.json",
-        # ),
-    ]
-
-    known_case30 = [(1, 2), (2, 4), (4, 6)]
-    known_case118 = [(38, 65), (30, 38)]
+    assets_dir: Path | None = None
+    assets_rel_dir: str | None = None
+    if per_line_artifacts_dir is not None:
+        assets_dir = Path(per_line_artifacts_dir).resolve()
+        assets_dir.mkdir(parents=True, exist_ok=True)
+        assets_rel_dir = (
+            str(per_line_assets_rel_dir).strip()
+            if per_line_assets_rel_dir
+            else assets_dir.name
+        )
+        if not assets_rel_dir:
+            raise ValueError("per_line_assets_rel_dir resolved to an empty string.")
 
     rows: List[
         Tuple[
@@ -548,29 +893,30 @@ def generate_report_text(
         "- **Soundness**: uniform samples inside the certified L2 ball in the balanced subspace (hard check)."
     )
     out.append(
-        "- **Probabilistic metrics** (soft): Δp is Gaussian in the balanced subspace (slack-invariant):"
+        "- **Probabilistic metrics** (soft): Δp is Gaussian in the balanced subspace (slack-invariant)."
     )
-    out.append(
-        "  - Sample z ~ N(0, σ² I_n), then project: Δp = z − mean(z)·1  (equivalently N(0, σ² I_d) in an orthonormal basis)."
-    )
-    out.append("  - p_safe = P(all lines safe) (MC + CI95)")
-    out.append("  - p_ball = P(||Δp||₂ ≤ r*) (analytic chi-square CDF + MC + CI95)")
-    out.append("  - eta = P(safe | in ball) (MC + CI95)")
-    out.append("  - rho = r*/(σ√d) (dimensionless)")
-    out.append("")
-    out.append("### Literature notes")
-    out.append("")
-    out.append(
-        "Любые сравнения с литературой про **coverage of feasibility region** "
-        "не являются прямыми сравнениями: здесь другая метрика и другой домен/распределение. "
-        "В отчёте это помечено как **not directly comparable**."
-    )
+    if assets_dir is not None:
+        out.append("")
+        out.append("### Saved per-line artifacts (this report)")
+        out.append("")
+        out.append(
+            f"- Per-case CSV + scatter plot for **load margin vs `{str(per_line_radius_field).strip()}`** "
+            f"are saved under: `{assets_rel_dir}`"
+        )
     out.append("")
     out.append("---")
     out.append("")
 
-    for case, input_path_fallback, results_path in cases:
-        rp = Path(results_path)
+    for case_spec in cases:
+        case = str(case_spec.case_id)
+        rp = Path(case_spec.results_path).expanduser()
+        if not rp.is_absolute():
+            rp = (base_dir / rp).resolve()
+
+        ip_fallback = Path(case_spec.input_case_path).expanduser()
+        if not ip_fallback.is_absolute():
+            ip_fallback = (base_dir / ip_fallback).resolve()
+
         status_reasons: list[str] = []
         results: Dict[str, Any] | None = None
 
@@ -586,9 +932,11 @@ def generate_report_text(
             if results is not None:
                 ok_cfg, msg_cfg = _results_config_matches(
                     results=results,
-                    expected_dc_mode=str(demo_dc_mode_eff),
-                    expected_slack_bus=int(demo_slack_bus),
-                    expected_compute_nminus1=bool(demo_compute_nminus1),
+                    expected_dc_mode=str(compute_dc_mode_eff),
+                    expected_slack_bus=int(compute_slack_bus),
+                    expected_compute_nminus1=bool(compute_compute_nminus1),
+                    expected_inj_std_mw=float(compute_inj_std_mw),
+                    expected_opf_headroom_factor=float(opf_cfg.headroom_factor),
                 )
                 if not ok_cfg:
                     logger.info("%s: results.json config mismatch (%s).", case, msg_cfg)
@@ -596,38 +944,34 @@ def generate_report_text(
                     status_reasons.append(f"config_mismatch:{msg_cfg}")
 
             if results is None and generate_missing_results:
-                ip = Path(input_path_fallback)
                 try:
-                    ip_eff = Path(ensure_case_file(str(ip))).resolve()
+                    ip_eff = Path(ensure_case_file(str(ip_fallback))).resolve()
                 except Exception as e:  # noqa: BLE001
                     logger.exception(
                         "Failed to ensure/download input case file for %s: %s",
                         case,
-                        str(ip),
+                        str(ip_fallback),
                     )
                     status_reasons.append(f"missing_input:{type(e).__name__}")
                 else:
                     results = compute_results_for_case(
                         input_path=str(ip_eff),
-                        slack_bus=int(demo_slack_bus),
-                        dc_mode=str(demo_dc_mode_eff),
-                        dc_chunk_size=int(demo_dc_chunk_size),
-                        dc_dtype=demo_dc_dtype,
-                        margin_factor=float(demo_margin_factor),
-                        inj_std_mw=float(demo_inj_std_mw),
-                        compute_nminus1=bool(demo_compute_nminus1),
+                        slack_bus=int(compute_slack_bus),
+                        dc_mode=str(compute_dc_mode_eff),
+                        dc_chunk_size=int(compute_dc_chunk_size),
+                        dc_dtype=compute_dc_dtype,
+                        inj_std_mw=float(compute_inj_std_mw),
+                        compute_nminus1=bool(compute_compute_nminus1),
                         nminus1_update_sensitivities=bool(
-                            demo_nminus1_update_sensitivities
+                            compute_nminus1_update_sensitivities
                         ),
-                        nminus1_islanding=str(demo_nminus1_islanding),
+                        nminus1_islanding=str(compute_nminus1_islanding),
                         opf_cfg=opf_cfg,
                         opf_dc_flow_consistency_tol_mw=float(
-                            demo_opf_dc_flow_consistency_tol_mw
+                            compute_opf_dc_flow_consistency_tol_mw
                         ),
-                        opf_bus_balance_tol_mw=float(demo_opf_bus_balance_tol_mw),
-                        strict_units=bool(strict_units),
-                        allow_phase_shift=bool(allow_phase_shift),
-                        path_base_dir=_REPO_ROOT,
+                        opf_bus_balance_tol_mw=float(compute_opf_bus_balance_tol_mw),
+                        path_base_dir=base_dir,
                     )
                     rp.parent.mkdir(parents=True, exist_ok=True)
                     rp.write_text(
@@ -648,6 +992,7 @@ def generate_report_text(
                     vr=None,
                     comparisons={},
                     time_sec=float("nan"),
+                    margin_vs_radius=None,
                 )
             )
             rows.append(
@@ -674,21 +1019,18 @@ def generate_report_text(
             else float("nan")
         )
 
-        # Ensure input case file (absolute, deterministic base dir)
+        # Resolve input case file (prefer meta if it exists, else spec).
         ip_eff = (
             Path(meta.get("input_path", "")).expanduser()
             if isinstance(meta.get("input_path", ""), str)
-            else Path(input_path_fallback)
+            else ip_fallback
         )
         if not ip_eff.is_absolute():
-            # Resolve relative paths against repo root to avoid CWD dependency.
-            ip_eff = (_REPO_ROOT / ip_eff).resolve()
+            ip_eff = (base_dir / ip_eff).resolve()
 
         if not ip_eff.exists():
             try:
-                ip_eff = Path(
-                    ensure_case_file(str(Path(input_path_fallback).resolve()))
-                ).resolve()
+                ip_eff = Path(ensure_case_file(str(ip_fallback))).resolve()
                 status_reasons.append("downloaded_input")
             except Exception as e:  # noqa: BLE001
                 logger.exception(
@@ -703,6 +1045,7 @@ def generate_report_text(
                         vr=None,
                         comparisons={},
                         time_sec=time_sec,
+                        margin_vs_radius=None,
                     )
                 )
                 rows.append(
@@ -725,7 +1068,34 @@ def generate_report_text(
         with log_stage(logger, f"{case}: Load network (metadata + comparisons)"):
             net = load_network(ip_eff)
 
-        # Heuristic comparisons (optional)
+        # Save per-line artifacts: margin vs radius scatter/CSV
+        margin_vs_radius: MarginVsRadiusArtifacts | None = None
+        if assets_dir is not None and assets_rel_dir is not None:
+            try:
+                margin_vs_radius = save_margin_vs_radius_distribution(
+                    case_id=case,
+                    results=results,
+                    net=net,
+                    out_dir=assets_dir,
+                    assets_rel_dir=assets_rel_dir,
+                    radius_field=str(per_line_radius_field),
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.exception(
+                    "case=%s: failed to generate per-line artifacts (margin vs radius).",
+                    case,
+                )
+                margin_vs_radius = MarginVsRadiusArtifacts(
+                    radius_field=str(per_line_radius_field),
+                    csv_rel_path="",
+                    plot_rel_path=None,
+                    plot_status="error",
+                    n_lines=int(len(getattr(net, "line", []))),
+                    n_plotted=0,
+                    skipped_nonfinite=0,
+                    note=f"{type(e).__name__}: {e}",
+                )
+
         comparisons: dict[str, Any] = {}
 
         try:
@@ -737,13 +1107,8 @@ def generate_report_text(
             top10 = []
             comparisons["top_risky_status"] = f"error:{type(e).__name__}"
 
-        known_pairs: Optional[Sequence[Tuple[int, int]]] = None
-        if case == "case30":
-            known_pairs = known_case30
-        elif case == "case118":
-            known_pairs = known_case118
-
-        if known_pairs is not None and top10:
+        known_pairs = list(case_spec.known_critical_pairs)
+        if known_pairs and top10:
             stats_top = _match_stats_topk(top=top10, known_pairs=known_pairs, k=10)
             comparisons["top_risky_status"] = "ok"
             comparisons["top_risky_match_percent"] = (
@@ -754,7 +1119,7 @@ def generate_report_text(
             )
             comparisons["top_risky_common_k"] = stats_top.common_k
             comparisons["top_risky_known_k"] = stats_top.known_k
-        elif known_pairs is not None:
+        elif known_pairs:
             comparisons["top_risky_status"] = "no_top_lines"
 
         try:
@@ -765,26 +1130,20 @@ def generate_report_text(
             logger.exception("N-1 match stats failed for %s", case)
             comparisons["nminus1_match_status"] = f"error:{type(e).__name__}"
 
-        # Verification (MC + soundness)
         with log_stage(logger, f"{case}: Monte Carlo verification"):
             vr = run_monte_carlo_verification(
                 results_path=rp,
                 input_case_path=ip_eff,
-                slack_bus=int(demo_slack_bus),
+                slack_bus=int(compute_slack_bus),
                 n_samples=int(n_samples),
                 seed=int(seed),
                 chunk_size=int(chunk_size),
-                box_radius_quantile=float(mc_box_radius_quantile),  # ignored
-                box_feas_tol_mw=float(mc_box_feas_tol_mw),
+                feas_tol_mw=float(mc_feas_tol_mw),
                 cert_tol_mw=float(mc_cert_tol_mw),
                 cert_max_samples=int(mc_cert_max_samples),
-                strict_units=bool(strict_units),
-                allow_phase_shift=bool(allow_phase_shift),
             )
 
-        # Attach comparisons into VR (immutably).
         vr = replace(vr, comparisons={**vr.comparisons, **comparisons})
-
         interp = interpret_certificate(vr)
 
         logger.info(
@@ -802,7 +1161,6 @@ def generate_report_text(
             _fmt_float_or_na(float(time_sec), digits=6),
         )
 
-        # Table row (comparable metrics only).
         rows.append(
             (
                 case,
@@ -826,10 +1184,10 @@ def generate_report_text(
                 vr=vr,
                 comparisons=comparisons,
                 time_sec=time_sec,
+                margin_vs_radius=margin_vs_radius,
             )
         )
 
-    # Cross-case table
     out.append("## Cross-case table (comparable metrics)")
     out.append("")
     out.append(
@@ -865,18 +1223,6 @@ def generate_report_text(
                 t=_fmt_float_or_na(float(t), digits=6),
             )
         )
-    out.append("")
-    out.append("## Diagnostics (no hard pass/fail thresholds)")
-    out.append("")
-    out.append(
-        "- Научная корректность здесь определяется **soundness** сертификата (hard check), а не порогами вида `>70%`."
-    )
-    out.append(
-        "- Ключевая семантика для сканирования:\n"
-        "  - `cert_soundness=sound` или `trivial_true` ⇒ сертификат корректен в DC-модели.\n"
-        "  - `usefulness=zero_radius` ⇒ сертификат корректен, но **неинформативен** (r*=0).\n"
-        "  - `cert_soundness=unsound` ⇒ найден контрпример внутри шара (FAIL)."
-    )
     out.append("")
     out.append("---")
     out.append("")

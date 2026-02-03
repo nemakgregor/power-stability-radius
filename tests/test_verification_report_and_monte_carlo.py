@@ -96,7 +96,6 @@ def test_monte_carlo_runs_on_zero_limits_and_reports_zero_feasible(
     from stability_radius.parsers.matpower import load_network
     from stability_radius.verification.monte_carlo import run_monte_carlo_verification
 
-    # Minimal 2-bus MATPOWER case.
     case_text = """function mpc = case2
 mpc.version = '2';
 mpc.baseMVA = 100;
@@ -121,7 +120,6 @@ mpc.branch = [
     assert len(net.line) >= 1
     lid = int(sorted(net.line.index)[0])
 
-    # Artificial inconsistent results (limit=0 but radius>0) to force soundness issues.
     results = {
         "__meta__": {
             "input_path": str(mfile),
@@ -129,6 +127,7 @@ mpc.branch = [
             "inj_std_mw": 1.0,
             "dispatch_mode": "opf_pypsa",
             "opf_solver": "highs",
+            "opf_headroom_factor": 0.95,
         },
         f"line_{lid}": {
             "flow0_mw": 0.0,
@@ -149,10 +148,8 @@ mpc.branch = [
         chunk_size=50,
     )
 
-    # With zero limits, Gaussian feasible probability should be 0.
     assert vr.probabilistic.p_safe_gaussian_percent == pytest.approx(0.0)
 
-    # Soundness may be skipped/trivial/fail depending on r* and base feasibility.
     assert vr.soundness.status in {
         "SOUND_FAIL",
         "SOUND_SKIPPED_TRIVIAL_RADIUS",

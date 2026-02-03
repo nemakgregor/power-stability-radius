@@ -5,24 +5,36 @@ from pathlib import Path
 import pytest
 
 
-def test_monte_carlo_parser_allows_defaults_but_runtime_validates(
+def test_report_requires_cases_in_config_and_fails_fast_without_side_effects(
     tmp_path: Path, monkeypatch
 ) -> None:
     """
-    CLI regression: monte-carlo should allow config-driven defaults (not argparse `required=True`),
-    but must fail fast with a clear error if both CLI and config are empty.
+    CLI regression:
+    - `report` must not silently assume a hard-coded case list.
+    - If cfg_loaded is None (no YAML), it must fail before creating run artifacts.
     """
-    from stability_radius.cli import build_parser, run_monte_carlo
+    from stability_radius.cli import build_parser, run_report
 
     monkeypatch.chdir(tmp_path)
 
     parser = build_parser(cfg=None)
-    args = parser.parse_args(["--runs-dir", "runs", "--run-tests", "0", "monte-carlo"])
+    args = parser.parse_args(
+        [
+            "--runs-dir",
+            "runs",
+            "--run-tests",
+            "0",
+            "report",
+            "--results-dir",
+            "verification/results",
+            "--out",
+            "verification/report.md",
+        ]
+    )
 
-    with pytest.raises(ValueError, match=r"monte-carlo requires --results"):
-        run_monte_carlo(
-            args, cfg_loaded=None, cfg_path=tmp_path / "cfg.yaml", argv=["monte-carlo"]
+    with pytest.raises(ValueError, match=r"report requires a loaded YAML config"):
+        run_report(
+            args, cfg_loaded=None, cfg_path=tmp_path / "cfg.yaml", argv=["report"]
         )
 
-    # Must not create run artifacts on invalid input (fail fast).
     assert not (tmp_path / "runs").exists()

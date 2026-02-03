@@ -1,10 +1,4 @@
-# Experiment config: case30 single-case run (demo) + optional Monte Carlo defaults.
-#
-# Usage:
-#   poetry run python src/power_stability_radius.py --config conf/experiments/case30.yaml demo
-#   poetry run python src/power_stability_radius.py --config conf/experiments/case30.yaml monte-carlo
-#
-# This file intentionally overrides only a few keys and inherits the rest.
+# Experiment config: case30 single-case run (compute).
 extends: ../config.yaml
 
 run_tests: 0
@@ -13,12 +7,7 @@ logging:
   run_dir_mode: overwrite
   run_name: case30
 
-demo:
+compute:
   input: data/input/pglib_opf_case30_ieee.m
   slack_bus: 0
   export_results: verification/results/case30.json
-
-monte_carlo:
-  results: verification/results/case30.json
-  input: data/input/pglib_opf_case30_ieee.m
-  slack_bus: 0

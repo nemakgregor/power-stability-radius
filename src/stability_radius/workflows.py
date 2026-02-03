@@ -76,13 +76,6 @@ def _ensure_input_case_file(input_path: str, *, base_dir: Path | None) -> str:
       the file is downloaded deterministically (stable URL ordering):
         * MATPOWER: case<N>.m / ieee<N>.m
         * PGLib-OPF: pglib_opf_*.m
-
-    Raises
-    ------
-    FileNotFoundError:
-        If the file does not exist and its name is not supported for deterministic download.
-    RuntimeError:
-        If the file name is supported but download failed.
     """
     target_path = _resolve_path(input_path, base_dir=base_dir)
     if target_path.exists():
@@ -93,26 +86,9 @@ def _ensure_input_case_file(input_path: str, *, base_dir: Path | None) -> str:
         "Input case file missing: %s. Trying deterministic download...", target_path
     )
 
-    try:
-        from stability_radius.utils.download import ensure_case_file
-    except Exception as e:  # noqa: BLE001
-        raise RuntimeError(
-            "Case file is missing and download helpers are unavailable. "
-            "Install optional dependencies (e.g., requests) or provide an existing file."
-        ) from e
+    from stability_radius.utils.download import ensure_case_file
 
-    try:
-        ensured = Path(ensure_case_file(str(target_path)))
-    except FileNotFoundError as e:
-        raise FileNotFoundError(
-            f"Input case file does not exist: {target_path}. "
-            "Auto-download supports only: case<N>.m / ieee<N>.m / pglib_opf_*.m. "
-            "Provide an explicit path to an existing MATPOWER/PGLib .m case file."
-        ) from e
-    except Exception as e:  # noqa: BLE001
-        logger.exception("Failed to download missing case file: %s", target_path)
-        raise RuntimeError(f"Failed to download input case file: {target_path}") from e
-
+    ensured = Path(ensure_case_file(str(target_path)))
     if not ensured.exists():
         raise RuntimeError(
             f"Internal error: ensure_case_file() returned a non-existent path: {ensured}"
@@ -249,12 +225,6 @@ def _compute_radii_operator_path(
     """
     Compute L2/metric/sigma radii without materializing H_full (operator path).
 
-    Disturbance model (project-wide)
-    --------------------------------
-    - Δp is constrained to the balanced subspace: sum(Δp)=0.
-    - Disturbance size is measured in the full-bus Euclidean norm ||Δp||_2.
-    - Sensitivity norms use the projected norm ||Proj(g)||_2, which is slack-invariant.
-
     Notes
     -----
     - Uses LU solves via DCOperator to obtain g rows (chunked).
@@ -325,16 +295,6 @@ def _check_opf_dc_consistency(
     This is a hard correctness check:
     - we reconstruct line flows from OPF bus injections via DCOperator
     - we compare against OPF-reported base flows f0 for monitored lines
-
-    Raises
-    ------
-    ValueError
-        If bus ordering is inconsistent, injections are missing, or max|Δf| > tol_flow_mw.
-
-    Returns
-    -------
-    dict
-        Diagnostic scalars for results meta.
     """
     if base.bus_ids is None or base.bus_injections_mw is None:
         raise ValueError(
@@ -388,37 +348,16 @@ def _check_opf_dc_consistency(
         argmax_dc = float(f0_dc[argmax_pos])
         argmax_diff = float(diff[argmax_pos])
 
-        # Helpful diagnostics (debug-only) to avoid huge console logs.
-        top_k = min(5, int(diff.size))
-        candidates = [
-            (float(abs_diff_safe[i]), int(base.line_indices[i]), int(i))
-            for i in range(int(diff.size))
-        ]
-        candidates.sort(key=lambda t: (-t[0], t[1], t[2]))
-        top = candidates[:top_k]
-        top_summary = [
-            (
-                pos,
-                line_idx,
-                float(f0_opf[pos]),
-                float(f0_dc[pos]),
-                float(diff[pos]),
-                float(abs_diff_safe[pos]),
-            )
-            for _, line_idx, pos in top
-        ]
         logger.debug(
-            "OPF->DC flow diffs: argmax_pos=%d line_idx=%d opf=%.6g dc=%.6g diff=%.6g abs=%.6g; top5(pos,line,opf,dc,diff,abs)=%s",
+            "OPF->DC flow diffs: argmax_pos=%d line_idx=%d opf=%.6g dc=%.6g diff=%.6g abs=%.6g",
             argmax_pos,
             argmax_line_idx,
             argmax_opf,
             argmax_dc,
             argmax_diff,
             max_abs,
-            top_summary,
         )
 
-        # Fast local diagnostics for the argmax line (for debugging mismatches on real cases).
         try:
             if (
                 hasattr(net, "line")
@@ -433,7 +372,6 @@ def _check_opf_dc_consistency(
                 parallel = float(row.get("parallel", 1.0))
                 in_service = bool(row.get("in_service", True))
 
-                # dc_op.b is aligned with monitored line ordering, so we can log b for that position.
                 b_mw_per_rad = float(getattr(dc_op, "b")[argmax_pos])
 
                 logger.error(
@@ -496,7 +434,6 @@ def compute_results_for_case(
     dc_mode: str,
     dc_chunk_size: int,
     dc_dtype: np.dtype,
-    margin_factor: float,
     inj_std_mw: float,
     compute_nminus1: bool,
     nminus1_update_sensitivities: bool,
@@ -504,8 +441,6 @@ def compute_results_for_case(
     opf_cfg: OPFConfig | None = None,
     opf_dc_flow_consistency_tol_mw: float = _DEFAULT_OPF_DC_FLOW_CONSISTENCY_TOL_MW,
     opf_bus_balance_tol_mw: float = _DEFAULT_OPF_BUS_BALANCE_TOL_MW,
-    strict_units: bool = True,
-    allow_phase_shift: bool = False,
     path_base_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """
@@ -515,6 +450,12 @@ def compute_results_for_case(
     ---------------------------------------
     Base point is ALWAYS produced by a DC OPF:
       - PyPSA + HiGHS (single snapshot)
+
+    OPF headroom
+    ------------
+    Finite line limits used by OPF are tightened by `opf_cfg.headroom_factor`
+    (default in config: 0.95 = 5% headroom). Radii/margins are computed w.r.t.
+    the original limits extracted from the case.
 
     DC model modes
     --------------
@@ -528,29 +469,10 @@ def compute_results_for_case(
     with the full-bus Euclidean norm ||Δp||_2. Sensitivity norms therefore use the
     projected norm ||g - mean(g)*1||_2 (slack-invariant).
 
-    Units
-    -----
-    See UNITS_CONTRACT.md in the repository root.
-
-    Unit validation
-    ---------------
-    - strict_units=True: fail fast on vn_kv<=0, x_ohm<=0, sn_mva<=0 (no silent 0.0 fallbacks)
-    - allow_phase_shift=False: reject any transformer with shift_degree != 0 (recommended)
-
     Correctness checks
     ------------------
     The pipeline enforces an OPF->DCOperator consistency check:
     base flows from OPF must match DCOperator flows reconstructed from OPF bus injections.
-
-    Parameters
-    ----------
-    path_base_dir:
-        Base dir for resolving relative paths (input case path). If None, uses current working directory.
-
-    Returns
-    -------
-    dict
-        Results object with '__meta__' and 'line_<idx>' entries.
     """
     time_start = time.time()
 
@@ -560,8 +482,6 @@ def compute_results_for_case(
 
     cfg = opf_cfg if opf_cfg is not None else DEFAULT_OPF
 
-    if margin_factor <= 0:
-        raise ValueError("margin_factor must be positive.")
     if inj_std_mw <= 0:
         raise ValueError("inj_std_mw must be positive.")
     if dc_chunk_size <= 0:
@@ -573,22 +493,13 @@ def compute_results_for_case(
 
     with log_stage(logger, f"{case_tag}: Read Data"):
         net = load_network(input_path_abs)
-
-        # Hard check requested: at least one thermal limit source must exist
-        # (otherwise it's a parser/converter bug, not a radii bug).
         assert_line_limit_sources_present(net)
 
     with log_stage(
         logger,
         f"{case_tag}: Solve DC OPF (PyPSA, solver={cfg.highs.solver_name})",
     ):
-        base = get_line_base_quantities(
-            net,
-            margin_factor=float(margin_factor),
-            opf_cfg=cfg,
-            strict_units=bool(strict_units),
-            allow_phase_shift=bool(allow_phase_shift),
-        )
+        base = get_line_base_quantities(net, opf_cfg=cfg)
 
     H_full = None
     dc_op = None
@@ -598,8 +509,6 @@ def compute_results_for_case(
             H_full, dc_op = build_dc_matrices(
                 net,
                 slack_bus=int(slack_bus),
-                strict_units=bool(strict_units),
-                allow_phase_shift=bool(allow_phase_shift),
                 chunk_size=int(dc_chunk_size),
                 dtype=dc_dtype,
             )
@@ -612,12 +521,7 @@ def compute_results_for_case(
                 H_full.dtype,
             )
         else:
-            dc_op = build_dc_operator(
-                net,
-                slack_bus=int(slack_bus),
-                strict_units=bool(strict_units),
-                allow_phase_shift=bool(allow_phase_shift),
-            )
+            dc_op = build_dc_operator(net, slack_bus=int(slack_bus))
             n_bus = int(dc_op.n_bus)
             m_line = int(dc_op.n_line)
             logger.debug("Built DC operator: n_bus=%d, n_line=%d", n_bus, m_line)
@@ -636,12 +540,8 @@ def compute_results_for_case(
 
     with log_stage(logger, f"{case_tag}: Compute Radii"):
         if H_full is not None:
-            l2 = compute_l2_radius(
-                net, H_full, margin_factor=float(margin_factor), base=base
-            )
+            l2 = compute_l2_radius(net, H_full, base=base)
 
-            # Performance/memory note:
-            # Default workflow uses M=I => radius_metric == radius_l2. Avoid allocating I_n.
             metric = {
                 k: {
                     "metric_denom": float(v.get("norm_g", float("nan"))),
@@ -658,7 +558,6 @@ def compute_results_for_case(
                 nminus1 = compute_nminus1_l2_radius(
                     net,
                     H_full,
-                    margin_factor=float(margin_factor),
                     update_sensitivities=bool(nminus1_update_sensitivities),
                     islanding=str(nminus1_islanding),
                     base=base,
@@ -703,6 +602,8 @@ def compute_results_for_case(
             "opf_solver": str(cfg.highs.solver_name),
             "opf_solver_threads": int(cfg.highs.threads),
             "opf_solver_random_seed": int(cfg.highs.random_seed),
+            "opf_unconstrained_line_nom_mw": float(cfg.unconstrained_line_nom_mw),
+            "opf_headroom_factor": float(cfg.headroom_factor),
             "opf_status": str(base.opf_status)
             if base.opf_status is not None
             else "n/a",
@@ -712,10 +613,7 @@ def compute_results_for_case(
             "dc_mode": str(dc_mode_eff),
             "dc_dtype": str(np.dtype(dc_dtype)),
             "dc_chunk_size": int(dc_chunk_size),
-            "margin_factor": float(margin_factor),
             "inj_std_mw": float(inj_std_mw),
-            "strict_units": bool(strict_units),
-            "allow_phase_shift": bool(allow_phase_shift),
             "compute_time_sec": elapsed_sec,
             "n_bus": int(n_bus),
             "n_line": int(m_line),

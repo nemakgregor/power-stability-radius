@@ -5,16 +5,6 @@
 
 run_tests: true
 
-units:
-  # 1 -> fail fast on invalid/ambiguous electrical quantities (recommended)
-  # 0 -> legacy permissive behavior (may silently skip invalid branches)
-  strict_units: 1
-
-  # Phase shifting transformers (shift_degree != 0) are NOT modeled by the project's DC model.
-  # By default we fail fast to avoid silently inconsistent OPF/DCOperator behavior.
-  # Set to 1 only if you explicitly accept "phase shift is ignored".
-  allow_phase_shift: 0
-
 logging:
   runs_dir: runs
   level_console: INFO
@@ -31,6 +21,11 @@ opf:
   threads: 14
   random_seed: 42
 
+  # Headroom factor for OPF line constraints (security margin).
+  # Example: 0.95 means OPF is solved with 95% of the thermal limits,
+  #          while radii are computed w.r.t. the original limits.
+  headroom_factor: 0.99
+
   # NOTE:
   # PyPSA requires finite thermal limits. We use this value as a deterministic surrogate
   # for "unconstrained" lines (rateA==0 / +inf / NaN).
@@ -38,7 +33,7 @@ opf:
   # Keep it large enough to never bind in realistic cases, but NOT astronomically large:
   # values like 1e9 can trigger HiGHS scaling warnings and lead to measurable numerical
   # drift (e.g., OPF->DCOperator flow mismatches at MW level).
-  unconstrained_line_nom_mw: 1.0e6
+  unconstrained_line_nom_mw: 1.0e5
 
 dc:
   mode: operator
@@ -46,11 +41,11 @@ dc:
   dtype: float64
 
 tolerances:
-  opf_dc_flow_consistency_tol_mw: 5
-  opf_bus_balance_tol_mw: 5
+  opf_dc_flow_consistency_tol_mw: 1
+  opf_bus_balance_tol_mw: 1
 
 table:
-  # Default table columns used by `demo` when `--table-columns` is empty.
+  # Default table columns used by `compute` when `--table-columns` is empty.
   default_columns:
     - flow0_mw
     - p0_mw
@@ -67,7 +62,7 @@ table:
     - worst_contingency
     - worst_contingency_line_idx
 
-demo:
+compute:
   input: data/input/pglib_opf_case30_ieee.m
   slack_bus: 0
 
@@ -75,7 +70,6 @@ demo:
   dc_chunk_size: ${dc.chunk_size}
   dc_dtype: ${dc.dtype}
 
-  margin_factor: 1.0
   inj_std_mw: 1.0
 
   compute_nminus1: 0
@@ -89,61 +83,56 @@ demo:
   # comma-separated, empty -> table.default_columns
   table_columns: ""
 
-monte_carlo:
-  # required by CLI, defaults are placeholders
-  results: ""
-  input: ""
-  slack_bus: 0
-
-  n_samples: 50000
-  seed: 0
-  chunk_size: 256
-
-  # Deprecated / ignored in current MC implementation; kept for backward-compatibility.
-  box_radius_quantile: 0.1
-
-  # Extra MC constants (previously hard-coded defaults)
-  box_feas_tol_mw: 0.0
-  cert_tol_mw: 1
-  cert_max_samples: 5000
-
 report:
   results_dir: verification/results
   out: verification/report.md
 
-  n_samples: ${monte_carlo.n_samples}
-  seed: ${monte_carlo.seed}
-  chunk_size: ${monte_carlo.chunk_size}
-
-  # Deprecated / ignored in current MC implementation; kept for backward-compatibility.
-  box_radius_quantile: ${monte_carlo.box_radius_quantile}
-
-  # Monte Carlo constants used during report generation
-  box_feas_tol_mw: ${monte_carlo.box_feas_tol_mw}
-  cert_tol_mw: ${monte_carlo.cert_tol_mw}
-  cert_max_samples: ${monte_carlo.cert_max_samples}
+  # Monte Carlo verification parameters
+  n_samples: 50000
+  seed: 42
+  chunk_size: 256
+  feas_tol_mw: 0.0
+  cert_tol_mw: 1
+  cert_max_samples: 5000
 
   generate_missing_results: 1
 
   # Parameters used when auto-generating missing results.json
-  demo:
-    dc_mode: ${demo.dc_mode}
-    slack_bus: ${demo.slack_bus}
-    compute_nminus1: ${demo.compute_nminus1}
+  compute:
+    dc_mode: ${compute.dc_mode}
+    slack_bus: ${compute.slack_bus}
+    compute_nminus1: ${compute.compute_nminus1}
 
-    dc_chunk_size: ${demo.dc_chunk_size}
-    dc_dtype: ${demo.dc_dtype}
+    dc_chunk_size: ${compute.dc_chunk_size}
+    dc_dtype: ${compute.dc_dtype}
 
-    margin_factor: ${demo.margin_factor}
-    inj_std_mw: ${demo.inj_std_mw}
+    inj_std_mw: ${compute.inj_std_mw}
 
-    nminus1_update_sensitivities: ${demo.nminus1_update_sensitivities}
-    nminus1_islanding: ${demo.nminus1_islanding}
+    nminus1_update_sensitivities: ${compute.nminus1_update_sensitivities}
+    nminus1_islanding: ${compute.nminus1_islanding}
 
-table_cmd:
-  # Used only for defaults; the command requires positional results_json anyway.
-  max_rows: null
-  radius_field: radius_l2
-  columns: ""
-  table_out: ""
-  csv_out: ""
+  # Case list for the report (no hard-coded cases in code).
+  # `results` is interpreted relative to `report.results_dir` unless absolute.
+  cases:
+    - id: case30
+      input: data/input/pglib_opf_case30_ieee.m
+      results: case30.json
+      known_critical_pairs:
+        - [1, 2]
+        - [2, 4]
+        - [4, 6]
+
+    - id: case118
+      input: data/input/pglib_opf_case118_ieee.m
+      results: case118.json
+      known_critical_pairs:
+        - [38, 65]
+        - [30, 38]
+
+    - id: case300
+      input: data/input/pglib_opf_case300_ieee.m
+      results: case300.json
+
+    - id: case1354_pegase
+      input: data/input/pglib_opf_case1354_pegase.m
+      results: case1354_pegase.json

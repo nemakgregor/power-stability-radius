@@ -251,7 +251,7 @@ def compute_nminus1_l2_radius(
     net,
     H_full: np.ndarray,
     *,
-    margin_factor: float = 1.0,
+    limit_factor: float = 1.0,
     update_sensitivities: bool = True,
     islanding: Literal["skip", "raise"] = "skip",
     base: LineBaseQuantities | None = None,
@@ -259,31 +259,16 @@ def compute_nminus1_l2_radius(
     """
     High-level wrapper: compute effective N-1 L2 radii on a pandapower network.
 
-    Steps:
-      1) runpp() for base flows (if `base` is not provided)
-      2) estimate limits and margins
-      3) build incidence E
-      4) compute PTDF (line transfers) and LODF
-      5) compute effective N-1 radii using `effective_nminus1_l2_radii`
-
     Notes
     -----
     The returned `worst_contingency` is the contingency *position* (0..m-1) in the
     internal line ordering (base_q.line_indices). For convenience, we also return
     the mapped pandapower line index in `worst_contingency_line_idx`.
-
-    Returns
-    -------
-    dict mapping "line_{idx}" -> metrics (includes 'radius_nminus1' and 'worst_contingency').
-
-    Logging
-    -------
-    Uses DEBUG-level logs for normal progress to keep CLI output clean.
     """
     base_q = (
         base
         if base is not None
-        else get_line_base_quantities(net, margin_factor=margin_factor)
+        else get_line_base_quantities(net, limit_factor=float(limit_factor))
     )
     if H_full.shape[0] != len(base_q.line_indices):
         raise ValueError(

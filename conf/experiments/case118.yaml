@@ -1,4 +1,4 @@
-# Experiment config: case118 single-case run (demo) + optional Monte Carlo defaults.
+# Experiment config: case118 single-case run (compute).
 extends: ../config.yaml
 
 run_tests: 0
@@ -7,12 +7,7 @@ logging:
   run_dir_mode: overwrite
   run_name: case118
 
-demo:
+compute:
   input: data/input/pglib_opf_case118_ieee.m
   slack_bus: 0
   export_results: verification/results/case118.json
-
-monte_carlo:
-  results: verification/results/case118.json
-  input: data/input/pglib_opf_case118_ieee.m
-  slack_bus: 0

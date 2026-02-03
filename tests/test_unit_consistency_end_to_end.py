@@ -38,7 +38,6 @@ def _make_multivoltage_cycle_net():
 
     pp.create_ext_grid(net, b0, vm_pu=1.0)
 
-    # Put loads on the LV side to ensure power flows through transformers and both voltage levels.
     pp.create_load(net, b2, p_mw=5.0, q_mvar=0.0)
     pp.create_load(net, b3, p_mw=5.0, q_mvar=0.0)
 
@@ -50,11 +49,9 @@ def _make_multivoltage_cycle_net():
         max_loading_percent=100.0,
     )
 
-    # HV line
     pp.create_line_from_parameters(
         net, from_bus=b0, to_bus=b1, x_ohm_per_km=0.10, **common_line
     )
-    # LV line
     pp.create_line_from_parameters(
         net, from_bus=b2, to_bus=b3, x_ohm_per_km=0.02, **common_line
     )
@@ -91,7 +88,6 @@ def _make_multivoltage_cycle_net():
         **trafo_common,
     )
 
-    # Explicit thermal limits in MVA (used as MW under PF=1 DC convention).
     net.line.loc[:, "rateA"] = 100.0
 
     return net, b0
@@ -104,7 +100,7 @@ def _scale_vn_and_x(net: object, *, k: float) -> object:
     - vn_kv := k * vn_kv
     - x_ohm := k^2 * x_ohm  (implemented via x_ohm_per_km scaling)
 
-    This keeps b = V^2 / X invariant, thus H and base DC physics should be unchanged.
+    This keeps b = V^2 / X invariant.
     """
     if k <= 0:
         raise ValueError("k must be positive")
@@ -155,33 +151,26 @@ def test_unit_consistency_vn_kv_and_x_ohm_scaling_invariance_end_to_end() -> Non
 
     then the DCOperator/PTDF matrix H, OPF base flows f0 and the L2 certificate
     must be invariant (up to tiny numerical noise).
-
-    This detects accidental pu/Ohm mistakes (e.g., passing per-unit x into PyPSA).
     """
     net, slack_bus = _make_multivoltage_cycle_net()
 
-    base1 = get_line_base_quantities(net, margin_factor=1.0)
+    base1 = get_line_base_quantities(net, limit_factor=1.0)
     H1, _ = build_dc_matrices(
         net, slack_bus=slack_bus, dtype=np.float64, chunk_size=256
     )
-    l2_1 = compute_l2_radius(net, H1, margin_factor=1.0, base=base1)
+    l2_1 = compute_l2_radius(net, H1, limit_factor=1.0, base=base1)
     r_star_1 = _r_star_from_l2_results(l2_1, line_indices=base1.line_indices)
 
     k = 3.0
     net2 = _scale_vn_and_x(net, k=k)
 
-    base2 = get_line_base_quantities(net2, margin_factor=1.0)
+    base2 = get_line_base_quantities(net2, limit_factor=1.0)
     H2, _ = build_dc_matrices(
         net2, slack_bus=slack_bus, dtype=np.float64, chunk_size=256
     )
-    l2_2 = compute_l2_radius(net2, H2, margin_factor=1.0, base=base2)
+    l2_2 = compute_l2_radius(net2, H2, limit_factor=1.0, base=base2)
     r_star_2 = _r_star_from_l2_results(l2_2, line_indices=base2.line_indices)
 
-    # H invariance (strict)
     assert np.allclose(H1, H2, atol=1e-9, rtol=0.0)
-
-    # Base OPF flows invariance
     assert np.allclose(base1.flow0_mw, base2.flow0_mw, atol=1e-6, rtol=0.0)
-
-    # Certificate invariance
     assert r_star_1 == pytest.approx(r_star_2, abs=1e-6)

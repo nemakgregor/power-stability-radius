@@ -13,8 +13,6 @@ pytest.importorskip("highspy")
 def _make_triangle_net():
     """
     Small meshed (non-radial) network where line flows depend on branch reactances.
-
-    This is important: a single-line 2-bus system would trivially match regardless of x.
     """
     net = pp.create_empty_network(sn_mva=100.0)
 
@@ -34,7 +32,6 @@ def _make_triangle_net():
         max_loading_percent=100.0,
     )
 
-    # Triangle with different reactances to enforce non-trivial split.
     pp.create_line_from_parameters(
         net, from_bus=b0, to_bus=b1, x_ohm_per_km=0.10, **common
     )
@@ -51,13 +48,6 @@ def _make_triangle_net():
 def _make_triangle_net_with_tapped_trafo():
     """
     Meshed network where a transformer branch (with non-unit tap) influences flow split.
-
-    Topology:
-      b0 --line-- b1
-      b0 --line-- b2
-      b1 --trafo(tap!=1)-- b2
-
-    This exercises the OPF<->DCOperator consistency with tap handling.
     """
     net = pp.create_empty_network(sn_mva=100.0)
 
@@ -84,7 +74,6 @@ def _make_triangle_net_with_tapped_trafo():
         net, from_bus=b0, to_bus=b2, x_ohm_per_km=0.20, **common_line
     )
 
-    # "Same voltage" transformer is valid for a DC abstraction test; we only care about tap handling.
     pp.create_transformer_from_parameters(
         net,
         hv_bus=b1,
@@ -111,19 +100,6 @@ def _make_triangle_net_with_tapped_trafo():
 def _make_multivoltage_cycle_net():
     """
     Regression helper: a meshed network with multiple voltage levels.
-
-    Why this exists
-    ---------------
-    A historical bug was caused by passing per-unit reactance into PyPSA `Line.x` which
-    actually expects Ohm. In single-voltage networks this can go unnoticed (uniform
-    scaling cancels out in DC flows). In multi-voltage networks it breaks the physics
-    and causes OPF->DCOperator mismatches.
-
-    Topology (cycle that crosses voltage levels):
-      110kV: b0 --line-- b1
-      trafo: b1 (110kV) -> b2 (10kV)
-      10kV:  b2 --line-- b3
-      trafo: b0 (110kV) -> b3 (10kV)
     """
     net = pp.create_empty_network(sn_mva=100.0)
 
@@ -134,7 +110,6 @@ def _make_multivoltage_cycle_net():
 
     pp.create_ext_grid(net, b0, vm_pu=1.0)
 
-    # Put loads on the LV side to ensure power flows through transformers and both voltage levels.
     pp.create_load(net, b2, p_mw=5.0, q_mvar=0.0)
     pp.create_load(net, b3, p_mw=5.0, q_mvar=0.0)
 
@@ -146,11 +121,9 @@ def _make_multivoltage_cycle_net():
         max_loading_percent=100.0,
     )
 
-    # HV line
     pp.create_line_from_parameters(
         net, from_bus=b0, to_bus=b1, x_ohm_per_km=0.10, **common_line
     )
-    # LV line
     pp.create_line_from_parameters(
         net, from_bus=b2, to_bus=b3, x_ohm_per_km=0.02, **common_line
     )
@@ -191,13 +164,6 @@ def _make_multivoltage_cycle_net():
 
 
 def test_pypsa_opf_flows_match_dc_operator_reconstruction() -> None:
-    """
-    Regression test for OPF->DCOperator consistency.
-
-    If PyPSA uses any resistance-dependent coefficients in its linear model and we pass r!=0,
-    reconstructed flows from DCOperator (x-only) drift. Project policy requires lossless DC
-    consistency, therefore max|Δf| must be below the configured tolerance (~1e-3 MW).
-    """
     from stability_radius.dc.dc_model import build_dc_operator
     from stability_radius.opf.pypsa_opf import solve_dc_opf_base_flows_from_pandapower
 
@@ -228,13 +194,6 @@ def test_pypsa_opf_flows_match_dc_operator_reconstruction() -> None:
 
 
 def test_pypsa_opf_flows_match_dc_operator_reconstruction_with_tapped_trafo() -> None:
-    """
-    Regression: consistency must hold on networks with tap-changing transformers.
-
-    This test would typically fail if:
-    - OPF includes tap effects but DCOperator doesn't, or
-    - both include taps but use different conventions.
-    """
     from stability_radius.dc.dc_model import build_dc_operator
     from stability_radius.opf.pypsa_opf import solve_dc_opf_base_flows_from_pandapower
 
@@ -265,13 +224,6 @@ def test_pypsa_opf_flows_match_dc_operator_reconstruction_with_tapped_trafo() ->
 
 
 def test_pypsa_opf_flows_match_dc_operator_reconstruction_multivoltage() -> None:
-    """
-    Regression: OPF->DCOperator consistency must hold on multi-voltage networks.
-
-    This specifically detects unit mismatches between:
-      - pandapower data (x in Ohm)
-      - PyPSA Line API (expects x in Ohm, then computes per-unit internally)
-    """
     from stability_radius.dc.dc_model import build_dc_operator
     from stability_radius.opf.pypsa_opf import solve_dc_opf_base_flows_from_pandapower
 

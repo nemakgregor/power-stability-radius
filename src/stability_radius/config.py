@@ -23,27 +23,12 @@ we support a minimal composition mechanism:
 - `extends: <path-or-list>` at the top level of a YAML file.
 - `extends` paths are resolved relative to the extending file.
 - Configs are merged deterministically in the given order, where later configs override earlier ones.
-
-This enables "experiment" configs that only override a few keys while inheriting the main defaults.
-
-Numerical stability note (HiGHS / scaling)
-------------------------------------------
-This project enforces an OPF->DCOperator *consistency check*:
-we reconstruct line flows from OPF bus injections using the same DCOperator model and
-expect the flows to match PyPSA-reported base flows within a tight tolerance.
-
-If the LP is poorly scaled (e.g., huge surrogate line limits like 1e9 and huge penalty
-costs like 1e6), HiGHS can return a solution with small primal feasibility drift that
-is enough to fail that consistency check at the MW level.
-
-Defaults below are chosen to avoid common scaling pitfalls and to enable HiGHS internal
-scaling when it warns about "excessively large costs / row bounds".
 """
 
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Tuple
+from typing import Any, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -98,9 +83,6 @@ class HiGHSConfig:
     Such cases are common in power-grid LPs if we represent "+inf" constraints via huge
     surrogates (e.g., s_nom=1e9) and/or use huge penalty costs.
 
-    Those warnings are not cosmetic: small primal infeasibilities can later manifest as
-    OPF->DCOperator flow mismatches at the MW level.
-
     The default options below follow HiGHS recommendations from its own warning messages:
     - user_objective_scale=-1: let HiGHS auto-scale objective
     - user_bound_scale=-10: scale bounds/rows (helps with huge RHS values)
@@ -140,16 +122,27 @@ class HiGHSConfig:
 
 @dataclass(frozen=True)
 class OPFConfig:
-    """Global OPF configuration (base point is always OPF in this project)."""
+    """
+    Global OPF configuration (base point is always OPF in this project).
+
+    headroom_factor
+    ---------------
+    A security margin applied to finite line limits *in the OPF only*:
+        c_opf = headroom_factor * c
+    Radii are computed w.r.t. the original limits `c`.
+
+    This prevents OPF from producing a base point that is exactly at the thermal limit,
+    which would immediately lead to r*=0 (trivial certificate) and unstable verification.
+    """
 
     highs: HiGHSConfig = field(default_factory=HiGHSConfig)
 
     # PyPSA requires finite capacities. This value is used as a deterministic surrogate
     # when a line is explicitly unconstrained (+inf or NaN limit).
-    #
-    # IMPORTANT: Keep it reasonably large, but avoid astronomically large values that
-    # destroy LP scaling (HiGHS will warn and the OPF->DCOperator consistency check can fail).
     unconstrained_line_nom_mw: float = 1e6
+
+    # OPF line limit tightening factor (default: 5% headroom).
+    headroom_factor: float = 0.95
 
 
 @dataclass(frozen=True)
@@ -175,62 +168,24 @@ class MonteCarloConfig:
     2) Probabilistic safety (Gaussian injections):
        balanced injections with i.i.d. per-bus sigma (taken from results.json meta by default),
        estimating P(feasible) via MC and computing the analytic lower bound P(||Δp||<=r*).
-
-    Legacy note
-    -----------
-    box_radius_quantile is a legacy parameter from the old "box vs ball coverage" experiment.
-    The current verification workflow does NOT use box sampling for reporting/validation.
     """
 
     n_samples: int = 50_000
     seed: int = 0
     chunk_size: int = 256
 
-    # Legacy (deprecated): kept for CLI backward-compatibility; ignored by current MC.
-    box_radius_quantile: float = 0.10
-
     # Strict feasibility by default (used as feasibility tolerance in MW).
-    box_feas_tol_mw: float = 0.0
+    feas_tol_mw: float = 0.0
 
     # Certificate sanity-check (inside min_r ball).
     cert_tol_mw: float = 1e-6
     cert_max_samples: int = 5_000
 
 
-@dataclass(frozen=True)
-class UnitsConfig:
-    """
-    Unit/physics validation policy.
-
-    strict_units
-    ------------
-    When True, the library fails fast on non-physical or ambiguous quantities instead of
-    silently producing 0.0 coefficients.
-
-    Enforced conditions (high level)
-    --------------------------------
-    - vn_kv > 0
-    - x_ohm > 0 (for lossless DC branches)
-    - sn_mva > 0 (for transformer and system base quantities)
-
-    allow_phase_shift
-    -----------------
-    When False, transformers with non-zero shift_degree are rejected.
-
-    Rationale:
-    - The project's DCOperator/PTDF model currently ignores phase shifters.
-    - Ignoring shift_degree without an explicit opt-in leads to silent OPF/DC inconsistencies.
-    """
-
-    strict_units: bool = True
-    allow_phase_shift: bool = False
-
-
 DEFAULT_LOGGING = LoggingConfig()
 DEFAULT_OPF = OPFConfig()
 DEFAULT_DC = DCConfig()
 DEFAULT_MC = MonteCarloConfig()
-DEFAULT_UNITS = UnitsConfig()
 
 DEFAULT_TABLE_COLUMNS: Tuple[str, ...] = (
     "flow0_mw",

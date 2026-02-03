@@ -115,7 +115,7 @@ def test_closed_form_adversarial_boundary_test() -> None:
         net=net, slack_bus=slack, p_base=p_base, limit_margin_mw=limit_margin
     )
 
-    res = compute_l2_radius(net, H, margin_factor=1.0, base=base)
+    res = compute_l2_radius(net, H, limit_factor=1.0, base=base)
 
     # Extract radii in stable per-line order.
     idx = base.line_indices
@@ -190,8 +190,8 @@ def test_slack_invariance_for_balanced_certificate() -> None:
     assert np.allclose(f0_0, f0_2, atol=1e-10, rtol=0.0)
     assert np.allclose(c0, c2, atol=1e-10, rtol=0.0)
 
-    res0 = compute_l2_radius(net, H0, margin_factor=1.0, base=base0)
-    res2 = compute_l2_radius(net, H2, margin_factor=1.0, base=base2)
+    res0 = compute_l2_radius(net, H0, limit_factor=1.0, base=base0)
+    res2 = compute_l2_radius(net, H2, limit_factor=1.0, base=base2)
 
     idx = base0.line_indices
     r0 = np.array([float(res0[f"line_{lid}"]["radius_l2"]) for lid in idx], dtype=float)
