@@ -74,15 +74,7 @@ Require: \( \|\Delta S^{\text{predicted}} - \Delta S^{\text{actual}}\|_\infty / 
 
 ***
 
-### Step 1.5 — Remove dead file `res_gpt.md`
 
-**File:** `res_gpt.md`
-
-**Problem:** This file is a GPT conversation log, not part of the project. It appears at the repository root and may confuse reviewers or CI systems.
-
-**What to change:** Delete it. Ensure no imports or references exist anywhere.
-
-***
 
 ## Phase 2 — AC Sigma-Radius Module (Core New Feature)
 

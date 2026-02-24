@@ -34,15 +34,32 @@ def _make_small_net():
 
 
 def _make_base_for_tests(net):
+    """
+    Build a minimal LineBaseQuantities for unit tests.
+
+    Important
+    ---------
+    Use `estimate_line_limit_mva_with_flag()` to populate `is_unconstrained`.
+    This keeps test fixtures aligned with the current project contract:
+    unconstrained lines (rateA==0/NaN/+inf) are mapped to a large finite surrogate
+    and must be explicitly flagged in results.
+    """
     from stability_radius.radii.common import (
         LineBaseQuantities,
-        estimate_line_limit_mva,
+        estimate_line_limit_mva_with_flag,
     )
 
     idx = [int(x) for x in sorted(net.line.index)]
-    limits = np.array(
-        [estimate_line_limit_mva(net, net.line.loc[lid]) for lid in idx], dtype=float
-    )
+
+    limits_list: list[float] = []
+    is_uc_list: list[bool] = []
+    for lid in idx:
+        lim, is_uc = estimate_line_limit_mva_with_flag(net, net.line.loc[lid])
+        limits_list.append(float(lim))
+        is_uc_list.append(bool(is_uc))
+
+    limits = np.asarray(limits_list, dtype=float)
+    is_unconstrained = np.asarray(is_uc_list, dtype=bool)
 
     flow0 = np.zeros(len(idx), dtype=float)
     return LineBaseQuantities(
@@ -51,6 +68,7 @@ def _make_base_for_tests(net):
         p0_abs_mw=np.abs(flow0),
         limit_mva_assumed_mw=limits,
         margin_mw=limits.copy(),
+        is_unconstrained=is_unconstrained,
         opf_status="test",
         opf_objective=0.0,
     )

@@ -9,7 +9,7 @@ from stability_radius.config import DEFAULT_OPF, OPFConfig
 from stability_radius.dc.dc_model import DCOperator, build_dc_operator
 from stability_radius.radii.common import (
     LineBaseQuantities,
-    estimate_line_limit_mva,
+    estimate_line_limit_mva_with_flag,
     get_line_base_quantities,
 )
 
@@ -133,10 +133,12 @@ def build_dc_base_point_case(
     # Line limits (MW assumed from MVA under PF=1 convention)
     line_ids = [int(x) for x in sorted(net.line.index)]
     limits = np.empty(len(line_ids), dtype=float)
+    is_unconstrained = np.zeros(len(line_ids), dtype=bool)
+
     for pos, lid in enumerate(line_ids):
-        limits[pos] = float(estimate_line_limit_mva(net, net.line.loc[lid])) * float(
-            limit_factor
-        )
+        lim, is_uc = estimate_line_limit_mva_with_flag(net, net.line.loc[lid])
+        limits[pos] = float(lim) * float(limit_factor)
+        is_unconstrained[pos] = bool(is_uc)
 
     flows = np.asarray(
         op.flows_from_bus_injections_mw(injections), dtype=float
@@ -153,6 +155,7 @@ def build_dc_base_point_case(
         p0_abs_mw=p0_abs,
         limit_mva_assumed_mw=limits,
         margin_mw=margins,
+        is_unconstrained=is_unconstrained,
         opf_status="case",
         opf_objective=float("nan"),
         bus_ids=bus_ids,

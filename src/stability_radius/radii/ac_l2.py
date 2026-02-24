@@ -8,7 +8,10 @@ import numpy as np
 
 from stability_radius.ac.ac_model import build_ac_operator
 from stability_radius.base_point.pypsa_pf import PyPSAAPFResult
-from stability_radius.radii.common import estimate_line_limit_mva, line_key
+from stability_radius.radii.common import (
+    estimate_line_limit_mva_with_flag,
+    line_key,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +61,7 @@ def compute_ac_l2_radius(
       - margin_ac_mva : margin at the binding end (MVA)
       - "||h||2"      : dual sensitivity norm at the binding end (dimensionless)
       - binding_end   : "from" | "to"
+      - is_unconstrained : True iff the thermal limit is a surrogate (rateA==0/NaN/+inf).
     """
     if chunk_size <= 0:
         raise ValueError("chunk_size must be positive.")
@@ -81,10 +85,13 @@ def compute_ac_l2_radius(
     n_bus = int(len(op.bus_ids))
     n_red = int(op.n_red)
 
-    # ---------- limits ----------
+    # ---------- limits + unconstrained flags ----------
     limits_mva = np.empty(m, dtype=float)
-    for pos, (_, row) in enumerate(net.line.loc[line_ids].iterrows()):
-        limits_mva[pos] = float(estimate_line_limit_mva(net, row))
+    is_unconstrained = np.zeros(m, dtype=bool)
+    for pos, lid in enumerate(line_ids):
+        lim, is_uc = estimate_line_limit_mva_with_flag(net, net.line.loc[int(lid)])
+        limits_mva[pos] = float(lim)
+        is_unconstrained[pos] = bool(is_uc)
 
     # ---------- base flows ----------
     p0 = np.asarray(base_pf.line_p0_mw, dtype=float).reshape(-1)
@@ -253,6 +260,7 @@ def compute_ac_l2_radius(
         results[k] = {
             # detailed end-specific
             "ac_s_limit_mva": float(limits_mva[pos]),
+            "is_unconstrained": bool(is_unconstrained[pos]),
             "ac_p0_from_mw": float(p0[pos]),
             "ac_q0_from_mvar": float(q0[pos]),
             "ac_s0_from_mva": float(s0_from[pos]),

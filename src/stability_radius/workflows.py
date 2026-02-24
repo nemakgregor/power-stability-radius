@@ -35,6 +35,7 @@ from stability_radius.parsers.matpower import load_network
 from stability_radius.radii.common import (
     LineBaseQuantities,
     assert_line_limit_sources_present,
+    estimate_line_limit_mva_with_flag,
 )
 from stability_radius.radii.l2 import compute_l2_radius
 from stability_radius.radii.nminus1 import compute_nminus1_l2_radius
@@ -199,9 +200,10 @@ def _compute_probabilistic_from_l2_results(
 
 def _compute_radii_operator_path(
     *,
-    dc_op,
+    dc_op: Any,
     base: LineBaseQuantities,
     dc_chunk_size: int,
+    net: Any,
 ) -> dict[str, dict[str, Any]]:
     """
     Compute DC L2 radii without materializing H_full (operator path).
@@ -220,6 +222,17 @@ def _compute_radii_operator_path(
     if norms.shape != (len(base.line_indices),):
         raise ValueError("Unexpected norms shape from DC operator.")
 
+    # Unconstrained flags: prefer base if provided, otherwise extract from net deterministically.
+    if base.is_unconstrained is not None:
+        is_unconstrained = np.asarray(base.is_unconstrained, dtype=bool).reshape(-1)
+        if is_unconstrained.shape != (len(base.line_indices),):
+            raise ValueError("base.is_unconstrained shape mismatch.")
+    else:
+        is_unconstrained = np.zeros(len(base.line_indices), dtype=bool)
+        for pos, lid in enumerate(base.line_indices):
+            _, is_uc = estimate_line_limit_mva_with_flag(net, net.line.loc[int(lid)])
+            is_unconstrained[pos] = bool(is_uc)
+
     out: dict[str, dict[str, Any]] = {}
     for pos, lid in enumerate(base.line_indices):
         margin = float(base.margin_mw[pos])
@@ -231,6 +244,7 @@ def _compute_radii_operator_path(
             "flow0_mw": float(base.flow0_mw[pos]),
             "p0_mw": float(base.p0_abs_mw[pos]),
             "p_limit_mw_est": float(base.limit_mva_assumed_mw[pos]),
+            "is_unconstrained": bool(is_unconstrained[pos]),
             "margin_mw": margin,
             "norm_g": norm_g,
             "radius_l2": float(r_l2),
@@ -502,6 +516,7 @@ def compute_results_for_case(
                     dc_op=dc_op,
                     base=base_dc,
                     dc_chunk_size=int(dc_chunk_size),
+                    net=net,
                 )
                 results_lines = l2
 

@@ -5,14 +5,19 @@ from typing import Any, Dict
 
 import numpy as np
 
-from .common import LineBaseQuantities, get_line_base_quantities, line_key
+from .common import (
+    LineBaseQuantities,
+    estimate_line_limit_mva_with_flag,
+    get_line_base_quantities,
+    line_key,
+)
 from .core_l2 import row_l2_norms_projected_ones_complement
 
 logger = logging.getLogger(__name__)
 
 
 def compute_l2_radius(
-    net,
+    net: Any,
     H_full: np.ndarray,
     limit_factor: float = 1.0,
     *,
@@ -36,6 +41,13 @@ def compute_l2_radius(
     For each line l:
         margin_l = P_limit_l - |P0_l|
         r_l2 = margin_l / ||Proj(g_l)||_2
+
+    Unconstrained lines
+    -------------------
+    If a line is unconstrained in MATPOWER/PGLib sense (rateA==0 / NaN / +inf),
+    we use a large finite surrogate limit and additionally export:
+        is_unconstrained: bool
+    so downstream tables/plots can label it as "no real limit".
 
     Units contract
     --------------
@@ -74,6 +86,17 @@ def compute_l2_radius(
     if norms.shape != (H.shape[0],):
         raise ValueError("Internal error: projected row norms shape mismatch.")
 
+    # Unconstrained flags:
+    if base_q.is_unconstrained is not None:
+        is_unconstrained = np.asarray(base_q.is_unconstrained, dtype=bool).reshape(-1)
+        if is_unconstrained.shape != (len(base_q.line_indices),):
+            raise ValueError("base.is_unconstrained shape mismatch.")
+    else:
+        is_unconstrained = np.zeros(len(base_q.line_indices), dtype=bool)
+        for pos, lid in enumerate(base_q.line_indices):
+            _, is_uc = estimate_line_limit_mva_with_flag(net, net.line.loc[int(lid)])
+            is_unconstrained[pos] = bool(is_uc)
+
     results: Dict[str, Dict[str, Any]] = {}
     finite_radii: list[float] = []
 
@@ -89,6 +112,7 @@ def compute_l2_radius(
             "flow0_mw": float(base_q.flow0_mw[pos]),
             "p0_mw": float(base_q.p0_abs_mw[pos]),
             "p_limit_mw_est": float(base_q.limit_mva_assumed_mw[pos]),
+            "is_unconstrained": bool(is_unconstrained[pos]),
             "margin_mw": margin,
             "norm_g": norm_g,
             "radius_l2": r_l2,

@@ -3,13 +3,15 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Any, Sequence
 
 import numpy as np
 
 from stability_radius.config import DEFAULT_OPF, OPFConfig
 
 logger = logging.getLogger(__name__)
+
+_RATING_ZERO_EPS = 1e-12
 
 
 @dataclass(frozen=True)
@@ -24,6 +26,13 @@ class LineBaseQuantities:
     - limit_mva_assumed_mw is the thermal limit extracted from the case (typically MVA),
       and then used as MW under the DC PF=1 convention.
     - margin_mw = max(limit - abs(flow0), 0).
+
+    Unconstrained lines
+    -------------------
+    In MATPOWER/PGLib convention, rating=0 means "unconstrained", not "zero limit".
+    For correctness and to avoid false bottlenecks, we use a large finite surrogate limit
+    (see estimate_line_limit_mva*()), and store a per-line flag:
+      - is_unconstrained[pos] == True  -> the extracted limit is a surrogate, not a real constraint.
 
     OPF metadata
     ------------
@@ -56,6 +65,9 @@ class LineBaseQuantities:
     p0_abs_mw: np.ndarray  # shape (m,)
     limit_mva_assumed_mw: np.ndarray  # shape (m,)
     margin_mw: np.ndarray  # shape (m,)
+
+    # Optional, but when present should be aligned with line_indices.
+    is_unconstrained: np.ndarray | None = None  # shape (m,), dtype=bool
 
     opf_status: str | None = None
     opf_objective: float | None = None
@@ -162,10 +174,66 @@ def assert_line_limit_sources_present(net: object) -> None:
     )
 
 
-def estimate_line_limit_mva(net, line_row) -> float:
+def _resolve_unconstrained_fallback_mva(fallback_mva: float | None) -> float:
     """
-    Extract a line thermal limit in MVA using explicit case / converted data.
+    Return a deterministic, *finite* surrogate limit used for unconstrained lines.
+
+    Notes
+    -----
+    - We intentionally do NOT return +inf, because:
+        * downstream consumers (tables/plots) should not treat it as a true constraint,
+          and a finite surrogate is easier to handle consistently.
+    - Default value is aligned with OPFConfig.unconstrained_line_nom_mw.
     """
+    v = (
+        float(DEFAULT_OPF.unconstrained_line_nom_mw)
+        if fallback_mva is None
+        else float(fallback_mva)
+    )
+    if (not math.isfinite(v)) or v <= 0.0:
+        raise ValueError(
+            "fallback_mva must be finite and >0. "
+            f"Got fallback_mva={fallback_mva!r} -> resolved={v!r}"
+        )
+    return float(v)
+
+
+def estimate_line_limit_mva_with_flag(
+    net: Any,
+    line_row: Any,
+    *,
+    fallback_mva: float | None = None,
+) -> tuple[float, bool]:
+    """
+    Extract a line thermal limit in MVA and return (limit_mva, is_unconstrained).
+
+    Key correctness convention
+    --------------------------
+    MATPOWER/PGLib (and thus many PGLib-derived pandapower nets) use:
+      rateA == 0  => "unconstrained"
+    not "zero thermal limit".
+
+    Therefore:
+    - For explicit rating columns (rateA/rate_a_mva/sn_mva/max_mva):
+        * v in {0, NaN, +inf} is treated as unconstrained and mapped to a large finite surrogate.
+    - For current-based rating (max_i_ka):
+        * i_ka in {0, NaN, +inf} is treated as unconstrained and mapped to the same surrogate.
+
+    Parameters
+    ----------
+    net:
+        pandapower net.
+    line_row:
+        A net.line row (pandas Series-like).
+    fallback_mva:
+        Optional finite surrogate (default: DEFAULT_OPF.unconstrained_line_nom_mw).
+
+    Returns
+    -------
+    (limit_mva, is_unconstrained)
+    """
+    fallback = _resolve_unconstrained_fallback_mva(fallback_mva)
+
     try:
         max_loading_percent = float(line_row.get("max_loading_percent", 100.0))
     except (TypeError, ValueError):
@@ -174,6 +242,18 @@ def estimate_line_limit_mva(net, line_row) -> float:
         max_loading_percent = 100.0
     mult = float(max_loading_percent) / 100.0
 
+    def _fallback(reason: str) -> tuple[float, bool]:
+        # DEBUG only: can be many lines in large cases.
+        logger.debug(
+            "Line %s: unconstrained (%s) -> using fallback limit=%.6g MVA (mult=%.6g)",
+            _line_row_id(line_row),
+            reason,
+            float(fallback) * float(mult),
+            float(mult),
+        )
+        return float(fallback) * float(mult), True
+
+    # Prefer explicit columns (MATPOWER/PGLib convention).
     for k in ("rateA", "rate_a_mva", "sn_mva", "max_mva"):
         if k not in line_row:
             continue
@@ -185,32 +265,23 @@ def estimate_line_limit_mva(net, line_row) -> float:
                 f"Line {_line_row_id(line_row)}: failed to parse {k} as float: {line_row.get(k)!r}"
             ) from e
 
-        if math.isnan(v):
-            logger.debug(
-                "Line %s: rating column %s is NaN; trying other sources.",
-                _line_row_id(line_row),
-                k,
-            )
-            continue
-
-        if math.isinf(v):
-            return float("inf")
-
-        if not np.isfinite(v):
-            raise ValueError(
-                f"Line {_line_row_id(line_row)}: invalid non-finite line rating {k}={v!r}"
-            )
-
-        # MATPOWER/PGLib convention: 0 means "unconstrained".
-        if abs(v) <= 1e-12:
-            return float("inf")
-        if v < 0:
+        # Negative ratings are invalid (including -inf).
+        if math.isfinite(v) and v < 0:
             raise ValueError(
                 f"Line {_line_row_id(line_row)}: invalid negative line rating {k}={v!r}"
             )
+        if math.isinf(v) and v < 0:
+            raise ValueError(
+                f"Line {_line_row_id(line_row)}: invalid negative infinite line rating {k}={v!r}"
+            )
 
-        return float(v) * mult
+        # Unconstrained semantics: v in {0, NaN, +inf}.
+        if (not math.isfinite(v)) or abs(v) <= _RATING_ZERO_EPS:
+            return _fallback(f"{k}={v!r}")
 
+        return float(v) * float(mult), False
+
+    # Fall back to current-based rating if explicit rating is missing.
     if "max_i_ka" in line_row:
         try:
             i_ka = float(line_row.get("max_i_ka", float("nan")))
@@ -219,41 +290,33 @@ def estimate_line_limit_mva(net, line_row) -> float:
                 f"Line {_line_row_id(line_row)}: failed to parse max_i_ka as float: {line_row.get('max_i_ka')!r}"
             ) from e
 
-        if math.isnan(i_ka):
-            logger.debug(
-                "Line %s: max_i_ka is NaN; cannot derive limit from current.",
-                _line_row_id(line_row),
+        if math.isfinite(i_ka) and i_ka < 0:
+            raise ValueError(
+                f"Line {_line_row_id(line_row)}: invalid negative max_i_ka={i_ka!r}"
             )
-        else:
-            if math.isinf(i_ka):
-                return float("inf")
-            if not np.isfinite(i_ka):
-                raise ValueError(
-                    f"Line {_line_row_id(line_row)}: invalid non-finite max_i_ka={i_ka!r}"
-                )
+        if math.isinf(i_ka) and i_ka < 0:
+            raise ValueError(
+                f"Line {_line_row_id(line_row)}: invalid negative infinite max_i_ka={i_ka!r}"
+            )
 
-            if abs(i_ka) <= 1e-12:
-                return float("inf")
-            if i_ka < 0:
-                raise ValueError(
-                    f"Line {_line_row_id(line_row)}: invalid negative max_i_ka={i_ka!r}"
-                )
+        if (not math.isfinite(i_ka)) or abs(i_ka) <= _RATING_ZERO_EPS:
+            return _fallback(f"max_i_ka={i_ka!r}")
 
-            fb = int(line_row.get("from_bus", -1))
-            vn_kv = _bus_vn_kv(net, fb)
-            if not np.isfinite(vn_kv) or vn_kv <= 0:
-                raise ValueError(
-                    f"Line {_line_row_id(line_row)}: cannot derive limit from max_i_ka "
-                    f"because net.bus.vn_kv is missing/invalid for from_bus={fb} (vn_kv={vn_kv!r})."
-                )
+        fb = int(line_row.get("from_bus", -1))
+        vn_kv = _bus_vn_kv(net, fb)
+        if not np.isfinite(vn_kv) or vn_kv <= 0:
+            raise ValueError(
+                f"Line {_line_row_id(line_row)}: cannot derive limit from max_i_ka "
+                f"because net.bus.vn_kv is missing/invalid for from_bus={fb} (vn_kv={vn_kv!r})."
+            )
 
-            s_mva = math.sqrt(3.0) * float(vn_kv) * float(i_ka)
-            if not np.isfinite(s_mva) or s_mva < 0:
-                raise ValueError(
-                    f"Line {_line_row_id(line_row)}: derived invalid S_MVA={s_mva!r} "
-                    f"from vn_kv={vn_kv!r}, max_i_ka={i_ka!r}."
-                )
-            return float(s_mva) * mult
+        s_mva = math.sqrt(3.0) * float(vn_kv) * float(i_ka)
+        if not np.isfinite(s_mva) or s_mva < 0:
+            raise ValueError(
+                f"Line {_line_row_id(line_row)}: derived invalid S_MVA={s_mva!r} "
+                f"from vn_kv={vn_kv!r}, max_i_ka={i_ka!r}."
+            )
+        return float(s_mva) * float(mult), False
 
     try:
         available = list(getattr(line_row, "index", []))
@@ -267,8 +330,27 @@ def estimate_line_limit_mva(net, line_row) -> float:
     )
 
 
+def estimate_line_limit_mva(
+    net: Any,
+    line_row: Any,
+    *,
+    fallback_mva: float | None = None,
+) -> float:
+    """
+    Extract a line thermal limit in MVA using explicit case / converted data.
+
+    See also
+    --------
+    estimate_line_limit_mva_with_flag : returns (limit_mva, is_unconstrained).
+    """
+    limit, _is_unconstrained = estimate_line_limit_mva_with_flag(
+        net, line_row, fallback_mva=fallback_mva
+    )
+    return float(limit)
+
+
 def get_line_base_quantities(
-    net,
+    net: Any,
     *,
     limit_factor: float = 1.0,
     line_indices: Sequence[int] | None = None,
@@ -278,6 +360,14 @@ def get_line_base_quantities(
     Extract per-line base flows, limits, and margins around an OPF base point.
 
     Project policy: base point is PyPSA DC OPF (HiGHS).
+
+    Important behavior for unconstrained lines
+    ------------------------------------------
+    - If a line is "unconstrained" in MATPOWER/PGLib sense (rateA==0 / NaN / +inf),
+      a large finite surrogate limit is used.
+    - OPF headroom is applied ONLY to *constrained* lines.
+      For unconstrained lines, the surrogate is not scaled by headroom to keep the
+      surrogate purely numerical (matching historical inf->unconstrained_nom behavior).
     """
     cfg = opf_cfg if opf_cfg is not None else DEFAULT_OPF
 
@@ -294,10 +384,18 @@ def get_line_base_quantities(
         else [int(x) for x in line_indices]
     )
 
+    fallback_mva = float(
+        getattr(cfg, "unconstrained_line_nom_mw", DEFAULT_OPF.unconstrained_line_nom_mw)
+    )
     limits_mva = np.empty(len(idx), dtype=float)
+    is_unconstrained = np.zeros(len(idx), dtype=bool)
+
     for pos, (_, line_row) in enumerate(net.line.loc[idx].iterrows()):
-        s_limit_mva = estimate_line_limit_mva(net, line_row)
+        s_limit_mva, is_uc = estimate_line_limit_mva_with_flag(
+            net, line_row, fallback_mva=fallback_mva
+        )
         limits_mva[pos] = float(s_limit_mva) * float(limit_factor)
+        is_unconstrained[pos] = bool(is_uc)
 
     limits_mva_assumed_mw = limits_mva.copy()
 
@@ -318,8 +416,11 @@ def get_line_base_quantities(
         )
 
     opf_limits = limits_mva_assumed_mw.copy()
-    finite = np.isfinite(opf_limits)
-    opf_limits[finite] = opf_limits[finite] * float(opf_headroom)
+    # Apply headroom to constrained lines only.
+    finite_and_constrained = np.isfinite(opf_limits) & (~is_unconstrained)
+    opf_limits[finite_and_constrained] = opf_limits[finite_and_constrained] * float(
+        opf_headroom
+    )
 
     from stability_radius.base_point.pypsa_opf import (
         solve_dc_opf_base_flows_from_pandapower,
@@ -362,6 +463,7 @@ def get_line_base_quantities(
         p0_abs_mw=p0_abs,
         limit_mva_assumed_mw=limits_mva_assumed_mw,
         margin_mw=margins,
+        is_unconstrained=is_unconstrained,
         opf_status=str(opf_res.status),
         opf_objective=float(opf_res.objective),
         bus_ids=bus_ids,
