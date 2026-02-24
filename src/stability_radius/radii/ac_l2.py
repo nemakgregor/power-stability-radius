@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 _EPS_NORM = 1e-12
 _EPS_S0_MVA = 1e-9
+_FALLBACK_WP_WQ = 1.0 / math.sqrt(2.0)
 
 
 def _balanced_two_block_norm_from_red(
@@ -130,6 +131,8 @@ def compute_ac_l2_radius(
         margin_end[2 * i + 1] = float(margin_to[i])
 
     # ---------- chunked adjoint solves ----------
+    fallback_used = 0
+
     start = 0
     while start < n_con:
         end = min(n_con, start + int(chunk_size))
@@ -196,7 +199,12 @@ def compute_ac_l2_radius(
                 wP = float(p_end[con_idx]) / s0
                 wQ = float(q_end[con_idx]) / s0
             else:
-                wP, wQ = 1.0, 0.0
+                # At |S|=0 the gradient of a norm is undefined.
+                # For a conservative, unbiased certificate we use an equal P/Q direction:
+                # (wP, wQ) = (1/sqrt(2), 1/sqrt(2)), instead of a one-sided (1,0) fallback.
+                wP = _FALLBACK_WP_WQ
+                wQ = _FALLBACK_WP_WQ
+                fallback_used += 1
 
             b_ti = wP * dP_dti + wQ * dQ_dti
             b_tk = wP * dP_dtk + wQ * dQ_dtk
@@ -236,6 +244,15 @@ def compute_ac_l2_radius(
                 radii[con_idx] = float("inf") if margin >= 0.0 else float("-inf")
 
         start = end
+
+    if fallback_used > 0:
+        logger.debug(
+            "AC |S| gradient fallback used: %d/%d constraint-ends with |S0|<=%.3g MVA "
+            "(used equal P/Q weights).",
+            int(fallback_used),
+            int(n_con),
+            float(_EPS_S0_MVA),
+        )
 
     # ---------- aggregate per line (min of from/to end) ----------
     results: Dict[str, Dict[str, Any]] = {}
