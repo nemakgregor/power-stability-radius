@@ -161,6 +161,8 @@ def _download_text_file(
     - Retries are deterministic: the same URL is retried `retries` times before failing.
     - Raises DownloadError on failure so callers can try alternate candidate URLs.
     """
+    target_path = str(Path(target_path).expanduser())
+
     if os.path.exists(target_path) and not overwrite:
         logger.info("File already exists, skipping download: %s", target_path)
         return target_path
@@ -403,6 +405,7 @@ def ensure_case_file(
     -----------
     - Candidate URLs are tried in a stable order (see download_* functions).
     - No guessing of directories: only the explicit `path` is used.
+    - "~" is expanded using `Path.expanduser()`.
 
     Parameters
     ----------
@@ -425,7 +428,7 @@ def ensure_case_file(
     RuntimeError
         If the file is missing, pattern matches, but download failed.
     """
-    target = Path(path)
+    target = Path(path).expanduser()
 
     if target.exists() and not overwrite:
         logger.debug("Case file exists: %s", str(target))

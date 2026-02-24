@@ -7,6 +7,10 @@ from typing import Any, Tuple
 
 import numpy as np
 
+from stability_radius.pp_helpers import bus_vn_kv as _bus_vn_kv
+from stability_radius.pp_helpers import is_in_service as _is_in_service
+from stability_radius.pp_helpers import resolve_slack_pos as _resolve_slack_pos
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -38,26 +42,40 @@ class DCOperator:
     """
     DC linear operator for PTDF-like computations without necessarily materializing H_full.
 
-    Represents:
-        theta_red = Bred^{-1} * p_red
-        f_lines = diag(b_lines) * A_lines_red * theta_red
+    Represents (lossless DC, balanced injections)
+    ---------------------------------------------
+    Let A be the oriented incidence of the *full* branch set used for B, and b be the
+    per-branch coefficients in MW/rad. Then:
+
+        f_all = diag(b) * (A * theta - shift)
+
+        p = A^T * f_all
+
+    which yields:
+        B * theta = p + A^T * diag(b) * shift
+    where B = A^T diag(b) A.
+
+    This project primarily needs:
+    - sensitivities Δf = H Δp (shift drops out, since it's constant)
+    - base-point reconstruction checks OPF->DC (must include shift terms if present)
 
     Notes
     -----
     - bus_ids and line_ids are sorted to keep deterministic ordering.
     - slack bus is eliminated (reduced system).
 
-    Important modeling contract
-    ---------------------------
-    This operator models a *lossless DC* network with a single reference angle (slack).
-
-    Transformer tap ratios (if any) are modeled with a MATPOWER-style DC approximation:
+    Transformer modeling (DC approximation)
+    ---------------------------------------
+    Transformer tap ratios are modeled with a MATPOWER-style DC approximation:
         b_eff = b / tap
     where `tap` is derived from pandapower tap_pos/tap_step_percent.
 
-    Phase shifting transformers (shift_degree != 0)
-    -----------------------------------------------
-    Not supported. This function fails fast if any in-service transformer has a non-zero shift.
+    Phase shifting transformers (shift_degree)
+    ------------------------------------------
+    Supported.
+    - shift_degree is interpreted in degrees and converted to radians.
+    - shift is applied on the (hv_bus -> lv_bus) orientation, consistent with how we
+      build A for trafos.
 
     Units
     -----
@@ -65,7 +83,7 @@ class DCOperator:
     - x/r: Ohm
     - theta: rad
     - p / f: MW
-    - b: MW/rad (computed as V_kV^2 / X_ohm)
+    - b: MW/rad (computed as V_kV^2 / X_ohm, i.e. S/x_pu equivalently)
     """
 
     bus_ids: tuple[int, ...]
@@ -81,6 +99,11 @@ class DCOperator:
 
     Bred_lu: Any  # scipy.sparse.linalg.SuperLU
     W: Any  # scipy sparse matrix (m_lines x (n-1)) = diag(b_lines)*A_lines_red
+
+    # Constant RHS term from phase shifters:
+    #   rhs_red = p_red + shift_inj_red
+    # where shift_inj_red := A_red^T diag(b_all) shift_all
+    shift_inj_red: np.ndarray  # (n-1,)
 
     @property
     def n_bus(self) -> int:
@@ -125,6 +148,9 @@ class DCOperator:
         """
         Compute flow changes on monitored lines for given balanced injections.
 
+        This method intentionally ignores phase-shifter constants, because it is used
+        for *perturbations* around a fixed network (shift is a constant offset).
+
         Parameters
         ----------
         delta:
@@ -150,6 +176,39 @@ class DCOperator:
         theta = self.solve_Bred(rhs)  # (n-1, k)
         flow = (self.W @ theta).T  # (k, m)
         return np.asarray(flow, dtype=float)
+
+    def flows_from_bus_injections_mw(self, injections_mw: np.ndarray) -> np.ndarray:
+        """
+        Reconstruct *absolute* monitored line flows from absolute bus injections.
+
+        This is required for OPF->DCOperator consistency checks when the network contains
+        phase shifting transformers.
+
+        Mathematical model
+        ------------------
+            Bred * theta_red = p_red + shift_inj_red
+            f_lines = W * theta_red     (monitored lines have shift=0 in this project)
+
+        Parameters
+        ----------
+        injections_mw:
+            Bus net injections (generation - load), aligned with `bus_ids`, shape (n_bus,).
+
+        Returns
+        -------
+        np.ndarray
+            Reconstructed monitored line flows (MW), shape (n_line,).
+        """
+        p = np.asarray(injections_mw, dtype=float).reshape(-1)
+        if p.shape != (self.n_bus,):
+            raise ValueError(
+                f"injections_mw must have shape ({self.n_bus},), got {p.shape}"
+            )
+
+        rhs = p[self.mask_non_slack] + np.asarray(self.shift_inj_red, dtype=float)
+        theta = self.solve_Bred(rhs)  # (n-1,)
+        f = self.W @ theta  # (m,)
+        return np.asarray(f, dtype=float).reshape(-1)
 
     def row_sensitivities_transposed(self, line_positions: np.ndarray) -> np.ndarray:
         """
@@ -253,35 +312,6 @@ class DCOperator:
             start = end
 
         return H_full
-
-
-def _resolve_slack_pos(bus_ids: list[int], slack_bus: int) -> int:
-    """
-    Resolve slack bus as either:
-    - exact bus id (present in bus_ids)
-    - positional index in current bus ordering
-    """
-    bus_pos = {int(bid): pos for pos, bid in enumerate(bus_ids)}
-    if int(slack_bus) in bus_pos:
-        return int(bus_pos[int(slack_bus)])
-    if 0 <= int(slack_bus) < len(bus_ids):
-        return int(slack_bus)
-    raise ValueError(
-        f"slack_bus must be a valid bus id or position. Got {slack_bus!r}; "
-        f"valid positions: [0, {len(bus_ids) - 1}]"
-    )
-
-
-def _is_in_service(row: Any) -> bool:
-    """Return pandapower element in_service flag."""
-    return bool(row.get("in_service", True))
-
-
-def _bus_vn_kv(net: Any, bus_id: int) -> float:
-    """Return bus nominal voltage vn_kv if available, else NaN."""
-    if bus_id in net.bus.index and "vn_kv" in net.bus.columns:
-        return float(net.bus.loc[bus_id, "vn_kv"])
-    return float("nan")
 
 
 def _line_x_total_ohm(line_row: Any) -> float:
@@ -605,11 +635,12 @@ def build_dc_operator(net, slack_bus: int = 0) -> DCOperator:
     --------
     - Monitored elements: net.line (ordering: sorted(net.line.index))
     - B matrix assembly includes: net.line + net.trafo + net.impedance
-      (in service, nonzero reactance).
+      (in service, nonzero reactance/voltage).
 
-    Phase shifts (shift_degree)
-    ---------------------------
-    Not supported: any in-service transformer with shift_degree != 0 raises ValueError.
+    Phase shifting transformers (shift_degree)
+    ------------------------------------------
+    Supported: non-zero shift_degree contributes to a constant RHS term in the
+    absolute PF equations and is stored in `DCOperator.shift_inj_red`.
 
     Logging
     -------
@@ -697,18 +728,25 @@ def build_dc_operator(net, slack_bus: int = 0) -> DCOperator:
 
     # ---------- Build full branch set for B (lines + trafos + impedances) ----------
     b_all: list[float] = []
+    shift_all_rad: list[float] = []
     A_all_row: list[int] = []
     A_all_col: list[int] = []
     A_all_data: list[float] = []
     undirected_edges: list[tuple[int, int]] = []
 
-    def _add_branch(*, fpos: int, tpos: int, b_val: float) -> None:
+    def _add_branch(*, fpos: int, tpos: int, b_val: float, shift_rad: float) -> None:
         if not np.isfinite(b_val) or abs(float(b_val)) <= 0.0:
             raise ValueError(
                 f"Invalid branch b_val={b_val!r} (must be finite, non-zero)."
             )
+        if not np.isfinite(shift_rad):
+            raise ValueError(
+                f"Invalid branch shift_rad={shift_rad!r} (must be finite)."
+            )
+
         r = len(b_all)
         b_all.append(float(b_val))
+        shift_all_rad.append(float(shift_rad))
         A_all_row.extend([r, r])
         A_all_col.extend([int(fpos), int(tpos)])
         A_all_data.extend([1.0, -1.0])
@@ -725,10 +763,16 @@ def build_dc_operator(net, slack_bus: int = 0) -> DCOperator:
             raise ValueError(f"Line {lid} refers to missing buses {fb}->{tb}")
 
         b_i = float(_line_b_mw_from_row(net, row))
-        _add_branch(fpos=int(bus_pos[fb]), tpos=int(bus_pos[tb]), b_val=b_i)
+        _add_branch(
+            fpos=int(bus_pos[fb]),
+            tpos=int(bus_pos[tb]),
+            b_val=b_i,
+            shift_rad=0.0,
+        )
         added_lines_to_b += 1
 
     added_trafos_to_b = 0
+    n_phase_shifters = 0
     if hasattr(net, "trafo") and net.trafo is not None and len(net.trafo):
         for tid in [int(x) for x in sorted(net.trafo.index)]:
             row = net.trafo.loc[tid]
@@ -739,7 +783,6 @@ def build_dc_operator(net, slack_bus: int = 0) -> DCOperator:
             if hv not in bus_pos or lv not in bus_pos:
                 raise ValueError(f"Trafo {tid} refers to missing buses {hv}->{lv}")
 
-            # Phase shifting transformer is not modeled by this project's DC operator.
             try:
                 shift_deg = float(row.get("shift_degree", 0.0))
             except (TypeError, ValueError):
@@ -750,9 +793,9 @@ def build_dc_operator(net, slack_bus: int = 0) -> DCOperator:
                 )
 
             if abs(float(shift_deg)) > _SHIFT_DEG_EPS:
-                logger.warning(
-                    f"Trafo {tid}: non-zero shift_degree={shift_deg} deg is not supported by the project's DC model."
-                )
+                n_phase_shifters += 1
+
+            shift_rad = float(shift_deg) * math.pi / 180.0
 
             b_raw = float(_trafo_b_mw_from_row(net, row))
             tap = float(trafo_tap_ratio(row))
@@ -767,7 +810,20 @@ def build_dc_operator(net, slack_bus: int = 0) -> DCOperator:
                     float(b_eff),
                 )
 
-            _add_branch(fpos=int(bus_pos[hv]), tpos=int(bus_pos[lv]), b_val=b_eff)
+            if abs(float(shift_deg)) > _SHIFT_DEG_EPS:
+                logger.info(
+                    "Trafo %d: phase shift supported: shift_degree=%.6g deg (%.6g rad)",
+                    int(tid),
+                    float(shift_deg),
+                    float(shift_rad),
+                )
+
+            _add_branch(
+                fpos=int(bus_pos[hv]),
+                tpos=int(bus_pos[lv]),
+                b_val=b_eff,
+                shift_rad=shift_rad,
+            )
             added_trafos_to_b += 1
 
     added_imps_to_b = 0
@@ -782,7 +838,12 @@ def build_dc_operator(net, slack_bus: int = 0) -> DCOperator:
                 raise ValueError(f"Impedance {iid} refers to missing buses {fb}->{tb}")
 
             b_i = float(_impedance_b_mw_from_row(net, row))
-            _add_branch(fpos=int(bus_pos[fb]), tpos=int(bus_pos[tb]), b_val=b_i)
+            _add_branch(
+                fpos=int(bus_pos[fb]),
+                tpos=int(bus_pos[tb]),
+                b_val=b_i,
+                shift_rad=0.0,
+            )
             added_imps_to_b += 1
 
     if not b_all:
@@ -793,7 +854,7 @@ def build_dc_operator(net, slack_bus: int = 0) -> DCOperator:
 
     logger.debug(
         "DCOperator summary: buses=%d, monitored_lines=%d (valid=%d), B-branches=%d "
-        "[lines=%d, trafos=%d, impedances=%d]",
+        "[lines=%d, trafos=%d, impedances=%d, phase_shifters=%d]",
         n_bus,
         m_line,
         valid_monitored,
@@ -801,6 +862,7 @@ def build_dc_operator(net, slack_bus: int = 0) -> DCOperator:
         added_lines_to_b,
         added_trafos_to_b,
         added_imps_to_b,
+        int(n_phase_shifters),
     )
 
     _check_connected_to_slack(
@@ -813,6 +875,7 @@ def build_dc_operator(net, slack_bus: int = 0) -> DCOperator:
         dtype=float,
     )
     b_all_arr = np.asarray(b_all, dtype=float)
+    shift_all_arr = np.asarray(shift_all_rad, dtype=float)
 
     mask_non_slack = np.ones(n_bus, dtype=bool)
     mask_non_slack[slack_pos] = False
@@ -827,6 +890,13 @@ def build_dc_operator(net, slack_bus: int = 0) -> DCOperator:
     A_lines_red = A_lines[:, mask_non_slack]
     W = A_lines_red.multiply(b_lines[:, None]).tocsr()
 
+    # Constant injection term from phase shifters:
+    #   shift_inj_red = A_red^T (b * shift)
+    b_shift = b_all_arr * shift_all_arr  # (m_all,)
+    shift_inj_red = np.asarray(A_all_red.T @ b_shift, dtype=float).reshape(-1)
+    if shift_inj_red.shape != (n_bus - 1,):
+        raise AssertionError("Internal error: shift_inj_red shape mismatch.")
+
     try:
         Bred_lu = spla.splu(Bred)
     except Exception as e:
@@ -834,6 +904,13 @@ def build_dc_operator(net, slack_bus: int = 0) -> DCOperator:
             "Reduced B matrix factorization failed (possibly singular/disconnected network). "
             f"buses={n_bus}, monitored_lines={m_line}, B-branches={len(b_all)}"
         ) from e
+
+    if n_phase_shifters > 0:
+        logger.info(
+            "DCOperator: built with phase shifters: count=%d, ||shift_inj_red||_2=%.6g",
+            int(n_phase_shifters),
+            float(np.linalg.norm(shift_inj_red, ord=2)),
+        )
 
     logger.debug(
         "Built DCOperator: n_bus=%d, n_line=%d, slack_pos=%d", n_bus, m_line, slack_pos
@@ -850,6 +927,7 @@ def build_dc_operator(net, slack_bus: int = 0) -> DCOperator:
         red_pos_of_bus_pos=red_pos_of_bus_pos,
         Bred_lu=Bred_lu,
         W=W,
+        shift_inj_red=shift_inj_red,
     )
 
 

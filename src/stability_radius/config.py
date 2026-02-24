@@ -1,13 +1,5 @@
-from __future__ import annotations
-
 """
 Central configuration for the project.
-
-Why this module exists
-----------------------
-The repository previously had many duplicated "DEFAULT_*" constants scattered across CLI,
-verification scripts, and library code. This makes behavior drift likely and complicates
-auditing determinism.
 
 This module centralizes all user-facing defaults and solver settings, so:
 - CLI defaults == verification defaults
@@ -17,99 +9,49 @@ This module centralizes all user-facing defaults and solver settings, so:
 YAML config loading
 -------------------
 The project uses Hydra-style (OmegaConf-compatible) YAML files under `conf/`.
-To keep dependencies lightweight and avoid bringing the full Hydra runtime,
-we support a minimal composition mechanism:
-
-- `extends: <path-or-list>` at the top level of a YAML file.
-- `extends` paths are resolved relative to the extending file.
-- Configs are merged deterministically in the given order, where later configs override earlier ones.
+We support a minimal deterministic composition mechanism via `extends`.
 """
 
+from __future__ import annotations
+
 import logging
+from collections.abc import Sequence as SequenceABC
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Tuple
 
+from omegaconf import OmegaConf  # type: ignore
+
 logger = logging.getLogger(__name__)
 
-try:
-    from omegaconf import OmegaConf  # type: ignore
-
-    HAVE_OMEGACONF: bool = True
-except Exception:  # noqa: BLE001
-    OmegaConf = None  # type: ignore[assignment]
-    HAVE_OMEGACONF = False
+HAVE_OMEGACONF: bool = True
 
 
 @dataclass(frozen=True)
 class LoggingConfig:
-    """
-    Logging- and run-directory-related defaults for CLI/scripts.
-
-    Notes
-    -----
-    `setup_logging(...)` creates a run directory and configures:
-    - a project file logger (runs/<run>/run.log)
-    - a console logger
-
-    Run directory mode
-    ------------------
-    - run_dir_mode="timestamp": create a new unique folder per run (default).
-    - run_dir_mode="overwrite": reuse `runs_dir/run_name` (delete/recreate folder).
-    """
+    """Logging defaults for CLI/scripts."""
 
     runs_dir: str = "runs"
     level_console: str = "INFO"
     level_file: str = "DEBUG"
-
-    # Output folder management.
     run_dir_mode: str = "timestamp"  # "timestamp" | "overwrite"
     run_name: str = "latest"  # used only when run_dir_mode="overwrite"
 
 
 @dataclass(frozen=True)
 class HiGHSConfig:
-    """
-    HiGHS solver configuration for deterministic OPF.
-
-    Notes
-    -----
-    - threads=1 avoids non-deterministic parallel execution in some solver builds.
-    - random_seed is set explicitly for completeness.
-
-    Scaling / numerical stability
-    -----------------------------
-    HiGHS can warn about "excessively large costs / row bounds" on poorly scaled models.
-    Such cases are common in power-grid LPs if we represent "+inf" constraints via huge
-    surrogates (e.g., s_nom=1e9) and/or use huge penalty costs.
-
-    The default options below follow HiGHS recommendations from its own warning messages:
-    - user_objective_scale=-1: let HiGHS auto-scale objective
-    - user_bound_scale=-10: scale bounds/rows (helps with huge RHS values)
-    - tighter feasibility tolerances for better self-consistency of angles/flows
-    """
+    """HiGHS solver configuration for deterministic OPF."""
 
     solver_name: str = "highs"
     threads: int = 1
     random_seed: int = 42
-
-    # Recommended by HiGHS when it detects poor scaling:
     user_objective_scale: int = -1
     user_bound_scale: int = -10
-
-    # Optional, but improves self-consistency of the returned primal solution.
     primal_feasibility_tolerance: float = 1e-9
     dual_feasibility_tolerance: float = 1e-9
 
     def solver_options(self) -> dict[str, Any]:
-        """
-        Return solver options in a PyPSA/linopy-friendly format.
-
-        Returns
-        -------
-        dict[str, Any]
-            Options passed verbatim into HiGHS via linopy. Names match HiGHS option names.
-        """
+        """Return solver options in a linopy/HiGHS-friendly format."""
         return {
             "threads": int(self.threads),
             "random_seed": int(self.random_seed),
@@ -123,26 +65,31 @@ class HiGHSConfig:
 @dataclass(frozen=True)
 class OPFConfig:
     """
-    Global OPF configuration (base point is always OPF in this project).
+    Global OPF configuration (dispatch source when compute.base_dispatch=dc_opf).
 
-    headroom_factor
-    ---------------
-    A security margin applied to finite line limits *in the OPF only*:
-        c_opf = headroom_factor * c
-    Radii are computed w.r.t. the original limits `c`.
+    Notes
+    -----
+    - The project solves DC OPF (PyPSA + HiGHS) for dispatch only.
+    - AC certificate is built around AC PF base point (not AC OPF).
 
-    This prevents OPF from producing a base point that is exactly at the thermal limit,
-    which would immediately lead to r*=0 (trivial certificate) and unstable verification.
+    Reproducibility contract
+    ------------------------
+    Defaults MUST match the composed YAML defaults (conf/config_shared.yaml),
+    because the project supports both:
+    - programmatic usage (DEFAULT_OPF), and
+    - CLI/YAML usage.
     """
 
     highs: HiGHSConfig = field(default_factory=HiGHSConfig)
 
-    # PyPSA requires finite capacities. This value is used as a deterministic surrogate
-    # when a line is explicitly unconstrained (+inf or NaN limit).
-    unconstrained_line_nom_mw: float = 1e6
+    # MUST match conf/config_shared.yaml (reproducibility across entrypoints).
+    unconstrained_line_nom_mw: float = 1.0e5
 
-    # OPF line limit tightening factor (default: 5% headroom).
-    headroom_factor: float = 0.95
+    # MUST match conf/config_shared.yaml (security margin policy).
+    headroom_factor: float = 0.98
+
+    # moved from module constant into config (user-tunable, deterministic)
+    ext_grid_marginal_cost_base: float = 1000.0
 
 
 @dataclass(frozen=True)
@@ -159,25 +106,16 @@ class MonteCarloConfig:
     """
     Defaults for verification Monte Carlo evaluation.
 
-    What is evaluated
-    -----------------
-    1) Soundness (certificate check):
-       uniform sampling in the certified L2 ball of radius r* in the balanced subspace,
-       verifying that all line constraints hold.
-
-    2) Probabilistic safety (Gaussian injections):
-       balanced injections with i.i.d. per-bus sigma (taken from results.json meta by default),
-       estimating P(feasible) via MC and computing the analytic lower bound P(||Δp||<=r*).
+    Reproducibility contract
+    ------------------------
+    seed MUST match conf/config_monte_carlo.yaml (and report defaults),
+    otherwise CLI (YAML) vs programmatic runs diverge silently.
     """
 
     n_samples: int = 50_000
-    seed: int = 0
+    seed: int = 42
     chunk_size: int = 256
-
-    # Strict feasibility by default (used as feasibility tolerance in MW).
     feas_tol_mw: float = 0.0
-
-    # Certificate sanity-check (inside min_r ball).
     cert_tol_mw: float = 1e-6
     cert_max_samples: int = 5_000
 
@@ -187,28 +125,22 @@ DEFAULT_OPF = OPFConfig()
 DEFAULT_DC = DCConfig()
 DEFAULT_MC = MonteCarloConfig()
 
+# Flat-table defaults (CLI "table --format flat").
+# Note: AC-only results should not use this directly; the CLI now infers AC defaults.
 DEFAULT_TABLE_COLUMNS: Tuple[str, ...] = (
     "flow0_mw",
     "p0_mw",
     "p_limit_mw_est",
     "margin_mw",
     "norm_g",
-    "metric_denom",
-    "sigma_flow",
     "radius_l2",
-    "radius_metric",
-    "radius_sigma",
-    "overload_probability",
-    "radius_nminus1",
-    "worst_contingency",
-    "worst_contingency_line_idx",
 )
 
 DEFAULT_NMINUS1_ISLANDING: str = "skip"
 
 
 def _resolve_path(p: str | Path, *, base_dir: Path | None) -> Path:
-    """Resolve a potentially-relative path against `base_dir` (or CWD if base_dir is None)."""
+    """Resolve a potentially-relative path against base_dir (or CWD)."""
     path = Path(p).expanduser()
     if path.is_absolute():
         return path.resolve()
@@ -217,13 +149,27 @@ def _resolve_path(p: str | Path, *, base_dir: Path | None) -> Path:
 
 
 def _as_list(value: Any) -> list[str]:
-    """Normalize a scalar/list config node into a list of strings."""
+    """
+    Normalize a scalar/list config node into a list of strings.
+
+    Notes
+    -----
+    OmegaConf uses its own container types:
+    - ListConfig for YAML sequences
+    - DictConfig for mappings
+
+    `extends:` in YAML is typically a sequence -> ListConfig, so we must treat any
+    non-string Sequence as a list of paths.
+    """
     if value is None:
         return []
     if isinstance(value, str):
         s = value.strip()
         return [s] if s else []
-    if isinstance(value, (list, tuple)):
+
+    if isinstance(value, SequenceABC) and not isinstance(
+        value, (str, bytes, bytearray)
+    ):
         out: list[str] = []
         for x in value:
             if x is None:
@@ -232,26 +178,16 @@ def _as_list(value: Any) -> list[str]:
             if sx:
                 out.append(sx)
         return out
-    raise TypeError(f"extends must be a string or a list of strings; got {type(value)}")
+
+    raise TypeError(
+        "extends must be a string or a list of strings; "
+        f"got {type(value)} with value={value!r}"
+    )
 
 
 def _load_with_extends(path: Path, *, stack: tuple[Path, ...]) -> Any:
-    """
-    Internal recursive loader for `extends` composition with cycle detection.
-
-    Parameters
-    ----------
-    path:
-        Absolute path to a YAML config file.
-    stack:
-        Current recursion stack used for deterministic cycle diagnostics.
-
-    Returns
-    -------
-    Any
-        OmegaConf config object (DictConfig).
-    """
-    if not HAVE_OMEGACONF or OmegaConf is None:  # pragma: no cover - guarded by caller
+    """Internal recursive loader for `extends` composition with cycle detection."""
+    if not HAVE_OMEGACONF or OmegaConf is None:  # pragma: no cover
         raise ImportError(
             "OmegaConf is required to load YAML configs (install `hydra-core`)."
         )
@@ -275,7 +211,6 @@ def _load_with_extends(path: Path, *, stack: tuple[Path, ...]) -> Any:
             )
         base_cfgs.append(_load_with_extends(base_path, stack=(*stack, p)))
 
-    # Remove 'extends' from the local config before merge to keep the effective config clean.
     local_container = OmegaConf.to_container(cfg_local, resolve=False)
     if not isinstance(local_container, dict):
         raise ValueError(
@@ -285,11 +220,8 @@ def _load_with_extends(path: Path, *, stack: tuple[Path, ...]) -> Any:
     cfg_no_ext = OmegaConf.create(local_container)
 
     merged = OmegaConf.merge(*base_cfgs, cfg_no_ext) if base_cfgs else cfg_no_ext
-
     logger.debug(
-        "Loaded config: %s (extends=%s)",
-        str(p),
-        extends_list if extends_list else "[]",
+        "Loaded config: %s (extends=%s)", str(p), extends_list if extends_list else "[]"
     )
     return merged
 
@@ -297,27 +229,6 @@ def _load_with_extends(path: Path, *, stack: tuple[Path, ...]) -> Any:
 def load_project_config(path: str | Path, *, allow_missing: bool = True) -> Any:
     """
     Load a project YAML config with minimal inheritance support via `extends`.
-
-    Parameters
-    ----------
-    path:
-        Path to the YAML config file. Can be relative (resolved against current working directory).
-    allow_missing:
-        If True and the file does not exist, returns None (caller may fall back to Python defaults).
-
-    Returns
-    -------
-    Any
-        OmegaConf config object (DictConfig) or None if allow_missing=True and file is missing.
-
-    Raises
-    ------
-    ImportError
-        If OmegaConf is not installed and the file exists.
-    FileNotFoundError
-        If allow_missing=False and the file does not exist, or if an `extends` target is missing.
-    ValueError
-        On cyclic `extends` chains or invalid config shapes.
     """
     cfg_path = _resolve_path(path, base_dir=None)
 

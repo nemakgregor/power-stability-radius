@@ -1,4 +1,3 @@
-# Experiment config: case118 single-case run (compute).
 extends: ../config.yaml
 
 run_tests: 0
@@ -10,4 +9,5 @@ logging:
 compute:
   input: data/input/pglib_opf_case118_ieee.m
   slack_bus: 0
-  export_results: verification/results/case118.json
+  output:
+    export_results: verification/results/case118.json

@@ -1,0 +1,43 @@
+report:
+  # Report is strict by default:
+  # - does NOT generate missing results
+  # - does NOT download missing inputs
+  strict: false
+
+  io:
+    results_dir: verification/results
+    out: verification/report.md
+
+  sampling:
+    n_samples: 50000
+    seed: 42
+    chunk_size: 256
+
+  # Tolerances:
+  # - DC: MW
+  # - AC: MVA (apparent power magnitude)
+  tolerances:
+    feas_tol: 0.0
+    cert_tol: 1
+    cert_max_samples: 5000
+
+  # DC distribution parameters for report verification section
+  # If null, the report expects results.json to contain __meta__.dc.inj_std_mw.
+  dc:
+    sigma_override_mw: null
+
+  # AC distribution parameters for report verification section
+  ac:
+    sigma_p_mw: 1.0
+    sigma_q_mvar: 1.0
+
+  generate_plots: false
+
+  cases:
+    - id: case30
+      input: data/input/pglib_opf_case30_ieee.m
+      results: case30.json
+      known_critical_pairs:
+        - [1, 2]
+        - [2, 4]
+        - [4, 6]

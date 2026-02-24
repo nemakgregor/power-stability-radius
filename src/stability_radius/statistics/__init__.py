@@ -1,28 +1,25 @@
 """
 Statistics and reporting utilities.
-
-This subpackage provides lightweight helpers to summarize computed radii and
-print/export them as a table to the terminal (no external dependencies required).
 """
 
 from __future__ import annotations
 
-from .table import (
+from .table import (  # noqa: F401
+    DEFAULT_AC_COLUMNS,
+    DEFAULT_DC_COLUMNS,
     format_radius_summary,
     format_results_csv,
+    format_results_csv_sections,
     format_results_table,
-    print_radius_summary,
-    print_results_table,
-    write_results_csv,
-    write_results_table,
+    format_results_table_sections,
 )
 
 __all__ = [
+    "DEFAULT_DC_COLUMNS",
+    "DEFAULT_AC_COLUMNS",
     "format_results_table",
+    "format_results_table_sections",
     "format_results_csv",
-    "write_results_table",
-    "write_results_csv",
+    "format_results_csv_sections",
     "format_radius_summary",
-    "print_results_table",
-    "print_radius_summary",
 ]

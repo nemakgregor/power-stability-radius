@@ -8,6 +8,26 @@ from io import StringIO
 from pathlib import Path
 from typing import Any, Iterable, List, Sequence, Tuple
 
+# AC-focused defaults: keep DC table minimal by default.
+DEFAULT_DC_COLUMNS: Tuple[str, ...] = (
+    "flow0_mw",
+    "p0_mw",
+    "p_limit_mw_est",
+    "margin_mw",
+    "norm_g",
+    "radius_l2",
+)
+
+DEFAULT_AC_COLUMNS: Tuple[str, ...] = (
+    "ac_s_limit_mva",
+    "ac_s0_from_mva",
+    "ac_s0_to_mva",
+    "margin_ac_mva",
+    "||h||2",
+    "binding_end",
+    "radius_ac_l2",
+)
+
 
 def _line_sort_key(line_key: str) -> Tuple[int, str]:
     """Sort keys like 'line_10' numerically, with a deterministic fallback."""
@@ -18,7 +38,6 @@ def _line_sort_key(line_key: str) -> Tuple[int, str]:
 
 
 def _is_line_key(k: str) -> bool:
-    """Return True if the key looks like a per-line result key."""
     return k.startswith("line_")
 
 
@@ -45,6 +64,50 @@ def _iter_line_keys(results: dict[str, Any], *, max_rows: int | None) -> List[st
     return line_keys
 
 
+def _has_any_field(results: dict[str, Any], field: str) -> bool:
+    for k, v in results.items():
+        if not _is_line_key(k) or not isinstance(v, dict):
+            continue
+        if field in v:
+            return True
+    return False
+
+
+def infer_default_flat_columns(
+    results: dict[str, Any],
+    *,
+    dc_columns: Sequence[str] = DEFAULT_DC_COLUMNS,
+    ac_columns: Sequence[str] = DEFAULT_AC_COLUMNS,
+) -> Tuple[str, ...]:
+    """
+    Infer a sensible default column set for "flat" table mode.
+
+    Rationale
+    ---------
+    AC-only runs historically produced empty DC columns in flat mode. This function
+    deterministically selects defaults based on which fields exist in results.json.
+
+    Policy (deterministic)
+    ----------------------
+    - If only AC fields exist -> AC defaults.
+    - If only DC fields exist -> DC defaults.
+    - If both exist -> DC + AC defaults (stable concatenation).
+    - If neither exists -> DC defaults (legacy fallback).
+    """
+    has_dc = _has_any_field(results, "radius_l2") or _has_any_field(results, "norm_g")
+    has_ac = _has_any_field(results, "radius_ac_l2") or _has_any_field(
+        results, "margin_ac_mva"
+    )
+
+    if has_ac and not has_dc:
+        return tuple(ac_columns)
+    if has_dc and not has_ac:
+        return tuple(dc_columns)
+    if has_ac and has_dc:
+        return tuple(dc_columns) + tuple(ac_columns)
+    return tuple(dc_columns)
+
+
 def format_results_table(
     results: dict[str, Any],
     *,
@@ -57,13 +120,7 @@ def format_results_table(
     ),
     max_rows: int | None = None,
 ) -> str:
-    """
-    Format per-line results into an ASCII table.
-
-    Notes
-    -----
-    This function ignores non-line keys (e.g., "__meta__") to keep output stable.
-    """
+    """Format per-line results into a single ASCII table (flat mode)."""
     line_keys = _iter_line_keys(results, max_rows=max_rows)
 
     headers = ["line"] + list(columns)
@@ -88,10 +145,7 @@ def format_results_table(
     def fmt_row(values: Sequence[str]) -> str:
         out = []
         for i, v in enumerate(values):
-            if align_right[i]:
-                out.append(v.rjust(widths[i]))
-            else:
-                out.append(v.ljust(widths[i]))
+            out.append(v.rjust(widths[i]) if align_right[i] else v.ljust(widths[i]))
         return " | ".join(out)
 
     sep = "-+-".join("-" * w for w in widths)
@@ -106,13 +160,53 @@ def format_results_table(
     return "\n".join(out_lines)
 
 
+def format_results_table_sections(
+    results: dict[str, Any],
+    *,
+    dc_columns: Sequence[str] = DEFAULT_DC_COLUMNS,
+    ac_columns: Sequence[str] = DEFAULT_AC_COLUMNS,
+    max_rows: int | None = None,
+) -> str:
+    """
+    Format results into two deterministic sections:
+      - DC section
+      - AC section
+    Sections are shown only if the corresponding fields exist.
+    """
+    out: List[str] = []
+
+    has_dc = _has_any_field(results, "radius_l2") or _has_any_field(results, "norm_g")
+    has_ac = _has_any_field(results, "radius_ac_l2") or _has_any_field(
+        results, "margin_ac_mva"
+    )
+
+    if has_dc:
+        out.append("[DC]")
+        out.append(
+            format_results_table(results, columns=tuple(dc_columns), max_rows=max_rows)
+        )
+        out.append("")
+
+    if has_ac:
+        out.append("[AC]")
+        out.append(
+            format_results_table(results, columns=tuple(ac_columns), max_rows=max_rows)
+        )
+        out.append("")
+
+    if not out:
+        return "No per-line results found."
+
+    return "\n".join(out).rstrip()
+
+
 def format_results_csv(
     results: dict[str, Any],
     *,
     columns: Sequence[str],
     max_rows: int | None = None,
 ) -> str:
-    """Format per-line results as CSV (deterministic ordering)."""
+    """Format per-line results as CSV (flat mode, deterministic ordering)."""
     line_keys = _iter_line_keys(results, max_rows=max_rows)
 
     buf = StringIO()
@@ -128,42 +222,41 @@ def format_results_csv(
     return buf.getvalue()
 
 
-def write_results_table(
-    path: Path,
+def format_results_csv_sections(
     results: dict[str, Any],
     *,
-    columns: Sequence[str],
+    dc_columns: Sequence[str] = DEFAULT_DC_COLUMNS,
+    ac_columns: Sequence[str] = DEFAULT_AC_COLUMNS,
     max_rows: int | None = None,
-) -> None:
-    """Write an ASCII results table to disk."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        format_results_table(results, columns=columns, max_rows=max_rows) + "\n",
-        encoding="utf-8",
+) -> dict[str, str]:
+    """
+    Create sectioned CSV artifacts:
+      - results_dc.csv (only if DC fields exist)
+      - results_ac.csv (only if AC fields exist)
+    Returns a dict { "dc": csv_text, "ac": csv_text } (keys may be missing).
+    """
+    out: dict[str, str] = {}
+    has_dc = _has_any_field(results, "radius_l2") or _has_any_field(results, "norm_g")
+    has_ac = _has_any_field(results, "radius_ac_l2") or _has_any_field(
+        results, "margin_ac_mva"
     )
 
+    if has_dc:
+        out["dc"] = format_results_csv(
+            results, columns=tuple(dc_columns), max_rows=max_rows
+        )
+    if has_ac:
+        out["ac"] = format_results_csv(
+            results, columns=tuple(ac_columns), max_rows=max_rows
+        )
 
-def write_results_csv(
-    path: Path,
-    results: dict[str, Any],
-    *,
-    columns: Sequence[str],
-    max_rows: int | None = None,
-) -> None:
-    """Write a CSV results table to disk."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        format_results_csv(results, columns=columns, max_rows=max_rows),
-        encoding="utf-8",
-    )
+    return out
 
 
 def _finite_radii(results: dict[str, Any], *, radius_field: str) -> List[float]:
     vals: List[float] = []
     for k, d in results.items():
-        if not _is_line_key(k):
-            continue
-        if not isinstance(d, dict):
+        if not _is_line_key(k) or not isinstance(d, dict):
             continue
         try:
             r = float(d.get(radius_field, float("nan")))
@@ -177,7 +270,6 @@ def _finite_radii(results: dict[str, Any], *, radius_field: str) -> List[float]:
 def format_radius_summary(
     results: dict[str, Any], *, radius_field: str = "radius_l2"
 ) -> str:
-    """Format a compact summary of radii in the provided `radius_field`."""
     vals = _finite_radii(results, radius_field=radius_field)
     total = len([k for k in results.keys() if _is_line_key(k)])
     finite = len(vals)
@@ -189,33 +281,9 @@ def format_radius_summary(
     min_v = min(vals)
     max_v = max(vals)
     return (
-        f"Summary({radius_field}): "
-        f"lines={total}, finite_radii={finite}, "
+        f"Summary({radius_field}): lines={total}, finite_radii={finite}, "
         f"mean={mean_v:.6g}, min={min_v:.6g}, max={max_v:.6g}"
     )
-
-
-def print_results_table(
-    results: dict[str, Any],
-    *,
-    columns: Sequence[str] = (
-        "p0_mw",
-        "p_limit_mw_est",
-        "margin_mw",
-        "norm_g",
-        "radius_l2",
-    ),
-    max_rows: int | None = None,
-) -> None:
-    """Print per-line results as a table to stdout."""
-    print(format_results_table(results, columns=columns, max_rows=max_rows))
-
-
-def print_radius_summary(
-    results: dict[str, Any], *, radius_field: str = "radius_l2"
-) -> None:
-    """Print `format_radius_summary(...)` to stdout."""
-    print(format_radius_summary(results, radius_field=radius_field))
 
 
 def _load_results_json(path: Path) -> dict[str, Any]:
@@ -226,7 +294,6 @@ def _load_results_json(path: Path) -> dict[str, Any]:
 
 
 def main(argv: Iterable[str] | None = None) -> int:
-    """CLI entrypoint: print/export stability radius results as a table."""
     parser = argparse.ArgumentParser(
         description="Print/export stability radius results as a table."
     )
@@ -235,48 +302,53 @@ def main(argv: Iterable[str] | None = None) -> int:
         "--max-rows", type=int, default=None, help="Limit number of rows"
     )
     parser.add_argument(
+        "--format", type=str, choices=("sections", "flat"), default="sections"
+    )
+    parser.add_argument(
         "--radius-field",
         type=str,
         default="radius_l2",
-        help="Radius field to summarize (default: radius_l2).",
+        help="Radius field to summarize.",
     )
     parser.add_argument(
         "--columns",
         type=str,
         default="",
-        help="Comma-separated list of columns to print/export.",
+        help="Comma-separated list of columns (flat mode). If empty, inferred from results.",
     )
     parser.add_argument(
         "--table-out", type=str, default="", help="Write ASCII table here."
     )
-    parser.add_argument("--csv-out", type=str, default="", help="Write CSV here.")
+    parser.add_argument(
+        "--csv-out", type=str, default="", help="Write CSV here (flat mode)."
+    )
     args = parser.parse_args(list(argv) if argv is not None else None)
 
-    default_cols = ("p0_mw", "p_limit_mw_est", "margin_mw", "norm_g", "radius_l2")
-    if str(args.columns).strip():
-        columns = tuple(c.strip() for c in str(args.columns).split(",") if c.strip())
-    else:
-        columns = default_cols
-
     results = _load_results_json(Path(args.results_json))
+    max_rows = int(args.max_rows) if args.max_rows is not None else None
 
-    print_results_table(results, columns=columns, max_rows=args.max_rows)
-    print_radius_summary(results, radius_field=str(args.radius_field))
+    if str(args.format) == "flat":
+        columns = (
+            tuple(c.strip() for c in str(args.columns).split(",") if c.strip())
+            if str(args.columns).strip()
+            else infer_default_flat_columns(results)
+        )
+        table_str = format_results_table(results, columns=columns, max_rows=max_rows)
+        csv_str = format_results_csv(results, columns=columns, max_rows=max_rows)
+    else:
+        table_str = format_results_table_sections(results, max_rows=max_rows)
+        csv_str = ""
+
+    print(table_str)
+    print(format_radius_summary(results, radius_field=str(args.radius_field)))
 
     if str(args.table_out).strip():
-        write_results_table(
-            Path(str(args.table_out)),
-            results,
-            columns=columns,
-            max_rows=args.max_rows,
-        )
+        Path(str(args.table_out)).write_text(table_str + "\n", encoding="utf-8")
+
     if str(args.csv_out).strip():
-        write_results_csv(
-            Path(str(args.csv_out)),
-            results,
-            columns=columns,
-            max_rows=args.max_rows,
-        )
+        if not csv_str:
+            raise ValueError("--csv-out is only supported in flat mode.")
+        Path(str(args.csv_out)).write_text(csv_str, encoding="utf-8")
 
     return 0
 

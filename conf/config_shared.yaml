@@ -1,0 +1,108 @@
+run_tests: true
+
+# ---------------- IO / reproducibility ----------------
+io:
+  # If false (default), compute/verification will FAIL if the input .m file is missing.
+  # If true, the pipeline may download supported public cases deterministically.
+  allow_download: false
+
+logging:
+  runs_dir: runs
+  level_console: INFO
+  level_file: DEBUG
+
+  # timestamp  -> runs/<timestamp>/
+  # overwrite  -> runs/<run_name>/  (folder is deleted/recreated each run)
+  run_dir_mode: timestamp
+  run_name: latest
+
+# ---------------- Base-point / AC PF shared policy ----------------
+ac:
+  # AC PF backend used BOTH in:
+  # - compute (AC base point for certificate)
+  # - monte-carlo/report (AC PF per sample verification)
+  #
+  # IMPORTANT:
+  # AC Monte-Carlo currently supports ONLY pandapower as per-sample PF engine.
+  # Therefore if you set pf_solver=pypsa and compute AC radii, AC MC will fail fast
+  # with an explicit error (no heuristics).
+  pf_solver: pandapower  # pandapower | pypsa
+
+  # Certificate/verification regime policy:
+  # lossless=true => enforce series r=0 in PF and in Jacobian (matches certificate builder).
+  # lossless=false is NOT implemented for AC certificate/MC (explicit error).
+  lossless: true
+
+  # AC Monte Carlo base-point consistency check tolerance.
+  # We compare |S| at both ends of every monitored line against results.json base fields.
+  basepoint_s_tol_mva: 1.0e-3
+
+opf:
+  # Project policy: must be "highs"
+  solver_name: highs
+
+  # For determinism prefer 1 thread.
+  threads: 1
+  random_seed: 42
+
+  # Headroom factor for OPF line constraints (security margin).
+  #
+  # Reproducibility note:
+  # keep this value aligned with stability_radius.config.DEFAULT_OPF.headroom_factor
+  headroom_factor: 0.98
+
+  # PyPSA requires finite thermal limits. We use this value as a deterministic surrogate
+  # for "unconstrained" lines (rateA==0 / +inf / NaN).
+  unconstrained_line_nom_mw: 1.0e5
+
+  # Cost assigned to ext_grid "generator" in PyPSA DC OPF.
+  # Must be large enough to be used only as a feasibility fallback,
+  # but not astronomically large (LP scaling issues).
+  ext_grid_marginal_cost_base: 1000.0
+
+dc:
+  # DC sensitivity backend:
+  # - operator    : do not materialize H_full (fast, memory-light, no N-1)
+  # - materialize : build dense H_full (memory-heavy, enables N-1)
+  mode: operator
+  chunk_size: 256
+  dtype: float64
+
+tolerances:
+  # Used in workflows._check_opf_dc_consistency()
+  opf_dc_flow_consistency_tol_mw: 1
+  opf_bus_balance_tol_mw: 1
+
+table:
+  # Table formatting mode:
+  # - sections : print two tables (DC section / AC section) when fields exist
+  # - flat     : print a single table with the selected columns (via CLI --columns)
+  format: sections
+
+  # Requested simplification:
+  # - one base list (table.columns)
+  # - plus DC-only and AC-only lists
+  #
+  # In sectioned output the final columns are:
+  #   DC: table.columns + table.dc_extra_columns
+  #   AC: table.columns + table.ac_extra_columns
+  columns: []
+
+  # AC-focused defaults:
+  # - DC: only core L2 certificate fields (no metric/probabilistic/N-1 by default)
+  dc_extra_columns:
+    - flow0_mw
+    - p0_mw
+    - p_limit_mw_est
+    - margin_mw
+    - norm_g
+    - radius_l2
+
+  ac_extra_columns:
+    - ac_s_limit_mva
+    - ac_s0_from_mva
+    - ac_s0_to_mva
+    - margin_ac_mva
+    - "||h||2"
+    - binding_end
+    - radius_ac_l2

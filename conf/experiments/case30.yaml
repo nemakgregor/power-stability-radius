@@ -10,4 +10,5 @@ logging:
 compute:
   input: data/input/pglib_opf_case30_ieee.m
   slack_bus: 0
-  export_results: verification/results/case30.json
+  output:
+    export_results: verification/results/case30.json

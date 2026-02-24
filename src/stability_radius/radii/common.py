@@ -38,6 +38,12 @@ class LineBaseQuantities:
     - bus_injections_mw is aligned with bus_ids and corresponds to the OPF dispatch result
       (sum gens at bus - sum loads at bus), used to validate OPF -> DCOperator consistency.
 
+    Generator dispatch (for AC PF reuse)
+    ------------------------------------
+    - opf_gen_dispatch_mw_by_name stores generator active power dispatch (MW) keyed by PyPSA
+      generator name (e.g. gen_0, ext_0). This is used by the AC PF base-point builder to
+      avoid re-solving OPF when AC computations are requested.
+
     Units (project contract)
     ------------------------
     - P, f0, Δp, c, margin: MW
@@ -60,16 +66,8 @@ class LineBaseQuantities:
     # Optional diagnostics (not required by radii computations).
     opf_limits_mw: np.ndarray | None = None
 
-    @property
-    def limit_mw_est(self) -> np.ndarray:
-        """
-        Backward-compatible alias.
-
-        Historically, this project used the name `limit_mw_est` for line limits extracted
-        from MATPOWER/PGLib ratings. The extracted values are in MVA, and in the DC model
-        we assume PF=1, thus treating MVA as MW.
-        """
-        return self.limit_mva_assumed_mw
+    # Optional: per-generator dispatch (PyPSA generator names -> P(MW)).
+    opf_gen_dispatch_mw_by_name: tuple[tuple[str, float], ...] | None = None
 
 
 def _line_row_id(line_row: object) -> str:
@@ -94,20 +92,6 @@ def assert_line_limit_sources_present(net: object) -> None:
     """
     Fail-fast sanity check: ensure the loaded network contains at least one supported
     source of thermal limits for lines.
-
-    Required sources (MATPOWER/PGLib policy)
-    ----------------------------------------
-    At least one of:
-    - explicit rating columns on net.line:
-        rateA / rate_a_mva / sn_mva / max_mva
-    - or a deterministic fallback source:
-        net.line.max_i_ka AND net.bus.vn_kv
-
-    Why this exists
-    ---------------
-    If neither source exists, that's a MATPOWER->pandapower conversion/parsing issue
-    (the radii code cannot "guess" missing limits). This check provides a clearer,
-    earlier error than failing deep inside radii/OPF.
     """
     line_tbl = getattr(net, "line", None)
     bus_tbl = getattr(net, "bus", None)
@@ -134,7 +118,7 @@ def assert_line_limit_sources_present(net: object) -> None:
             continue
         try:
             has_explicit = bool(line_tbl[c].notna().any())
-        except Exception:  # noqa: BLE001 - defensive for non-standard tables
+        except Exception:  # noqa: BLE001
             has_explicit = True
         if has_explicit:
             break
@@ -181,35 +165,6 @@ def assert_line_limit_sources_present(net: object) -> None:
 def estimate_line_limit_mva(net, line_row) -> float:
     """
     Extract a line thermal limit in MVA using explicit case / converted data.
-
-    Supported explicit sources (deterministic)
-    ------------------------------------------
-    1) MATPOWER/PGLib-style rating columns (if present on pandapower net.line):
-        - rateA / rate_a_mva / sn_mva / max_mva
-
-       MATPOWER convention:
-       - rateA == 0 means unconstrained => +inf.
-
-    2) pandapower current rating + nominal voltage:
-        - max_i_ka and net.bus.vn_kv
-        - S_MVA = sqrt(3) * V_kV * I_kA
-
-    max_loading_percent (if present) is applied as a deterministic multiplier.
-
-    Raises
-    ------
-    ValueError
-        If no supported rating data is found or if found data is invalid.
-
-    Returns
-    -------
-    float
-        Limit in MVA (or +inf for unconstrained).
-
-    Notes (DC PF=1 convention)
-    --------------------------
-    Downstream, the DC model uses active power only, and we assume PF=1, thus:
-        P_limit_mw := S_limit_mva
     """
     try:
         max_loading_percent = float(line_row.get("max_loading_percent", 100.0))
@@ -246,7 +201,7 @@ def estimate_line_limit_mva(net, line_row) -> float:
                 f"Line {_line_row_id(line_row)}: invalid non-finite line rating {k}={v!r}"
             )
 
-        # MATPOWER: rateA==0 => unconstrained. We keep the same meaning for equivalent columns.
+        # MATPOWER/PGLib convention: 0 means "unconstrained".
         if abs(v) <= 1e-12:
             return float("inf")
         if v < 0:
@@ -322,34 +277,7 @@ def get_line_base_quantities(
     """
     Extract per-line base flows, limits, and margins around an OPF base point.
 
-    Project policy
-    --------------
-    Base point is ALWAYS:
-      - PyPSA DC OPF solved by HiGHS
-
-    Limits and headroom
-    -------------------
-    - Limits are extracted from explicit converted data (`estimate_line_limit_mva`) and treated
-      as MW under the DC PF=1 assumption.
-    - Radii and margins are computed w.r.t. the extracted limits (optionally scaled by `limit_factor`).
-    - OPF is solved with tightened line limits:
-        c_opf = opf_cfg.headroom_factor * c
-      to enforce a security headroom in the base point.
-
-    Parameters
-    ----------
-    net:
-        pandapower network.
-    limit_factor:
-        Multiplier applied to extracted limits for radii/margins (default 1.0).
-    line_indices:
-        Optional explicit ordering of line indices. Defaults to sorted(net.line.index).
-    opf_cfg:
-        Optional OPF configuration (HiGHS options, unconstrained surrogate, headroom factor).
-
-    Returns
-    -------
-    LineBaseQuantities
+    Project policy: base point is PyPSA DC OPF (HiGHS).
     """
     cfg = opf_cfg if opf_cfg is not None else DEFAULT_OPF
 
@@ -366,13 +294,11 @@ def get_line_base_quantities(
         else [int(x) for x in line_indices]
     )
 
-    # Extract ratings in MVA, then use as MW under PF=1 DC convention.
     limits_mva = np.empty(len(idx), dtype=float)
     for pos, (_, line_row) in enumerate(net.line.loc[idx].iterrows()):
         s_limit_mva = estimate_line_limit_mva(net, line_row)
         limits_mva[pos] = float(s_limit_mva) * float(limit_factor)
 
-    # Explicit conversion point (contract): MVA -> MW under PF=1.
     limits_mva_assumed_mw = limits_mva.copy()
 
     if np.isnan(limits_mva_assumed_mw).any():
@@ -391,12 +317,13 @@ def get_line_base_quantities(
             f"Bad line positions count={int(bad.size)} (first 10: {bad[:10].tolist()})."
         )
 
-    # OPF limits are tightened (headroom) for finite limits only.
     opf_limits = limits_mva_assumed_mw.copy()
     finite = np.isfinite(opf_limits)
     opf_limits[finite] = opf_limits[finite] * float(opf_headroom)
 
-    from stability_radius.opf.pypsa_opf import solve_dc_opf_base_flows_from_pandapower
+    from stability_radius.base_point.pypsa_opf import (
+        solve_dc_opf_base_flows_from_pandapower,
+    )
 
     logger.info(
         "Solving OPF base point via PyPSA DC OPF (solver=%s, threads=%d, headroom_factor=%s, limit_factor=%s)...",
@@ -416,7 +343,6 @@ def get_line_base_quantities(
     p0_abs = np.abs(flow0)
     margins = np.maximum(limits_mva_assumed_mw - p0_abs, 0.0)
 
-    # Keep stable bus ordering for cross-module checks.
     bus_ids = [int(x) for x in sorted(net.bus.index)]
     if tuple(bus_ids) != tuple(opf_res.bus_ids):
         raise ValueError(
@@ -441,6 +367,7 @@ def get_line_base_quantities(
         bus_ids=bus_ids,
         bus_injections_mw=bus_inj,
         opf_limits_mw=opf_limits,
+        opf_gen_dispatch_mw_by_name=getattr(opf_res, "gen_dispatch_mw_by_name", None),
     )
 
 

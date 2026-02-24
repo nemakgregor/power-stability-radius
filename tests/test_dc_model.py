@@ -151,10 +151,13 @@ def test_build_dc_operator_uses_trafo_in_b_matrix_to_avoid_singularity():
     assert op.n_line == 1
 
 
-def test_build_dc_operator_rejects_phase_shifting_transformers():
+def test_build_dc_operator_supports_phase_shifting_transformers():
     """
-    Contract: phase shifts (shift_degree != 0) are not modeled by the project's DC operator.
-    Therefore the operator must fail fast.
+    Contract (updated): phase shifting transformers are supported.
+
+    We only check that:
+    - operator builds without raising
+    - shift_inj_red is non-zero when shift_degree != 0
     """
     pytest.importorskip("scipy")
 
@@ -180,7 +183,7 @@ def test_build_dc_operator_rejects_phase_shifting_transformers():
         vkr_percent=0.5,
         pfe_kw=0.0,
         i0_percent=0.0,
-        shift_degree=5.0,  # unsupported
+        shift_degree=5.0,  # supported
         tap_side="hv",
         tap_neutral=0,
         tap_min=0,
@@ -201,5 +204,8 @@ def test_build_dc_operator_rejects_phase_shifting_transformers():
         max_loading_percent=100.0,
     )
 
-    with pytest.raises(ValueError, match=r"shift_degree"):
-        build_dc_operator(net, slack_bus=b_hv)
+    op = build_dc_operator(net, slack_bus=b_hv)
+    assert op.n_bus == 3
+    assert op.n_line == 1
+    assert np.isfinite(np.linalg.norm(op.shift_inj_red))
+    assert float(np.linalg.norm(op.shift_inj_red, ord=2)) > 0.0

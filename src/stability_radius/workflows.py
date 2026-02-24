@@ -3,30 +3,38 @@ from __future__ import annotations
 """
 High-level workflows (library API).
 
-This module contains the deterministic end-to-end single-case pipeline used by:
-- the unified CLI (`src/power_stability_radius.py`)
-- verification/report generation scripts
+Main contract
+-------------
+- AC stability radius is computed around an AC PF base point (NOT DC OPF).
+- DC OPF is optionally used only as a dispatch source (if compute.base_dispatch=dc_opf).
 
-Public API
-----------
-- compute_results_for_case(...)
+Determinism policy
+------------------
+- No implicit downloading unless allow_download=True.
+- Stable ordering: sorted bus/line indices.
+- No hidden "compatibility" results: optional radii are computed only when explicitly enabled.
 """
 
 import logging
 import os
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
+from stability_radius.base_point import (
+    build_dc_base_point_case,
+    build_dc_base_point_dc_opf,
+    solve_ac_pf_base_point,
+)
 from stability_radius.config import DEFAULT_OPF, OPFConfig
 from stability_radius.dc.dc_model import build_dc_matrices, build_dc_operator
 from stability_radius.parsers.matpower import load_network
 from stability_radius.radii.common import (
     LineBaseQuantities,
     assert_line_limit_sources_present,
-    get_line_base_quantities,
 )
 from stability_radius.radii.l2 import compute_l2_radius
 from stability_radius.radii.nminus1 import compute_nminus1_l2_radius
@@ -42,59 +50,65 @@ _DEFAULT_OPF_DC_FLOW_CONSISTENCY_TOL_MW = 1e-3
 _DEFAULT_OPF_BUS_BALANCE_TOL_MW = 1e-6
 
 
+@dataclass(frozen=True)
+class DCExtensionsConfig:
+    """
+    Optional DC post-processing extensions.
+
+    This groups "non-core" DC options to keep the public workflow signature manageable.
+
+    Notes
+    -----
+    - probabilistic_enabled controls sigma-radius and overload probability post-processing.
+    - nminus1_enabled requires dc_mode="materialize" (needs H_full).
+    """
+
+    probabilistic_enabled: bool = False
+    nminus1_enabled: bool = False
+    nminus1_update_sensitivities: bool = True
+    nminus1_islanding: str = "skip"  # "skip" | "raise"
+
+
 def _resolve_path(p: str | os.PathLike[str], *, base_dir: Path | None) -> Path:
-    """
-    Resolve a potentially-relative path.
-
-    Parameters
-    ----------
-    p:
-        A path-like object.
-    base_dir:
-        Base directory for relative paths. If None, uses current working directory.
-
-    Returns
-    -------
-    Path
-        Absolute resolved path.
-    """
-    path = Path(p)
+    """Resolve a potentially-relative path (with "~" expansion)."""
+    path = Path(p).expanduser()
     if path.is_absolute():
-        return path
-    root = base_dir if base_dir is not None else Path.cwd()
-    return (root / path).resolve()
+        resolved = path.resolve()
+    else:
+        root = base_dir if base_dir is not None else Path.cwd()
+        resolved = (root / path).resolve()
+    logger.debug(
+        "Resolved path: %s -> %s (base_dir=%s)", str(p), str(resolved), base_dir
+    )
+    return resolved
 
 
-def _ensure_input_case_file(input_path: str, *, base_dir: Path | None) -> str:
+def _ensure_input_case_file(
+    input_path: str, *, base_dir: Path | None, allow_download: bool
+) -> str:
     """
-    Ensure input case file exists (download if missing and supported).
+    Ensure input case file exists (deterministic).
 
-    Deterministic behavior
-    ----------------------
-    - No implicit path guessing beyond `base_dir` resolution.
-    - If the file is missing AND the filename matches a supported public dataset,
-      the file is downloaded deterministically (stable URL ordering):
-        * MATPOWER: case<N>.m / ieee<N>.m
-        * PGLib-OPF: pglib_opf_*.m
+    - missing & allow_download=False -> FileNotFoundError
+    - missing & allow_download=True  -> deterministic download via ensure_case_file()
     """
     target_path = _resolve_path(input_path, base_dir=base_dir)
     if target_path.exists():
-        logger.debug("Using input file: %s", str(target_path))
         return str(target_path)
 
-    logger.info(
-        "Input case file missing: %s. Trying deterministic download...", target_path
-    )
+    if not bool(allow_download):
+        raise FileNotFoundError(
+            f"Input case file not found: {target_path}. "
+            "Set io.allow_download=true in config or pass --allow-download 1."
+        )
 
     from stability_radius.utils.download import ensure_case_file
 
-    ensured = Path(ensure_case_file(str(target_path)))
+    ensured = Path(ensure_case_file(str(target_path))).resolve()
     if not ensured.exists():
         raise RuntimeError(
-            f"Internal error: ensure_case_file() returned a non-existent path: {ensured}"
+            f"Internal error: ensure_case_file() returned non-existent path: {ensured}"
         )
-
-    logger.info("Downloaded case file: %s", str(ensured))
     return str(ensured)
 
 
@@ -124,26 +138,7 @@ def _merge_line_results(*dicts: dict[str, dict[str, Any]]) -> dict[str, dict[str
 
 
 def _compute_projected_norms_from_operator(*, dc_op, chunk_size: int) -> np.ndarray:
-    """
-    Compute per-line sensitivity norms for the balanced subspace sum(Δp)=0.
-
-    Norm definition
-    ---------------
-    For a row g in full bus coordinates (defined up to adding a constant 1-vector),
-    the correct dual norm on the balanced subspace (with full Euclidean norm) is:
-
-        ||Proj(g)||_2 = ||g - mean(g)*1||_2
-
-    Using the identity:
-        ||Proj(g)||^2 = ||g||^2 - (sum(g))^2 / n_bus
-
-    Implementation notes
-    --------------------
-    - DCOperator provides g values for non-slack buses only, with slack component == 0.
-      This is a valid representative of the equivalence class modulo constants.
-    - We therefore compute:
-        ||Proj(g)||^2 = sum(g_red^2) - (sum(g_red))^2 / n_bus
-    """
+    """Compute per-line sensitivity norms for the balanced subspace sum(Δp)=0."""
     if chunk_size <= 0:
         raise ValueError("chunk_size must be positive.")
 
@@ -156,41 +151,29 @@ def _compute_projected_norms_from_operator(*, dc_op, chunk_size: int) -> np.ndar
         end = min(m, start + int(chunk_size))
         block = np.arange(start, end, dtype=int)
 
-        # Y: (n_bus-1, k), column j is g_red^T for the corresponding line.
-        Y = dc_op.row_sensitivities_transposed(block)
-
-        t = np.sum(Y * Y, axis=0)  # ||g||^2 (slack component is 0)
-        s = np.sum(Y, axis=0)  # sum(g) (slack component is 0)
-
-        # Projected norm^2 = ||g||^2 - sum(g)^2 / n_bus
+        Y = dc_op.row_sensitivities_transposed(block)  # (n_bus-1, k)
+        t = np.sum(Y * Y, axis=0)
+        s = np.sum(Y, axis=0)
         proj2 = t - (s * s) / float(n_bus)
         norms[start:end] = np.sqrt(np.maximum(proj2, 0.0))
-
         start = end
 
     return norms
 
 
-def _compute_sigma_from_l2_results(
+def _compute_probabilistic_from_l2_results(
     *, l2_results: dict[str, dict[str, Any]], inj_std_mw: float
 ) -> dict[str, dict[str, Any]]:
     """
-    Compute sigma-radii and overload probabilities using the L2 row norms.
+    Compute sigma-radii and overload probabilities using L2 row norms.
 
-    Assumes the probabilistic model used throughout the project:
-    - Δp is Gaussian in the balanced subspace sum(Δp)=0
-    - isotropic with parameter sigma_mw in an orthonormal basis (d = n_bus - 1)
-
-    Then for each line:
-        sigma_flow = sigma_mw * ||Proj(g)||_2
-        radius_sigma = margin / sigma_flow
+    This is OPTIONAL (AC-focused defaults do not compute DC probabilistic post-processing).
     """
-    sigma: dict[str, dict[str, Any]] = {}
-
     s = float(inj_std_mw)
     if not np.isfinite(s) or s <= 0.0:
         raise ValueError("inj_std_mw must be finite and positive.")
 
+    out: dict[str, dict[str, Any]] = {}
     for k, row in l2_results.items():
         if not isinstance(row, dict):
             continue
@@ -206,40 +189,30 @@ def _compute_sigma_from_l2_results(
             flow0=flow0, limit=limit, sigma=sigma_flow
         )
 
-        sigma[k] = {
+        out[k] = {
             "sigma_flow": float(sigma_flow),
             "radius_sigma": float(r_sigma),
             "overload_probability": float(prob),
         }
-
-    return sigma
+    return out
 
 
 def _compute_radii_operator_path(
     *,
     dc_op,
     base: LineBaseQuantities,
-    inj_std_mw: float,
     dc_chunk_size: int,
 ) -> dict[str, dict[str, Any]]:
     """
-    Compute L2/metric/sigma radii without materializing H_full (operator path).
+    Compute DC L2 radii without materializing H_full (operator path).
 
-    Notes
-    -----
-    - Uses LU solves via DCOperator to obtain g rows (chunked).
-    - Default workflow uses M=I => radius_metric == radius_l2.
-    - Gaussian model in balanced subspace: sigma_flow = inj_std * ||Proj(g)||_2.
+    Important
+    ---------
+    This path returns ONLY the core DC L2 fields.
+    Optional radii (probabilistic / N-1) are not computed here by design.
     """
     if dc_chunk_size <= 0:
         raise ValueError("dc_chunk_size must be positive.")
-
-    op_line_ids = list(getattr(dc_op, "line_ids", ()))
-    if op_line_ids and list(base.line_indices) != [int(x) for x in op_line_ids]:
-        raise ValueError(
-            "Line ordering mismatch between DC operator and base quantities. "
-            "This indicates an internal consistency bug."
-        )
 
     norms = _compute_projected_norms_from_operator(
         dc_op=dc_op, chunk_size=int(dc_chunk_size)
@@ -251,15 +224,7 @@ def _compute_radii_operator_path(
     for pos, lid in enumerate(base.line_indices):
         margin = float(base.margin_mw[pos])
         norm_g = float(norms[pos])
-
         r_l2 = float(margin / norm_g) if norm_g > 1e-12 else float("inf")
-
-        sigma_flow = float(inj_std_mw) * norm_g
-        r_sigma = sigma_radius(margin, sigma_flow)
-
-        c = float(base.limit_mva_assumed_mw[pos])
-        f0 = float(base.flow0_mw[pos])
-        prob = overload_probability_symmetric_limit(flow0=f0, limit=c, sigma=sigma_flow)
 
         k = f"line_{int(lid)}"
         out[k] = {
@@ -268,53 +233,34 @@ def _compute_radii_operator_path(
             "p_limit_mw_est": float(base.limit_mva_assumed_mw[pos]),
             "margin_mw": margin,
             "norm_g": norm_g,
-            "radius_l2": r_l2,
-            "metric_denom": norm_g,
-            "radius_metric": float(r_l2),
-            "sigma_flow": float(sigma_flow),
-            "radius_sigma": float(r_sigma),
-            "overload_probability": float(prob),
-            "radius_nminus1": float("nan"),
-            "worst_contingency": -1,
-            "worst_contingency_line_idx": -1,
+            "radius_l2": float(r_l2),
         }
     return out
 
 
 def _check_opf_dc_consistency(
     *,
-    net: Any,
     dc_op,
     base: LineBaseQuantities,
     tol_flow_mw: float,
     tol_balance_mw: float,
 ) -> dict[str, float]:
-    """
-    Validate that OPF base flows are consistent with the project's DCOperator.
-
-    This is a hard correctness check:
-    - we reconstruct line flows from OPF bus injections via DCOperator
-    - we compare against OPF-reported base flows f0 for monitored lines
-    """
+    """Validate that OPF base flows are consistent with DCOperator reconstruction."""
     if base.bus_ids is None or base.bus_injections_mw is None:
         raise ValueError(
-            "Internal error: OPF base quantities must include bus_ids and bus_injections_mw "
-            "(required for OPF->DC consistency checks). Regenerate results with the current version."
+            "OPF base quantities must include bus_ids and bus_injections_mw."
         )
 
     bus_ids = tuple(int(x) for x in base.bus_ids)
     op_bus_ids = tuple(int(x) for x in getattr(dc_op, "bus_ids", ()))
     if bus_ids != op_bus_ids:
         raise ValueError(
-            "Bus ordering mismatch between OPF base point and DC operator. "
-            f"opf_bus_ids[:10]={list(bus_ids)[:10]}..., dc_bus_ids[:10]={list(op_bus_ids)[:10]}..."
+            "Bus ordering mismatch between OPF base point and DC operator."
         )
 
     p = np.asarray(base.bus_injections_mw, dtype=float).reshape(-1)
     if p.shape != (len(bus_ids),):
-        raise ValueError(
-            f"bus_injections_mw shape mismatch: got {p.shape}, expected ({len(bus_ids)},)"
-        )
+        raise ValueError("bus_injections_mw shape mismatch.")
 
     inj_sum = float(np.sum(p))
     if abs(inj_sum) > float(tol_balance_mw):
@@ -324,84 +270,14 @@ def _check_opf_dc_consistency(
         )
 
     f0_opf = np.asarray(base.flow0_mw, dtype=float).reshape(-1)
-    f0_dc = np.asarray(dc_op.flows_from_delta_injections(p), dtype=float).reshape(-1)
+    f0_dc = np.asarray(dc_op.flows_from_bus_injections_mw(p), dtype=float).reshape(-1)
 
-    if f0_dc.shape != f0_opf.shape:
-        raise ValueError(
-            f"OPF/DC flow vector shape mismatch: opf={f0_opf.shape}, dc={f0_dc.shape}"
-        )
-
-    diff = f0_dc - f0_opf
-    if diff.size:
-        abs_diff = np.abs(diff)
-        abs_diff_safe = np.nan_to_num(
-            abs_diff, nan=float("inf"), posinf=float("inf"), neginf=float("inf")
-        )
-        argmax_pos = int(np.argmax(abs_diff_safe))
-        max_abs = float(abs_diff_safe[argmax_pos])
-        argmax_line_idx = (
-            int(base.line_indices[argmax_pos])
-            if 0 <= argmax_pos < len(base.line_indices)
-            else -1
-        )
-        argmax_opf = float(f0_opf[argmax_pos])
-        argmax_dc = float(f0_dc[argmax_pos])
-        argmax_diff = float(diff[argmax_pos])
-
-        logger.debug(
-            "OPF->DC flow diffs: argmax_pos=%d line_idx=%d opf=%.6g dc=%.6g diff=%.6g abs=%.6g",
-            argmax_pos,
-            argmax_line_idx,
-            argmax_opf,
-            argmax_dc,
-            argmax_diff,
-            max_abs,
-        )
-
-        try:
-            if (
-                hasattr(net, "line")
-                and net.line is not None
-                and int(argmax_line_idx) in net.line.index
-            ):
-                row = net.line.loc[int(argmax_line_idx)]
-                fb = int(row.get("from_bus", -1))
-                tb = int(row.get("to_bus", -1))
-                x_ohm_per_km = float(row.get("x_ohm_per_km", float("nan")))
-                length_km = float(row.get("length_km", float("nan")))
-                parallel = float(row.get("parallel", 1.0))
-                in_service = bool(row.get("in_service", True))
-
-                b_mw_per_rad = float(getattr(dc_op, "b")[argmax_pos])
-
-                logger.error(
-                    "OPF->DC mismatch details: line_idx=%d pos=%d in_service=%s from_bus=%d to_bus=%d "
-                    "x_ohm_per_km=%.6g length_km=%.6g parallel=%.6g b_mw_per_rad=%.6g "
-                    "flow_opf=%.6g flow_dc=%.6g diff=%.6g",
-                    int(argmax_line_idx),
-                    int(argmax_pos),
-                    bool(in_service),
-                    int(fb),
-                    int(tb),
-                    float(x_ohm_per_km),
-                    float(length_km),
-                    float(parallel),
-                    float(b_mw_per_rad),
-                    float(argmax_opf),
-                    float(argmax_dc),
-                    float(argmax_diff),
-                )
-        except Exception:  # noqa: BLE001
-            logger.debug(
-                "Failed to produce detailed mismatch diagnostics.", exc_info=True
-            )
-    else:
-        max_abs = 0.0
-        argmax_line_idx = -1
-        argmax_pos = -1
-        argmax_opf = float("nan")
-        argmax_dc = float("nan")
-        argmax_diff = float("nan")
+    abs_diff = np.abs(f0_dc - f0_opf)
+    abs_diff_safe = np.nan_to_num(
+        abs_diff, nan=float("inf"), posinf=float("inf"), neginf=float("inf")
+    )
+    argmax_pos = int(np.argmax(abs_diff_safe)) if abs_diff_safe.size else -1
+    max_abs = float(abs_diff_safe[argmax_pos]) if abs_diff_safe.size else 0.0
 
     logger.info(
         "OPF->DC consistency check: max|Δf|=%.6g MW (tol=%.6g MW), sum(inj)=%.6g MW",
@@ -411,12 +287,15 @@ def _check_opf_dc_consistency(
     )
 
     if not np.isfinite(max_abs) or max_abs > float(tol_flow_mw):
+        argmax_line_idx = (
+            int(base.line_indices[argmax_pos])
+            if 0 <= argmax_pos < len(base.line_indices)
+            else -1
+        )
         raise ValueError(
-            "OPF->DC consistency check failed: base flows from PyPSA do not match DCOperator flows "
+            "OPF->DC consistency check failed: OPF flows do not match DCOperator reconstruction "
             f"(max|Δf|={float(max_abs):.6g} MW, tol={float(tol_flow_mw):.6g} MW). "
-            f"argmax_line_pos={int(argmax_pos)}, argmax_line_idx={int(argmax_line_idx)}, "
-            f"flow_opf={float(argmax_opf):.6g} MW, flow_dc={float(argmax_dc):.6g} MW, diff={float(argmax_diff):.6g} MW. "
-            "This indicates a model/data mismatch between OPF construction and the DC operator."
+            f"argmax_line_pos={int(argmax_pos)}, argmax_line_idx={int(argmax_line_idx)}."
         )
 
     return {
@@ -431,194 +310,297 @@ def compute_results_for_case(
     *,
     input_path: str,
     slack_bus: int,
+    base_dispatch: str,  # case | dc_opf
+    # DC
+    compute_dc: bool,
     dc_mode: str,
     dc_chunk_size: int,
     dc_dtype: np.dtype,
-    inj_std_mw: float,
-    compute_nminus1: bool,
-    nminus1_update_sensitivities: bool,
-    nminus1_islanding: str,
+    dc_inj_std_mw: float,
+    dc_extensions: DCExtensionsConfig | None = None,
+    # AC
+    compute_ac: bool,
+    ac_chunk_size: int,
+    ac_balance: bool,
+    ac_pf_init: str,
+    ac_pf_solver: str,
+    ac_lossless: bool,
+    # shared
     opf_cfg: OPFConfig | None = None,
     opf_dc_flow_consistency_tol_mw: float = _DEFAULT_OPF_DC_FLOW_CONSISTENCY_TOL_MW,
     opf_bus_balance_tol_mw: float = _DEFAULT_OPF_BUS_BALANCE_TOL_MW,
-    path_base_dir: str | Path | None = None,
+    path_base_dir: str | os.PathLike[str] | None = None,
+    allow_download: bool = False,
 ) -> dict[str, Any]:
     """
     Compute per-line radii and return a single results dict (including '__meta__').
 
-    Deterministic pipeline (project policy)
-    ---------------------------------------
-    Base point is ALWAYS produced by a DC OPF:
-      - PyPSA + HiGHS (single snapshot)
+    Important
+    ---------
+    AC certificate is always computed around an AC PF base point (AC PF, not DC OPF).
+    DC OPF is optional and serves only as a dispatch source.
 
-    OPF headroom
-    ------------
-    Finite line limits used by OPF are tightened by `opf_cfg.headroom_factor`
-    (default in config: 0.95 = 5% headroom). Radii/margins are computed w.r.t.
-    the original limits extracted from the case.
-
-    DC model modes
-    --------------
-    - dc_mode="materialize": materialize H_full and compute all radii (including N-1 if requested)
-    - dc_mode="operator": compute L2/metric/sigma radii via operator norms (no N-1)
-
-    Disturbance / norm convention (important)
-    -----------------------------------------
-    The L2 certificate is defined on **balanced** injections:
-        sum(Δp) = 0
-    with the full-bus Euclidean norm ||Δp||_2. Sensitivity norms therefore use the
-    projected norm ||g - mean(g)*1||_2 (slack-invariant).
-
-    Correctness checks
-    ------------------
-    The pipeline enforces an OPF->DCOperator consistency check:
-    base flows from OPF must match DCOperator flows reconstructed from OPF bus injections.
+    Extensions policy (AC-focused defaults)
+    --------------------------------------
+    - DC probabilistic post-processing is computed only if enabled.
+    - DC N-1 radii are computed only if enabled AND dc.mode=materialize.
     """
-    time_start = time.time()
-
-    base_dir = Path(path_base_dir).resolve() if path_base_dir is not None else None
-    input_path_abs = _ensure_input_case_file(str(input_path), base_dir=base_dir)
-    case_tag = Path(input_path_abs).stem
+    t0 = time.time()
 
     cfg = opf_cfg if opf_cfg is not None else DEFAULT_OPF
+    ext = dc_extensions if dc_extensions is not None else DCExtensionsConfig()
 
-    if inj_std_mw <= 0:
-        raise ValueError("inj_std_mw must be positive.")
-    if dc_chunk_size <= 0:
-        raise ValueError("dc_chunk_size must be positive.")
+    bd = str(base_dispatch).strip().lower()
+    if bd not in {"case", "dc_opf"}:
+        raise ValueError("base_dispatch must be case|dc_opf")
 
-    dc_mode_eff = str(dc_mode).strip().lower()
-    if dc_mode_eff not in ("materialize", "operator"):
-        raise ValueError("dc_mode must be materialize|operator")
+    if not bool(compute_dc) and not bool(compute_ac):
+        raise ValueError("At least one of compute_dc or compute_ac must be enabled.")
+
+    if bool(ac_lossless) is False:
+        raise NotImplementedError(
+            "ac_lossless=false is not supported by the current AC certificate/MC. "
+            "Set ac.lossless=true."
+        )
+
+    dc_probabilistic_enabled = bool(ext.probabilistic_enabled)
+    dc_nminus1_enabled = bool(ext.nminus1_enabled)
+    dc_nminus1_update_sensitivities = bool(ext.nminus1_update_sensitivities)
+    dc_nminus1_islanding = str(ext.nminus1_islanding).strip().lower() or "skip"
+    if dc_nminus1_islanding not in {"skip", "raise"}:
+        raise ValueError("dc_extensions.nminus1_islanding must be 'skip'|'raise'")
+
+    logger.info(
+        "DC extensions: probabilistic=%s nminus1=%s (update_sensitivities=%s islanding=%s)",
+        dc_probabilistic_enabled,
+        dc_nminus1_enabled,
+        dc_nminus1_update_sensitivities,
+        dc_nminus1_islanding,
+    )
+
+    base_dir = Path(path_base_dir).resolve() if path_base_dir is not None else None
+    input_path_abs = _ensure_input_case_file(
+        str(input_path), base_dir=base_dir, allow_download=bool(allow_download)
+    )
+    case_tag = Path(input_path_abs).stem
 
     with log_stage(logger, f"{case_tag}: Read Data"):
         net = load_network(input_path_abs)
         assert_line_limit_sources_present(net)
 
-    with log_stage(
-        logger,
-        f"{case_tag}: Solve DC OPF (PyPSA, solver={cfg.highs.solver_name})",
-    ):
-        base = get_line_base_quantities(net, opf_cfg=cfg)
+    # ---------- DC base dispatch / base quantities ----------
+    bp_dc_meta: dict[str, Any] | None = None
+    base_dc: LineBaseQuantities | None = None
+    gen_dispatch_for_ac: dict[str, float] = {}
+
+    if bd == "dc_opf":
+        with log_stage(logger, f"{case_tag}: Base dispatch via DC OPF (PyPSA+HiGHS)"):
+            bp_dc, base_dc = build_dc_base_point_dc_opf(
+                net=net, slack_bus=int(slack_bus), opf_cfg=cfg, limit_factor=1.0
+            )
+            bp_dc_meta = bp_dc.to_meta_dict()
+            gen_dispatch_for_ac = dict(bp_dc.gen_dispatch_mw_by_name)
+    else:
+        logger.info("%s: base_dispatch=case: using case dispatch (NO OPF).", case_tag)
+
+    # ---------- DC model stage ----------
+    results_lines: dict[str, dict[str, Any]] = {}
+    consistency: dict[str, float] = {}
+    nminus1_computed = False
+    probabilistic_computed = False
 
     H_full = None
     dc_op = None
+    if bool(compute_dc):
+        dc_mode_eff = str(dc_mode).strip().lower()
+        if dc_mode_eff not in {"operator", "materialize"}:
+            raise ValueError("dc_mode must be operator|materialize")
+        if dc_chunk_size <= 0:
+            raise ValueError("dc_chunk_size must be positive")
+        if float(dc_inj_std_mw) <= 0:
+            raise ValueError("dc.inj_std_mw must be positive")
 
-    with log_stage(logger, f"{case_tag}: Build DC Model (mode={dc_mode_eff})"):
-        if dc_mode_eff == "materialize":
-            H_full, dc_op = build_dc_matrices(
-                net,
-                slack_bus=int(slack_bus),
-                chunk_size=int(dc_chunk_size),
-                dtype=dc_dtype,
-            )
-            n_bus = int(H_full.shape[1])
-            m_line = int(H_full.shape[0])
-            logger.debug(
-                "Materialized H_full: shape=(%d,%d), dtype=%s",
-                m_line,
-                n_bus,
-                H_full.dtype,
-            )
+        with log_stage(logger, f"{case_tag}: Build DC Model (mode={dc_mode_eff})"):
+            if dc_mode_eff == "materialize":
+                H_full, dc_op = build_dc_matrices(
+                    net,
+                    slack_bus=int(slack_bus),
+                    chunk_size=int(dc_chunk_size),
+                    dtype=dc_dtype,
+                )
+            else:
+                dc_op = build_dc_operator(net, slack_bus=int(slack_bus))
+
+        if base_dc is None:
+            with log_stage(
+                logger, f"{case_tag}: Build DC base point from case injections"
+            ):
+                bp_dc2, base_dc2, dc_op2 = build_dc_base_point_case(
+                    net=net, slack_bus=int(slack_bus), dc_op=dc_op, limit_factor=1.0
+                )
+                bp_dc_meta = bp_dc2.to_meta_dict()
+                base_dc = base_dc2
+                dc_op = dc_op2
+
+        if bd == "dc_opf":
+            with log_stage(
+                logger, f"{case_tag}: Consistency Check (OPF -> DCOperator)"
+            ):
+                dc_op_ck = (
+                    dc_op
+                    if dc_op is not None
+                    else build_dc_operator(net, slack_bus=int(slack_bus))
+                )
+                consistency = _check_opf_dc_consistency(
+                    dc_op=dc_op_ck,
+                    base=base_dc,
+                    tol_flow_mw=float(opf_dc_flow_consistency_tol_mw),
+                    tol_balance_mw=float(opf_bus_balance_tol_mw),
+                )
         else:
-            dc_op = build_dc_operator(net, slack_bus=int(slack_bus))
-            n_bus = int(dc_op.n_bus)
-            m_line = int(dc_op.n_line)
-            logger.debug("Built DC operator: n_bus=%d, n_line=%d", n_bus, m_line)
-
-    if dc_op is None:
-        raise AssertionError("Internal error: DC operator was not created.")
-
-    with log_stage(logger, f"{case_tag}: Consistency Check (OPF -> DCOperator)"):
-        consistency = _check_opf_dc_consistency(
-            net=net,
-            dc_op=dc_op,
-            base=base,
-            tol_flow_mw=float(opf_dc_flow_consistency_tol_mw),
-            tol_balance_mw=float(opf_bus_balance_tol_mw),
-        )
-
-    with log_stage(logger, f"{case_tag}: Compute Radii"):
-        if H_full is not None:
-            l2 = compute_l2_radius(net, H_full, base=base)
-
-            metric = {
-                k: {
-                    "metric_denom": float(v.get("norm_g", float("nan"))),
-                    "radius_metric": float(v.get("radius_l2", float("nan"))),
-                }
-                for k, v in l2.items()
+            consistency = {
+                "opf_bus_balance_abs_mw": float("nan"),
+                "opf_dc_flow_max_abs_diff_mw": float("nan"),
+                "opf_dc_flow_tol_mw": float(opf_dc_flow_consistency_tol_mw),
+                "opf_bus_balance_tol_mw": float(opf_bus_balance_tol_mw),
             }
 
-            sigma = _compute_sigma_from_l2_results(
-                l2_results=l2, inj_std_mw=float(inj_std_mw)
-            )
+        with log_stage(logger, f"{case_tag}: Compute Radii (DC)"):
+            if H_full is not None:
+                l2 = compute_l2_radius(net, H_full, base=base_dc)
 
-            if bool(compute_nminus1):
-                nminus1 = compute_nminus1_l2_radius(
-                    net,
-                    H_full,
-                    update_sensitivities=bool(nminus1_update_sensitivities),
-                    islanding=str(nminus1_islanding),
-                    base=base,
-                )
-                nminus1_computed = True
+                parts: list[dict[str, dict[str, Any]]] = [l2]
+
+                if bool(dc_probabilistic_enabled):
+                    prob = _compute_probabilistic_from_l2_results(
+                        l2_results=l2, inj_std_mw=float(dc_inj_std_mw)
+                    )
+                    parts.append(prob)
+                    probabilistic_computed = True
+
+                if bool(dc_nminus1_enabled):
+                    nminus1 = compute_nminus1_l2_radius(
+                        net,
+                        H_full,
+                        update_sensitivities=bool(dc_nminus1_update_sensitivities),
+                        islanding=str(dc_nminus1_islanding),
+                        base=base_dc,
+                    )
+                    parts.append(nminus1)
+                    nminus1_computed = True
+
+                results_lines = _merge_line_results(*parts)
             else:
-                nminus1 = {
-                    f"line_{int(lid)}": {
-                        "radius_nminus1": float("nan"),
-                        "worst_contingency": -1,
-                        "worst_contingency_line_idx": -1,
-                    }
-                    for lid in base.line_indices
-                }
+                if bool(dc_nminus1_enabled):
+                    raise ValueError(
+                        "dc_extensions.nminus1_enabled=1 requires dc.mode=materialize (N-1 needs H_full)."
+                    )
+                if dc_op is None:
+                    raise AssertionError("Internal error: DC operator missing.")
+
+                l2 = _compute_radii_operator_path(
+                    dc_op=dc_op,
+                    base=base_dc,
+                    dc_chunk_size=int(dc_chunk_size),
+                )
+                results_lines = l2
+
+                if bool(dc_probabilistic_enabled):
+                    prob = _compute_probabilistic_from_l2_results(
+                        l2_results=l2, inj_std_mw=float(dc_inj_std_mw)
+                    )
+                    results_lines = _merge_line_results(results_lines, prob)
+                    probabilistic_computed = True
+
                 nminus1_computed = False
 
-            results_lines = _merge_line_results(l2, metric, sigma, nminus1)
-        else:
-            if bool(compute_nminus1):
-                raise ValueError(
-                    "compute_nminus1=1 requires dc_mode=materialize (N-1 needs H_full)."
-                )
+    # ---------- AC stage (base point is AC PF) ----------
+    bp_ac_meta: dict[str, Any] | None = None
+    ac_pf_status = "n/a"
+    if bool(compute_ac):
+        if ac_chunk_size <= 0:
+            raise ValueError("ac.chunk_size must be positive")
+        apfi = str(ac_pf_init).strip().lower()
+        if apfi not in {"flat", "dc", "pp"}:
+            raise ValueError("ac.pf_init must be flat|dc|pp")
 
-            results_lines = _compute_radii_operator_path(
-                dc_op=dc_op,
-                base=base,
-                inj_std_mw=float(inj_std_mw),
-                dc_chunk_size=int(dc_chunk_size),
+        with log_stage(
+            logger, f"{case_tag}: Solve AC PF base point (solver={ac_pf_solver})"
+        ):
+            bp_ac, base_pf = solve_ac_pf_base_point(
+                net=net,
+                slack_bus=int(slack_bus),
+                pf_solver=str(ac_pf_solver),
+                pf_init=str(ac_pf_init),
+                lossless=bool(ac_lossless),
+                gen_dispatch_mw_by_name=gen_dispatch_for_ac if bd == "dc_opf" else {},
+                line_indices=[int(x) for x in sorted(net.line.index)],
             )
-            nminus1_computed = False
+            bp_ac_meta = bp_ac.to_meta_dict()
+            ac_pf_status = str(bp_ac.status)
 
-    elapsed_sec = float(time.time() - time_start)
-    logger.info(
-        "%s: Total compute time (read+opf+dc+radii): %.3f sec", case_tag, elapsed_sec
-    )
+        with log_stage(logger, f"{case_tag}: Compute Radii (AC L2)"):
+            from stability_radius.radii.ac_l2 import compute_ac_l2_radius
 
+            ac = compute_ac_l2_radius(
+                net,
+                base_pf=base_pf,
+                slack_bus=int(slack_bus),
+                chunk_size=int(ac_chunk_size),
+                balance=bool(ac_balance),
+                lossless=True,  # enforced
+            )
+            results_lines = _merge_line_results(results_lines, ac)
+
+    elapsed = float(time.time() - t0)
+    logger.info("%s: Total compute time: %.3f sec", case_tag, elapsed)
+
+    # ---- meta ----
     results: dict[str, Any] = {
         "__meta__": {
+            "schema_version": 2,
             "input_path": str(input_path_abs),
             "slack_bus": int(slack_bus),
-            "dispatch_mode": "opf_pypsa",
-            "opf_solver": str(cfg.highs.solver_name),
-            "opf_solver_threads": int(cfg.highs.threads),
-            "opf_solver_random_seed": int(cfg.highs.random_seed),
-            "opf_unconstrained_line_nom_mw": float(cfg.unconstrained_line_nom_mw),
-            "opf_headroom_factor": float(cfg.headroom_factor),
-            "opf_status": str(base.opf_status)
-            if base.opf_status is not None
-            else "n/a",
-            "opf_objective": float(base.opf_objective)
-            if base.opf_objective is not None
-            else float("nan"),
-            "dc_mode": str(dc_mode_eff),
-            "dc_dtype": str(np.dtype(dc_dtype)),
-            "dc_chunk_size": int(dc_chunk_size),
-            "inj_std_mw": float(inj_std_mw),
-            "compute_time_sec": elapsed_sec,
-            "n_bus": int(n_bus),
-            "n_line": int(m_line),
-            "nminus1_computed": bool(nminus1_computed),
-            **consistency,
+            "base_dispatch": str(bd),
+            "allow_download": bool(allow_download),
+            "compute_dc": bool(compute_dc),
+            "compute_ac": bool(compute_ac),
+            "dc": {
+                "mode": str(dc_mode).strip().lower(),
+                "dtype": str(np.dtype(dc_dtype)),
+                "chunk_size": int(dc_chunk_size),
+                "inj_std_mw": float(dc_inj_std_mw),
+                "probabilistic_enabled": bool(dc_probabilistic_enabled),
+                "probabilistic_computed": bool(probabilistic_computed),
+                "nminus1_enabled": bool(dc_nminus1_enabled),
+                "nminus1_computed": bool(nminus1_computed),
+                "nminus1_update_sensitivities": bool(dc_nminus1_update_sensitivities),
+                "nminus1_islanding": str(dc_nminus1_islanding),
+            },
+            "ac": {
+                "pf_solver": str(ac_pf_solver),
+                "pf_init": str(ac_pf_init),
+                "lossless": True,
+                "chunk_size": int(ac_chunk_size),
+                "balance": bool(ac_balance),
+                "pf_status": str(ac_pf_status),
+            },
+            # critical artifacts for reproducibility & MC consistency checks
+            "base_point_dc": bp_dc_meta,
+            "base_point_ac": bp_ac_meta,
+            "opf": {
+                "solver": str(cfg.highs.solver_name) if bd == "dc_opf" else "n/a",
+                "threads": int(cfg.highs.threads) if bd == "dc_opf" else -1,
+                "random_seed": int(cfg.highs.random_seed) if bd == "dc_opf" else -1,
+                "headroom_factor": float(cfg.headroom_factor)
+                if bd == "dc_opf"
+                else float("nan"),
+                "unconstrained_line_nom_mw": float(cfg.unconstrained_line_nom_mw)
+                if bd == "dc_opf"
+                else float("nan"),
+            },
+            "compute_time_sec": float(elapsed),
+            **(consistency if consistency else {}),
         }
     }
     results.update(results_lines)

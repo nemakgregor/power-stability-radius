@@ -1,0 +1,24 @@
+# Optional DC extensions for compute defaults.
+#
+# This file is intentionally separate from AC-focused defaults (config_compute.yaml).
+# Enable by adding it to `extends:` in your experiment config, e.g.:
+#
+# extends:
+#   - ../config.yaml
+#   - ../config_dc_extensions.yaml
+#
+# Or override via CLI flags (see `power_stability_radius compute --help`).
+
+compute:
+  dc:
+    # Optional DC probabilistic post-processing:
+    # - sigma-radius (radius_sigma)
+    # - overload_probability
+    probabilistic:
+      enabled: false
+
+    # N-1 options (only meaningful if dc.mode=materialize and dc.compute=true):
+    nminus1:
+      enabled: false
+      update_sensitivities: true
+      islanding: skip  # skip | raise

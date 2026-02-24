@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from stability_radius.opf.pypsa_opf import _pp_gen_p_bounds_to_pypsa
+from stability_radius.base_point.pypsa_opf import _pp_gen_p_bounds_to_pypsa
 
 
 def test_pp_gen_p_bounds_to_pypsa_skips_nonpositive_pmax():

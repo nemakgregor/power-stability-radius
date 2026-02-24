@@ -1,0 +1,69 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+
+def test_project_yaml_opf_unconstrained_line_nom_matches_python_default() -> None:
+    """
+    Reproducibility regression test.
+
+    The same default value must be used:
+    - when running via YAML (CLI / experiments), and
+    - when running programmatically (DEFAULT_OPF in Python).
+    """
+    pytest.importorskip("omegaconf")
+
+    from stability_radius.config import DEFAULT_OPF, load_project_config
+
+    repo_root = Path(__file__).resolve().parents[1]
+    cfg_path = repo_root / "conf" / "config.yaml"
+
+    cfg = load_project_config(cfg_path, allow_missing=False)
+    assert cfg is not None
+
+    yaml_val = float(cfg["opf"]["unconstrained_line_nom_mw"])
+    py_val = float(DEFAULT_OPF.unconstrained_line_nom_mw)
+
+    assert yaml_val == pytest.approx(py_val)
+
+
+def test_project_yaml_opf_headroom_factor_matches_python_default() -> None:
+    """
+    Reproducibility regression test for OPF security margin.
+    """
+    pytest.importorskip("omegaconf")
+
+    from stability_radius.config import DEFAULT_OPF, load_project_config
+
+    repo_root = Path(__file__).resolve().parents[1]
+    cfg_path = repo_root / "conf" / "config.yaml"
+
+    cfg = load_project_config(cfg_path, allow_missing=False)
+    assert cfg is not None
+
+    yaml_val = float(cfg["opf"]["headroom_factor"])
+    py_val = float(DEFAULT_OPF.headroom_factor)
+
+    assert yaml_val == pytest.approx(py_val)
+
+
+def test_project_yaml_monte_carlo_seed_matches_python_default() -> None:
+    """
+    Reproducibility regression test for Monte Carlo seed default.
+    """
+    pytest.importorskip("omegaconf")
+
+    from stability_radius.config import DEFAULT_MC, load_project_config
+
+    repo_root = Path(__file__).resolve().parents[1]
+    cfg_path = repo_root / "conf" / "config.yaml"
+
+    cfg = load_project_config(cfg_path, allow_missing=False)
+    assert cfg is not None
+
+    yaml_val = int(cfg["monte_carlo"]["sampling"]["seed"])
+    py_val = int(DEFAULT_MC.seed)
+
+    assert yaml_val == py_val

@@ -104,7 +104,7 @@ def setup_logging(cfg: LoggingConfig) -> str:
     ----------
     cfg:
         LoggingConfig with:
-          - runs_dir
+          - runs_dir (supports "~", relative paths are resolved against CWD)
           - level_console
           - level_file
           - run_dir_mode: "timestamp" | "overwrite"
@@ -115,9 +115,16 @@ def setup_logging(cfg: LoggingConfig) -> str:
     str
         Absolute path to the created run directory.
     """
-    runs_dir = Path(str(cfg.runs_dir))
+    runs_dir_raw = str(getattr(cfg, "runs_dir", "")).strip()
+    if not runs_dir_raw:
+        raise ValueError("runs_dir must be a non-empty path.")
+
+    # Expand "~" first (common CLI expectation), then resolve relative to CWD.
+    runs_dir = Path(runs_dir_raw).expanduser()
     if not runs_dir.is_absolute():
         runs_dir = (Path(os.getcwd()) / runs_dir).resolve()
+    else:
+        runs_dir = runs_dir.resolve()
 
     mode = str(getattr(cfg, "run_dir_mode", "timestamp")).strip().lower()
     if mode not in {"timestamp", "overwrite"}:
@@ -162,6 +169,10 @@ def setup_logging(cfg: LoggingConfig) -> str:
     file_only_logger.addHandler(file_handler)
 
     project_logger.info("New run: %s", run_dir.name)
+    project_logger.info("Runs directory: %s", str(runs_dir))
     project_logger.info("Run directory: %s", str(run_dir))
+    project_logger.info("Run directory mode: %s", mode)
+    if mode == "overwrite":
+        project_logger.info("Run name: %s", str(getattr(cfg, "run_name", "latest")))
     project_logger.info("Log file: %s", str(run_dir / "run.log"))
     return str(run_dir.resolve())

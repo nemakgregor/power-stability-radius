@@ -124,7 +124,7 @@ mpc.branch = [
         "__meta__": {
             "input_path": str(mfile),
             "slack_bus": 0,
-            "inj_std_mw": 1.0,
+            "dc": {"inj_std_mw": 1.0},
             "dispatch_mode": "opf_pypsa",
             "opf_solver": "highs",
             "opf_headroom_factor": 0.95,

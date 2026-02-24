@@ -1,176 +1,255 @@
-# power-stability-radius
 
-Compute simple per-line “stability radius” (robustness margins) for power grids using a DC sensitivity (PTDF-like) model:
+Инструмент для вычисления **радиусов устойчивости / робастности** по **ограничениям загрузки линий** в электроэнергетических сетях.
 
-- `radius_l2` (L2 ball)
-- `radius_metric` (weighted/metric; in the default workflow equals `radius_l2`)
-- `radius_sigma` + overload probability (Gaussian injections)
-- `radius_nminus1` (effective N-1 via LODF; requires materializing `H_full`)
+Проект решает практическую задачу:
 
-All workflows are launched via a **single entrypoint**:
-`src/power_stability_radius.py`
+> “Насколько можно (в терминах нормы возмущений инъекций по узлам) отклониться от базового режима, прежде чем какая‑либо линия нарушит термическое ограничение?”
 
-Defaults are stored in an **OmegaConf/Hydra-style YAML config**:
-`conf/config.yaml`
+Результат выдаётся **по каждой линии** (и агрегировано через минимум по линиям) и может быть:
+- **DC (линейная модель)** — быстро, масштабируемо, подходит для больших сетей.
+- **AC L2-сертификат вокруг AC PF базовой точки** — нелинейная физика учтена через линейное приближение (Якобиан/адъюнкт).
 
-CLI flags override config values (config → defaults, CLI → override).
+Дополнительно:
+- **Monte Carlo верификация** (DC и AC).
+- **Markdown отчёт по нескольким кейсам**.
+- **Табличный вывод** (ASCII/CSV).
 
 ---
 
-## Installation
+## Быстрый старт
+
+Установка (Poetry):
 
 ```bash
 poetry install
 ```
 
----
-
-## Configuration (OmegaConf/Hydra-style + minimal inheritance)
-
-Default config file: `conf/config.yaml`
-
-### Using experiment configs (extends main config)
-
-In addition to plain YAML configs, the CLI supports a small deterministic inheritance mechanism:
-
-- `extends: ../config.yaml` at the top level of a YAML file.
-- The base config is loaded first, then the experiment file overrides it.
-- `extends` paths are resolved relative to the experiment file location.
-
-Examples are provided under `conf/experiments/`.
-
-Example (run case118 with its experiment config):
+Запуск CLI:
 
 ```bash
-poetry run python src/power_stability_radius.py --config conf/experiments/case118.yaml demo
+poetry run python src/power_stability_radius.py --config conf/config.yaml <command> [options...]
 ```
 
-### Optional: default command in config (omit subcommand)
+Команды:
+- `compute` (алиас: `demo`) — посчитать радиусы, сохранить `results.json` и таблицы.
+- `monte-carlo` — проверить сертификат методом Монте‑Карло.
+- `report` — прогнать верификацию по нескольким кейсам и собрать Markdown отчёт.
+- `table` — утилита форматирования `results.json`.
 
-You can specify a default subcommand at the top level of a config:
+---
+
+## Важные свойства проекта (контракты верхнего уровня)
+
+### 1) AC сертификат всегда строится вокруг **AC PF базовой точки**
+- AC часть опирается на решение **AC Power Flow (AC PF)**.
+- **DC OPF никогда не является AC базовой точкой**.
+- Если нужен “OPF‑диспетч для режима”, это делается так:
+  1) решаем **DC OPF (PyPSA + HiGHS)** для получения активной мощности генераторов,
+  2) затем решаем **AC PF** уже на этой активной мощности,
+  3) и строим AC сертификат вокруг найденного AC PF режима.
+
+Управляется параметром:
+- `compute.base_dispatch: case | dc_opf`
+
+### 2) Детерминизм и отсутствие скрытых сайд‑эффектов
+- **Нет неявных скачиваний** входных `.m` кейсов.
+- Скачивание возможно только явно:
+  - CLI: `--allow-download 1`
+  - YAML: `io.allow_download: true`
+- Везде используется **стабильная сортировка**:
+  - buses: `sorted(net.bus.index)`
+  - lines: `sorted(net.line.index)`
+
+### 3) Явные ограничения / fail-fast политика
+- `ac.lossless=false` **не поддержан** (явная ошибка).
+- AC Monte‑Carlo **поддерживает только `pandapower`** как per-sample PF движок:
+  - если радиус AC считали с `ac.pf_solver=pypsa`, то AC MC завершится с явной ошибкой.
+- N-1 эффективные радиусы для DC требуют материализации `H_full`:
+  - `--compute-nminus1 1` допускается только при `--dc-mode materialize`.
+
+---
+
+## Что такое “радиус устойчивости” в этом проекте
+
+В линейной форме (DC и линейризованный AC) ограничения линии имеют вид:
+
+- Пусть `f0` — базовый поток по линии (MW для DC, MVA для AC по модулю).
+- Пусть `c` — симметричный лимит (в DC — “MVA, трактуемые как MW при PF=1”; в AC — лимит в MVA).
+- Пусть возмущение инъекций по узлам `Δp` (и в AC также `Δq`).
+- Пусть линейная чувствительность потока к инъекциям:
+  - DC: `Δf = H Δp`
+  - AC (сертификат): `Δ|S| ≈ hᵀ [ΔP; ΔQ]` (через адъюнкт-решение системы Якобиана)
+
+Тогда по неравенству Коши–Буняковского для каждой линии возникает безопасный радиус:
+- `margin = c - |f0|`
+- `r = margin / ||g||` (DC) или `r = margin / ||h||` (AC)
+
+Глобальный сертификат для режима:
+- `r* = min_over_lines r_line`
+
+Это **сертификат** (нижняя оценка) — он гарантирует безопасность внутри шара, но не обещает, что это точный максимум.
+
+Подробная математика, единицы, допущения и схемы данных описаны в **`UNITS_CONTRACT.md`**.
+
+---
+
+## Архитектура репозитория
+
+- `src/power_stability_radius.py` — тонкий entrypoint.
+- `src/stability_radius/cli.py` — argparse CLI, компоновка YAML, запуск workflow.
+- `src/stability_radius/workflows.py` — основной детерминированный пайплайн.
+- `src/stability_radius/parsers/matpower.py` — детерминированный парсер MATPOWER/PGLib `.m` → pandapower net.
+- `src/stability_radius/base_point/*` — генераторы базовых точек (DC case / DC OPF / AC PF).
+- `src/stability_radius/dc/dc_model.py` — DCOperator (разреженная факторизация, PTDF‑подобные операции).
+- `src/stability_radius/ac/ac_model.py` — ACOperator (Ybus, Якобиан, LU; используется в AC L2).
+- `src/stability_radius/radii/*` — расчёт радиусов (DC L2 / metric / sigma / N-1, AC L2).
+- `src/stability_radius/verification/*` — Monte Carlo верификация и отчёт.
+- `tests/` — контрактные тесты (детерминизм, единицы, инварианты, smoke).
+
+---
+
+## Конфигурация (YAML с `extends`)
+
+Входная точка: `conf/config.yaml`:
 
 ```yaml
-command: report   # or demo / monte-carlo / table
+extends:
+  - ./config_shared.yaml
+  - ./config_compute.yaml
+  - ./config_monte_carlo.yaml
+  - ./config_report.yaml
 ```
 
-Then you can run without typing the subcommand explicitly:
+- `extends` реализован внутри проекта (через OmegaConf), с:
+  - проверкой циклов,
+  - разрешением путей относительно файла, который делает extends.
 
-```bash
-poetry run python src/power_stability_radius.py --config conf/experiments/report.yaml
-```
-
-The explicit form still works and overrides config:
-
-```bash
-poetry run python src/power_stability_radius.py --config conf/experiments/report.yaml report
-```
+CLI‑флаги имеют приоритет над YAML.
 
 ---
 
-## Outputs (runs directory)
+## Артефакты запуска (run directory)
 
-Each command creates a run folder under `runs/` and writes:
+Каждая команда создаёт директорию в `runs/` (см. `logging.run_dir_mode`):
+- `runs/<timestamp>/` (по умолчанию) или
+- `runs/<run_name>/` (overwrite)
 
-- `run.log` — full log
-- `config.yaml` — effective config used for the run (after CLI overrides)
-- `config_source.yaml` — the original config file used (copied)
-- `argv.txt` — the exact CLI argv for reproducibility
-
-Output folder behavior is configurable:
-
-- `logging.run_dir_mode: timestamp` → `runs/<timestamp>/` (default)
-- `logging.run_dir_mode: overwrite` → `runs/<run_name>/` (folder is deleted/recreated)
-
----
-
-## Quickstart (single case)
-
-```bash
-poetry run python src/power_stability_radius.py demo --input data/input/pglib_opf_case30_ieee.m
-```
-
-What it does:
-1) Ensures an input MATPOWER/PGLib `.m` case file exists (downloads if needed)
-2) Loads the case into pandapower
-3) Solves a single-snapshot **DC OPF via PyPSA + HiGHS** to get a feasible base point
-4) Builds a DC sensitivity model (`DCOperator` or dense `H_full`)
-5) Computes radii per monitored line
-6) Writes outputs under the run folder
+Типичные файлы:
+- `run.log`
+- `argv.txt`
+- `config_source.yaml` (копия входного YAML)
+- `config.json`, `config.yaml` (эффективная конфигурация)
+- `results.json` + `results_table*.txt/csv` (для `compute`)
+- `monte_carlo_stats.json` (для `monte-carlo`)
+- `verification_report.md` (для `report`)
 
 ---
 
-## Demo options
+## Команда `compute` (основной пайплайн)
+
+Семантика:
+1) Загрузить `.m` → `pandapower net`.
+2) (Опционально) DC OPF для диспетча (`base_dispatch=dc_opf`).
+3) DC часть (если включена):
+   - собрать `DCOperator` и/или `H_full`,
+   - посчитать DC радиусы (L2 / sigma / probability / N-1).
+4) AC часть (если включена):
+   - решить AC PF базовую точку,
+   - посчитать AC L2 сертификат на концах линий, агрегировать по линии.
+5) Слить результаты в один `results.json`:
+   - per-line ключи: `line_<idx>`
+   - метаданные: `__meta__` (schema_version=2)
+
+Пример (AC+DC, скачивание разрешено явно):
 
 ```bash
-poetry run python src/power_stability_radius.py demo --help
-```
-
-Key options:
-- `--dc-mode operator|materialize`
-  - `operator` (default): fast, does not materialize `H_full`, no N-1
-  - `materialize`: builds dense `H_full` (memory heavy), enables N-1
-
-- `--compute-nminus1 1` (requires `--dc-mode materialize`)
-- `--margin-factor` (e.g. `0.9` more conservative)
-- `--inj-std-mw` for probabilistic radii
-
----
-
-## Monte Carlo verification (single case)
-
-You can provide required paths either via CLI flags or via config keys
-(`monte_carlo.results`, `monte_carlo.input`).
-
-Example via CLI flags:
-
-```bash
-poetry run python src/power_stability_radius.py monte-carlo \
-  --results verification/results/case30.json \
+poetry run python src/power_stability_radius.py \
+  --config conf/config.yaml \
+  --run-tests 0 \
+  --allow-download 1 \
+  compute \
   --input data/input/pglib_opf_case30_ieee.m \
   --slack-bus 0 \
-  --n-samples 50000 \
-  --seed 0 \
-  --chunk-size 256
+  --base-dispatch case
 ```
-
-Example via experiment config:
-
-```bash
-poetry run python src/power_stability_radius.py --config conf/experiments/case30.yaml monte-carlo
-```
-
-The command prints JSON to stdout and also saves `monte_carlo_stats.json` into the run folder.
 
 ---
 
-## Verification report (multiple cases)
+## Команда `monte-carlo` (верификация)
+
+`monte-carlo` берёт:
+- исходный `.m` кейс,
+- `results.json` от `compute`,
+и проверяет:
+- DC: линейно, быстро, много сэмплов.
+- AC: нелинейно, PF на каждый сэмпл (дорого), `pandapower` only.
+
+Пример (DC):
 
 ```bash
-poetry run python src/power_stability_radius.py report \
+poetry run python src/power_stability_radius.py \
+  --config conf/config.yaml \
+  --run-tests 0 \
+  monte-carlo \
+  --mode dc \
+  --results verification/results/case30.json \
+  --input data/input/pglib_opf_case30_ieee.m \
+  --n-samples 50000 \
+  --seed 42
+```
+
+---
+
+## Команда `report` (multi-case Markdown)
+
+- Читает список кейсов из YAML: `report.cases`.
+- Ничего не скачивает и не генерирует “на лету”.
+- В strict режиме требует DC/AC секции при наличии кейса.
+
+Пример:
+
+```bash
+poetry run python src/power_stability_radius.py \
+  --config conf/config.yaml \
+  --run-tests 0 \
+  report \
   --results-dir verification/results \
   --out verification/report.md
 ```
 
-Or using the provided experiment config (subcommand can be omitted because it has `command: report`):
+---
 
-```bash
-poetry run python src/power_stability_radius.py --config conf/experiments/report.yaml
-```
+## Результаты: формат `results.json` (кратко)
 
-Also writes a copy to `<run_dir>/verification_report.md`.
+- `__meta__`: версия схемы, входной файл, режим, настройки DC/AC, базовые точки.
+- Для каждой линии: `line_<pandapower_line_index>`:
+  - DC поля: `flow0_mw`, `p_limit_mw_est`, `margin_mw`, `norm_g`, `radius_l2`, ...
+  - AC поля: `ac_s_limit_mva`, `ac_s0_from_mva`, `ac_s0_to_mva`, `||h||2`, `radius_ac_l2`, ...
+
+Полный контракт схемы и единиц: **`UNITS_CONTRACT.md`**.
 
 ---
 
-## Print/export a table from an existing results.json
+## Логи и трассируемость
 
-```bash
-poetry run python src/power_stability_radius.py table runs/<timestamp>/results.json
-```
+Проект использует `logging`:
+- консольный уровень по умолчанию: `INFO`
+- файл: `DEBUG`
+- системные этапы оборачиваются `log_stage(...)`, чтобы в логе были границы этапов и время.
 
-Options:
-- `--max-rows N`
-- `--radius-field radius_l2|radius_metric|radius_sigma|radius_nminus1`
-- `--columns a,b,c` (comma-separated)
-- `--table-out path/to/table.txt`
-- `--csv-out path/to/table.csv`
-```
+---
+
+## Минимальный план рефакторинга (без изменения математики)
+
+Этот репозиторий уже следует принципу “минимальные зависимости и явные контракты”, но дальнейшие улучшения возможны.
+
+### Минимально необходимые (MVP) улучшения
+1) **Документировать** единицы/соглашения и схему результатов как “source of truth” (сделано в `UNITS_CONTRACT.md`).
+2) Упорядочить и зафиксировать **schema_version** и миграции:
+   - официально описать v2 (текущая),
+   - наметить v3 (предложение без поломки совместимости).
+
+### Опционально (после стабилизации)
+- Добавить поддержку `ac.lossless=false` (потребует согласования PF, Якобиана и MC).
+- Сделать AC Monte‑Carlo поддерживающим PyPSA per-sample PF (если появится детерминизм/устойчивость).
+- Вынести генерацию таблиц/CSV в отдельный “export layer” (с минимальным количеством “магических” колонок).

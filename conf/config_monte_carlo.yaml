@@ -1,0 +1,32 @@
+monte_carlo:
+  # Verification mode:
+  # - dc : DC certificate verification
+  # - ac : AC certificate verification (AC PF per sample)
+  mode: dc
+
+  # Required paths (typically passed via CLI)
+  results: ""
+  input: ""
+  slack_bus: 0
+
+  sampling:
+    n_samples: 50000
+    seed: 42
+    chunk_size: 256
+
+  # Tolerances:
+  # - DC: MW
+  # - AC: MVA (apparent power magnitude)
+  tolerances:
+    feas_tol: 0.0
+    cert_tol: 1
+    cert_max_samples: 5000
+
+  dc:
+    # DC-only: override Gaussian sigma (MW). If null, uses results.__meta__.dc.inj_std_mw.
+    sigma_override_mw: null
+
+  ac:
+    # AC-only Gaussian sigmas for ΔP/ΔQ (explicit; no hidden defaults).
+    sigma_p_mw: 1.0
+    sigma_q_mvar: 1.0

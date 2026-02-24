@@ -1,0 +1,108 @@
+from __future__ import annotations
+
+import logging
+from typing import Any, Mapping, Sequence
+
+import numpy as np
+
+from stability_radius.base_point.pypsa_pf import (
+    PyPSAAPFResult,
+    solve_ac_pf_base_point_from_pandapower,
+)
+from stability_radius.radii.common import estimate_line_limit_mva
+
+from .types import BasePointAC
+
+logger = logging.getLogger(__name__)
+
+
+def solve_ac_pf_base_point(
+    *,
+    net: Any,
+    slack_bus: int,
+    pf_solver: str,
+    pf_init: str,
+    lossless: bool,
+    gen_dispatch_mw_by_name: Mapping[str, float] | Sequence[Sequence[Any]] | None,
+    line_indices: Sequence[int] | None = None,
+) -> tuple[BasePointAC, PyPSAAPFResult]:
+    """
+    Solve AC PF base point and return both:
+    - BasePointAC (JSON-friendly, stores Vm/Va for reproducibility)
+    - PyPSAAPFResult (used by AC certificate computation code)
+
+    Raises
+    ------
+    NotImplementedError
+        If lossless=False (explicitly not supported by current AC certificate implementation).
+    """
+    if not bool(lossless):
+        raise NotImplementedError(
+            "AC base point with lossless=false is not supported in this project version. "
+            "Set ac.lossless=true to match the AC certificate regime."
+        )
+
+    solver_eff = str(pf_solver).strip().lower()
+    if solver_eff not in {"pandapower", "pypsa"}:
+        raise ValueError("pf_solver must be pandapower|pypsa")
+
+    init_eff = str(pf_init).strip().lower()
+    if init_eff not in {"flat", "dc", "pp"}:
+        raise ValueError("pf_init must be flat|dc|pp")
+
+    line_ids = (
+        [int(x) for x in sorted(net.line.index)]
+        if line_indices is None
+        else [int(x) for x in line_indices]
+    )
+    if not line_ids:
+        raise ValueError("Network has no lines (net.line empty).")
+
+    logger.info(
+        "AC base point: solve PF (solver=%s, init=%s, lossless=%s, lines=%d)",
+        solver_eff,
+        init_eff,
+        bool(lossless),
+        int(len(line_ids)),
+    )
+
+    base_pf = solve_ac_pf_base_point_from_pandapower(
+        net=net,
+        slack_bus=int(slack_bus),
+        line_indices=line_ids,
+        gen_dispatch_mw_by_name=gen_dispatch_mw_by_name
+        if gen_dispatch_mw_by_name is not None
+        else {},
+        lossless=bool(lossless),
+        solver=str(solver_eff),
+        init=str(init_eff),
+    )
+
+    # Limits per line (MVA) for reproducibility / verification checks
+    s_limit_mva = np.empty(len(line_ids), dtype=float)
+    for pos, lid in enumerate(line_ids):
+        s_limit_mva[pos] = float(estimate_line_limit_mva(net, net.line.loc[lid]))
+
+    bp = BasePointAC(
+        pf_solver=str(solver_eff),
+        pf_init=str(init_eff),
+        lossless=bool(lossless),
+        slack_bus=int(slack_bus),
+        bus_ids=tuple(int(x) for x in base_pf.bus_ids),
+        vm_pu=np.asarray(base_pf.v_mag_pu, dtype=float),
+        va_rad=np.asarray(base_pf.v_ang_rad, dtype=float),
+        line_ids=tuple(int(x) for x in base_pf.line_ids),
+        p_from_mw=np.asarray(base_pf.line_p0_mw, dtype=float),
+        q_from_mvar=np.asarray(base_pf.line_q0_mvar, dtype=float),
+        p_to_mw=np.asarray(base_pf.line_p1_mw, dtype=float),
+        q_to_mvar=np.asarray(base_pf.line_q1_mvar, dtype=float),
+        s_limit_mva=s_limit_mva,
+        status=str(base_pf.status),
+        gen_dispatch_mw_by_name=tuple(
+            (str(k), float(v)) for k, v in (gen_dispatch_mw_by_name or {}).items()
+        )
+        if isinstance(gen_dispatch_mw_by_name, Mapping)
+        else (),
+    )
+
+    return bp, base_pf

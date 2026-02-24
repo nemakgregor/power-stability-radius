@@ -1,29 +1,28 @@
 """
 Radii computation subpackage.
 
-This project started with per-line L2 radii. This package now also provides:
-- Metric (weighted) radii
-- Probabilistic (sigma) radii and overload probabilities
-- Fast N-1 effective radii using LODF
+Public API (restricted)
+-----------------------
+The project exposes only the core, stable functions as the public API surface.
+More specialized DC post-processing (metric / N-1) remains available via explicit
+module imports, but is intentionally NOT re-exported here to avoid accidental
+coupling and "import *" surface bloat.
+
+Exports
+-------
+- compute_l2_radius        (DC L2 radii, balanced disturbances)
+- compute_ac_l2_radius     (AC L2 radii around AC PF base point)
+- compute_sigma_radius     (DC Gaussian post-processing: sigma-radius, overload probability)
 """
 
 from __future__ import annotations
 
+from .ac_l2 import compute_ac_l2_radius
 from .l2 import compute_l2_radius
-from .metric import compute_metric_radius, metric_radius
-from .nminus1 import compute_nminus1_l2_radius
-from .probabilistic import (
-    compute_sigma_radius,
-    overload_probability_symmetric_limit,
-    sigma_radius,
-)
+from .probabilistic import compute_sigma_radius
 
 __all__ = [
     "compute_l2_radius",
-    "compute_metric_radius",
+    "compute_ac_l2_radius",
     "compute_sigma_radius",
-    "compute_nminus1_l2_radius",
-    "metric_radius",
-    "sigma_radius",
-    "overload_probability_symmetric_limit",
 ]

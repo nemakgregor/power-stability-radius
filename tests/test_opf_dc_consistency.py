@@ -165,7 +165,9 @@ def _make_multivoltage_cycle_net():
 
 def test_pypsa_opf_flows_match_dc_operator_reconstruction() -> None:
     from stability_radius.dc.dc_model import build_dc_operator
-    from stability_radius.opf.pypsa_opf import solve_dc_opf_base_flows_from_pandapower
+    from stability_radius.base_point.pypsa_opf import (
+        solve_dc_opf_base_flows_from_pandapower,
+    )
 
     net, slack_bus = _make_triangle_net()
 
@@ -185,7 +187,7 @@ def test_pypsa_opf_flows_match_dc_operator_reconstruction() -> None:
 
     f_opf = np.asarray(opf_res.line_flows_mw, dtype=float).reshape(-1)
     f_dc = np.asarray(
-        dc_op.flows_from_delta_injections(opf_res.bus_injections_mw),
+        dc_op.flows_from_bus_injections_mw(opf_res.bus_injections_mw),
         dtype=float,
     ).reshape(-1)
 
@@ -195,7 +197,9 @@ def test_pypsa_opf_flows_match_dc_operator_reconstruction() -> None:
 
 def test_pypsa_opf_flows_match_dc_operator_reconstruction_with_tapped_trafo() -> None:
     from stability_radius.dc.dc_model import build_dc_operator
-    from stability_radius.opf.pypsa_opf import solve_dc_opf_base_flows_from_pandapower
+    from stability_radius.base_point.pypsa_opf import (
+        solve_dc_opf_base_flows_from_pandapower,
+    )
 
     net, slack_bus = _make_triangle_net_with_tapped_trafo()
 
@@ -215,7 +219,7 @@ def test_pypsa_opf_flows_match_dc_operator_reconstruction_with_tapped_trafo() ->
 
     f_opf = np.asarray(opf_res.line_flows_mw, dtype=float).reshape(-1)
     f_dc = np.asarray(
-        dc_op.flows_from_delta_injections(opf_res.bus_injections_mw),
+        dc_op.flows_from_bus_injections_mw(opf_res.bus_injections_mw),
         dtype=float,
     ).reshape(-1)
 
@@ -225,7 +229,9 @@ def test_pypsa_opf_flows_match_dc_operator_reconstruction_with_tapped_trafo() ->
 
 def test_pypsa_opf_flows_match_dc_operator_reconstruction_multivoltage() -> None:
     from stability_radius.dc.dc_model import build_dc_operator
-    from stability_radius.opf.pypsa_opf import solve_dc_opf_base_flows_from_pandapower
+    from stability_radius.base_point.pypsa_opf import (
+        solve_dc_opf_base_flows_from_pandapower,
+    )
 
     net, slack_bus = _make_multivoltage_cycle_net()
 
@@ -245,7 +251,7 @@ def test_pypsa_opf_flows_match_dc_operator_reconstruction_multivoltage() -> None
 
     f_opf = np.asarray(opf_res.line_flows_mw, dtype=float).reshape(-1)
     f_dc = np.asarray(
-        dc_op.flows_from_delta_injections(opf_res.bus_injections_mw),
+        dc_op.flows_from_bus_injections_mw(opf_res.bus_injections_mw),
         dtype=float,
     ).reshape(-1)
 

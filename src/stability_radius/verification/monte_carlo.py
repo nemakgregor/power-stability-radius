@@ -1,31 +1,23 @@
 from __future__ import annotations
 
 """
-Monte Carlo verification for the DC L2-ball robustness certificate.
+Monte Carlo verification for robustness certificates.
 
-Distribution used (slack-invariant)
+Modes
+-----
+- mode="dc": DC certificate verification (linear, fast).
+- mode="ac": AC certificate verification (AC PF per sample).
+
+Important correctness contract (AC)
 -----------------------------------
-We work in the balanced injection subspace of dimension:
-
-  d = n_bus - 1
-
-defined as:
-  {Δp in R^{n_bus} : 1^T Δp = 0}.
-
-Gaussian:
-  - Sample z ~ N(0, σ^2 I_{n_bus})
-  - Project: Δp = z - mean(z) * 1
-This is equivalent to Δp ~ N(0, σ^2 I_d) in any orthonormal basis of the balanced subspace.
-
-Certified ball:
-  {Δp : ||Δp||_2 <= r*  and 1^T Δp = 0}
-
-Determinism
------------
-- All randomness is controlled by `seed`.
-- Chunking is deterministic (fixed ordering).
+AC MC must verify the SAME base regime that was used to compute the AC certificate.
+Therefore we:
+- require `__meta__.base_point_ac` with stored Vm/Va and solver/lossless info
+- require solver/lossless consistency (explicit check; no heuristics)
+- validate base PF |S| vs results.json AC base flows (tolerance in config)
 """
 
+import copy
 import json
 import logging
 import math
@@ -34,18 +26,23 @@ from typing import Any
 
 import numpy as np
 
+from stability_radius.base_point.pandapower_tools import (
+    apply_gen_dispatch_to_pandapower_net,
+    apply_lossless_policy_to_pandapower_net,
+    ensure_ext_grid_at_slack,
+    resolve_slack_bus_id,
+)
 from stability_radius.config import DEFAULT_MC
 from stability_radius.dc.dc_model import build_dc_operator
 from stability_radius.parsers.matpower import load_network
-from stability_radius.radii.common import line_key
-from stability_radius.utils import log_stage
-from stability_radius.utils.download import ensure_case_file
+from stability_radius.radii.common import estimate_line_limit_mva, line_key
 
 from .types import (
     BASE_INFEASIBLE,
     BASE_OK,
     PROB_DEGENERATE_DIMENSION,
     PROB_OK,
+    PROB_UNKNOWN,
     RADIUS_INVALID,
     RADIUS_OK,
     RADIUS_UNKNOWN,
@@ -55,7 +52,6 @@ from .types import (
     SOUND_PASS,
     SOUND_SKIPPED_BASE_INFEASIBLE,
     SOUND_SKIPPED_INVALID_RADIUS,
-    SOUND_SKIPPED_NO_SAMPLES,
     SOUND_SKIPPED_TRIVIAL_RADIUS,
     BasePointCheck,
     ProbabilisticCheck,
@@ -85,11 +81,6 @@ def _get_meta(results: dict[str, Any]) -> dict[str, Any]:
 
 
 def _wilson_ci95_percent(*, k: int, n: int) -> tuple[float, float]:
-    """
-    95% Wilson CI for a binomial proportion, returned in percent units.
-
-    This is more stable than Wald for extreme probabilities (near 0 or 1).
-    """
     if n <= 0:
         return float("nan"), float("nan")
     kk = int(k)
@@ -113,85 +104,40 @@ def _wilson_ci95_percent(*, k: int, n: int) -> tuple[float, float]:
 
 
 def _chi2_cdf(*, x: float, df: int) -> float:
-    """
-    Chi-square CDF using SciPy special function:
-        F_{χ²(df)}(x) = gammainc(df/2, x/2)
-    """
     if df <= 0:
         raise ValueError(f"df must be positive, got {df}")
     xx = float(x)
     if not math.isfinite(xx) or xx <= 0.0:
         return 0.0
-
-    try:
-        from scipy.special import gammainc  # type: ignore
-    except Exception as e:  # noqa: BLE001
-        raise ImportError("SciPy is required to compute chi-square CDF.") from e
+    from scipy.special import gammainc  # type: ignore
 
     return float(gammainc(float(df) / 2.0, xx / 2.0))
 
 
 def _project_sum_zero_inplace(x: np.ndarray) -> np.ndarray:
-    """
-    Project rows of x onto the hyperplane sum(row)=0 in-place.
-
-    Parameters
-    ----------
-    x:
-        Array (k, n_bus).
-
-    Returns
-    -------
-    np.ndarray
-        Same array (x) after in-place projection.
-    """
     if x.ndim != 2:
         raise ValueError(f"x must be 2D (k,n_bus), got {x.shape}")
     x -= np.mean(x, axis=1, keepdims=True)
     return x
 
 
-def _sample_gaussian(
-    *, rng: np.random.Generator, n: int, n_bus: int, sigma_mw: float
+def _sample_gaussian_balanced(
+    *, rng: np.random.Generator, n: int, n_bus: int, sigma: float
 ) -> np.ndarray:
-    """
-    Sample balanced Δp in full bus coordinates.
-
-    Sampling scheme
-    ---------------
-      z ~ N(0, σ^2 I_n)
-      Δp = z - mean(z) * 1
-
-    Returns
-    -------
-    np.ndarray
-        Shape (n, n_bus), each row sums to ~0.
-    """
     if n <= 0:
         raise ValueError("n must be positive.")
     if n_bus <= 1:
         raise ValueError("n_bus must be >= 2.")
-    s = float(sigma_mw)
+    s = float(sigma)
     if not math.isfinite(s) or s <= 0.0:
-        raise ValueError("sigma_mw must be finite and positive.")
-
+        raise ValueError("sigma must be finite and positive.")
     z = (s * rng.standard_normal(size=(int(n), int(n_bus)))).astype(float, copy=False)
     return _project_sum_zero_inplace(z)
 
 
-def _sample_uniform_l2_ball(
+def _sample_uniform_l2_ball_balanced(
     *, rng: np.random.Generator, n: int, n_bus: int, radius: float
 ) -> np.ndarray:
-    """
-    Sample uniformly in the balanced L2 ball:
-
-        {x in R^{n_bus} : sum(x)=0 and ||x||_2 <= radius}
-
-    Returns
-    -------
-    np.ndarray
-        Shape (n, n_bus).
-    """
     if n <= 0:
         raise ValueError("n must be positive.")
     if n_bus <= 1:
@@ -202,13 +148,12 @@ def _sample_uniform_l2_ball(
     if r == 0.0:
         return np.zeros((int(n), int(n_bus)), dtype=float)
 
-    d = int(n_bus - 1)  # intrinsic dimension of the balanced subspace
+    d = int(n_bus - 1)
 
     z = rng.standard_normal(size=(int(n), int(n_bus))).astype(float, copy=False)
     _project_sum_zero_inplace(z)
     norms = np.linalg.norm(z, ord=2, axis=1)
 
-    # Re-draw degenerate directions deterministically.
     bad = norms <= 1e-12
     while bool(np.any(bad)):
         k_bad = int(np.sum(bad))
@@ -219,61 +164,14 @@ def _sample_uniform_l2_ball(
         bad = norms <= 1e-12
 
     dirs = z / norms[:, None]
-
-    # Radius distribution for uniform-in-ball: U^(1/d)
     u = rng.random(size=int(n)).astype(float, copy=False)
     rad = r * np.power(u, 1.0 / float(d))
     return dirs * rad[:, None]
 
 
-def _flows_from_delta_injections_reduced(*, dc_op, delta_red: np.ndarray) -> np.ndarray:
-    """
-    Compute Δf for reduced injections Δp_red (non-slack buses).
-
-    This avoids allocating a full (n_bus) delta array.
-    """
-    dp = np.asarray(delta_red, dtype=float)
-    if dp.ndim != 2:
-        raise ValueError(f"delta_red must be 2D (k,d), got {dp.shape}")
-
-    rhs = dp.T  # (d, k) = (n_bus-1, k)
-    theta = dc_op.solve_Bred(rhs)  # (d, k)
-    flow = (dc_op.W @ theta).T  # (k, m_line)
-    return np.asarray(flow, dtype=float)
-
-
-def _flows_from_delta_injections_balanced_full(
-    *, dc_op, delta_full: np.ndarray
-) -> np.ndarray:
-    """
-    Compute Δf for balanced full-bus injections Δp (k, n_bus).
-
-    For DCOperator we drop the slack component (it is redundant for balanced Δp).
-    """
-    dp = np.asarray(delta_full, dtype=float)
-    if dp.ndim != 2:
-        raise ValueError(f"delta_full must be 2D (k,n_bus), got {dp.shape}")
-    if dp.shape[1] != int(dc_op.n_bus):
-        raise ValueError(
-            f"delta_full must have n_bus={int(dc_op.n_bus)} columns; got {dp.shape}"
-        )
-
-    dp_red = dp[:, dc_op.mask_non_slack]
-    return _flows_from_delta_injections_reduced(dc_op=dc_op, delta_red=dp_red)
-
-
-def _extract_line_arrays(
-    *,
-    results: dict[str, Any],
-    net,
+def _extract_line_arrays_dc(
+    *, results: dict[str, Any], net: Any
 ) -> tuple[list[int], np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Extract per-line arrays aligned with sorted net.line.index order.
-
-    Returns
-    -------
-    (line_indices, f0, c, radius_l2, margin_raw, norm_g)
-    """
     line_indices = [int(x) for x in sorted(net.line.index)]
     m = int(len(line_indices))
 
@@ -283,21 +181,15 @@ def _extract_line_arrays(
     margin_raw = np.empty(m, dtype=float)
     norm_g = np.full(m, float("nan"), dtype=float)
 
-    missing: list[str] = []
     for pos, lid in enumerate(line_indices):
         k = line_key(int(lid))
         row = results.get(k)
         if not isinstance(row, dict):
-            missing.append(k)
-            continue
+            raise KeyError(f"results.json missing per-line entry: {k}")
 
-        try:
-            f0[pos] = float(row["flow0_mw"])
-            c[pos] = float(row["p_limit_mw_est"])
-            r[pos] = float(row["radius_l2"])
-        except KeyError as e:
-            raise KeyError(f"Missing required field {e} in {k}") from e
-
+        f0[pos] = float(row["flow0_mw"])
+        c[pos] = float(row["p_limit_mw_est"])
+        r[pos] = float(row["radius_l2"])
         margin_raw[pos] = float(c[pos] - abs(f0[pos]))
 
         if "norm_g" in row:
@@ -305,18 +197,6 @@ def _extract_line_arrays(
                 norm_g[pos] = float(row.get("norm_g", float("nan")))
             except (TypeError, ValueError):
                 norm_g[pos] = float("nan")
-
-    if missing:
-        raise KeyError(
-            f"results.json does not contain required line keys (first 10): {missing[:10]}"
-        )
-
-    if np.isnan(c).any():
-        bad = np.where(np.isnan(c))[0]
-        raise ValueError(
-            "results.json contains NaN in p_limit_mw_est; verification is undefined. "
-            f"Bad line positions count={int(bad.size)} (first 10: {bad[:10].tolist()})."
-        )
 
     return line_indices, f0, c, r, margin_raw, norm_g
 
@@ -345,17 +225,9 @@ def _compute_r_star_and_argmin(
 
     argmin_pos = int(np.argmin(np.where(finite, radii, float("inf"))))
     r_star = float(radii[argmin_pos])
-    argmin_line_idx = (
-        int(line_indices[argmin_pos]) if 0 <= argmin_pos < len(line_indices) else -1
-    )
-    argmin_margin = (
-        float(margins_raw[argmin_pos])
-        if 0 <= argmin_pos < margins_raw.size
-        else float("nan")
-    )
-    argmin_norm = (
-        float(norm_g[argmin_pos]) if 0 <= argmin_pos < norm_g.size else float("nan")
-    )
+    argmin_line_idx = int(line_indices[argmin_pos])
+    argmin_margin = float(margins_raw[argmin_pos])
+    argmin_norm = float(norm_g[argmin_pos])
     min_margin = float(np.min(margins_raw)) if margins_raw.size else float("nan")
 
     if not math.isfinite(r_star) or r_star < 0.0:
@@ -386,226 +258,172 @@ def _compute_r_star_and_argmin(
     )
 
 
-def _run_gaussian_stage(
+def _project_sum_zero_two_blocks_inplace(dp: np.ndarray, dq: np.ndarray) -> None:
+    if dp.ndim != 2 or dq.ndim != 2:
+        raise ValueError("dp and dq must be 2D")
+    if dp.shape != dq.shape:
+        raise ValueError("dp and dq shape mismatch")
+    dp -= np.mean(dp, axis=1, keepdims=True)
+    dq -= np.mean(dq, axis=1, keepdims=True)
+
+
+def _sample_gaussian_ac(
     *,
-    case_id: str,
-    dc_op,
-    f0: np.ndarray,
-    c: np.ndarray,
-    r_star: float,
-    sigma_mw: float,
-    n_samples: int,
-    seed: int,
-    chunk_size: int,
-    feas_tol_mw: float,
-) -> tuple[
-    int,  # feasible_samples
-    tuple[float, float],  # feasible_ci
-    int,  # in_ball_samples
-    tuple[float, float],  # in_ball_ci
-    int,  # in_ball_and_feasible_samples
-    float,  # worst_max_violation
-    int,  # worst_line_pos
-    int,  # worst_line_idx
-    float,  # worst_sample_l2
-]:
-    rng = np.random.default_rng(int(seed))
+    rng: np.random.Generator,
+    n: int,
+    n_bus: int,
+    sigma_p_mw: float,
+    sigma_q_mvar: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    sp = float(sigma_p_mw)
+    sq = float(sigma_q_mvar)
+    if not math.isfinite(sp) or sp <= 0:
+        raise ValueError("sigma_p_mw must be finite and >0")
+    if not math.isfinite(sq) or sq <= 0:
+        raise ValueError("sigma_q_mvar must be finite and >0")
 
-    feasible = 0
-    in_ball = 0
-    in_ball_and_feasible = 0
+    dp = (sp * rng.standard_normal(size=(int(n), int(n_bus)))).astype(float, copy=False)
+    dq = (sq * rng.standard_normal(size=(int(n), int(n_bus)))).astype(float, copy=False)
+    _project_sum_zero_two_blocks_inplace(dp, dq)
+    return dp, dq
 
-    worst_max_violation = float("-inf")
-    worst_line_pos = -1
-    worst_line_idx = -1
-    worst_sample_l2 = float("nan")
 
-    n_bus = int(dc_op.n_bus)
-    d = int(max(n_bus - 1, 0))
-    if d <= 0:
-        raise ValueError("Invalid DCOperator dimension: n_bus must be >= 2.")
+def _sample_uniform_l2_ball_ac(
+    *,
+    rng: np.random.Generator,
+    n: int,
+    n_bus: int,
+    radius: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    r = float(radius)
+    if not math.isfinite(r) or r < 0:
+        raise ValueError("radius must be finite and >=0")
+    if r == 0.0:
+        z = np.zeros((int(n), int(n_bus)), dtype=float)
+        return z.copy(), z.copy()
 
-    remaining = int(n_samples)
-    while remaining > 0:
-        k = min(int(chunk_size), remaining)
-        remaining -= k
+    d = int(2 * (n_bus - 1))
 
-        delta_full = _sample_gaussian(
-            rng=rng, n=k, n_bus=n_bus, sigma_mw=float(sigma_mw)
-        )
-        norms = np.linalg.norm(delta_full, ord=2, axis=1)
-        in_ball_mask = norms <= float(r_star)
-        in_ball += int(np.sum(in_ball_mask))
+    zP = rng.standard_normal(size=(int(n), int(n_bus))).astype(float, copy=False)
+    zQ = rng.standard_normal(size=(int(n), int(n_bus))).astype(float, copy=False)
+    _project_sum_zero_two_blocks_inplace(zP, zQ)
 
-        df = _flows_from_delta_injections_balanced_full(
-            dc_op=dc_op, delta_full=delta_full
-        )
-        viol = df + f0[None, :]
-        np.abs(viol, out=viol)
-        viol -= c[None, :]  # abs(flow) - limit
+    norms = np.sqrt(np.sum(zP * zP, axis=1) + np.sum(zQ * zQ, axis=1))
 
-        np.nan_to_num(
-            viol,
-            copy=False,
-            nan=float("inf"),
-            posinf=float("inf"),
-            neginf=-float("inf"),
-        )
+    bad = norms <= 1e-12
+    while bool(np.any(bad)):
+        k_bad = int(np.sum(bad))
+        zzP = rng.standard_normal(size=(k_bad, int(n_bus))).astype(float, copy=False)
+        zzQ = rng.standard_normal(size=(k_bad, int(n_bus))).astype(float, copy=False)
+        _project_sum_zero_two_blocks_inplace(zzP, zzQ)
+        zP[bad, :] = zzP
+        zQ[bad, :] = zzQ
+        norms = np.sqrt(np.sum(zP * zP, axis=1) + np.sum(zQ * zQ, axis=1))
+        bad = norms <= 1e-12
 
-        max_v = np.max(viol, axis=1)
-        feasible_mask = max_v <= float(feas_tol_mw)
+    zP /= norms[:, None]
+    zQ /= norms[:, None]
 
-        feasible += int(np.sum(feasible_mask))
-        in_ball_and_feasible += int(np.sum(in_ball_mask & feasible_mask))
+    u = rng.random(size=int(n)).astype(float, copy=False)
+    rad = r * np.power(u, 1.0 / float(d))
 
-        batch_worst = float(np.max(max_v))
-        if batch_worst > worst_max_violation:
-            worst_max_violation = batch_worst
-            j = int(np.argmax(max_v))
-            worst_sample_l2 = float(norms[j])
-            lp = int(np.argmax(viol[j, :]))
-            worst_line_pos = lp
-            worst_line_idx = (
-                int(dc_op.line_ids[lp]) if 0 <= lp < len(dc_op.line_ids) else -1
+    return zP * rad[:, None], zQ * rad[:, None]
+
+
+def _line_limits_mva_sorted(net: Any) -> tuple[list[int], np.ndarray]:
+    line_ids = [int(x) for x in sorted(net.line.index)]
+    limits = np.empty(len(line_ids), dtype=float)
+    for pos, lid in enumerate(line_ids):
+        limits[pos] = float(estimate_line_limit_mva(net, net.line.loc[lid]))
+    return line_ids, limits
+
+
+def _ac_pf_sample_violation_mva(
+    net: Any,
+    *,
+    line_ids: list[int],
+    limits_mva: np.ndarray,
+    feas_tol_mva: float,
+) -> tuple[bool, float, int]:
+    if not hasattr(net, "res_line") or net.res_line is None or len(net.res_line) == 0:
+        raise RuntimeError("pandapower did not produce res_line results.")
+
+    worst = float("-inf")
+    worst_pos = -1
+
+    for pos, lid in enumerate(line_ids):
+        row = net.line.loc[lid]
+        if not bool(row.get("in_service", True)):
+            continue
+
+        p_from = float(net.res_line.loc[lid, "p_from_mw"])
+        q_from = float(net.res_line.loc[lid, "q_from_mvar"])
+        p_to = float(net.res_line.loc[lid, "p_to_mw"])
+        q_to = float(net.res_line.loc[lid, "q_to_mvar"])
+
+        s_from = math.sqrt(p_from * p_from + q_from * q_from)
+        s_to = math.sqrt(p_to * p_to + q_to * q_to)
+        s = max(s_from, s_to)
+
+        viol = float(s - float(limits_mva[pos]))
+        if viol > worst:
+            worst = viol
+            worst_pos = int(pos)
+
+    feasible = bool(worst <= float(feas_tol_mva))
+    return feasible, float(worst), int(worst_pos)
+
+
+def _check_ac_base_point_matches_results(
+    *,
+    nn: Any,
+    results: dict[str, Any],
+    line_ids_sorted: list[int],
+    tol_mva: float,
+) -> dict[str, Any]:
+    if not hasattr(nn, "res_line") or nn.res_line is None or len(nn.res_line) == 0:
+        raise RuntimeError("pandapower did not produce res_line results (base point).")
+
+    max_abs_diff = float("-inf")
+    argmax_line_idx = -1
+
+    for lid in line_ids_sorted:
+        row = results.get(line_key(int(lid)))
+        if not isinstance(row, dict):
+            raise KeyError(f"results.json missing per-line entry: line_{lid}")
+        if "ac_s0_from_mva" not in row or "ac_s0_to_mva" not in row:
+            raise KeyError(
+                "results.json missing AC base fields ac_s0_from_mva/ac_s0_to_mva (compute compute.ac.compute=1)."
             )
 
-    feas_ci = _wilson_ci95_percent(k=int(feasible), n=int(n_samples))
-    ball_ci = _wilson_ci95_percent(k=int(in_ball), n=int(n_samples))
+        p_from = float(nn.res_line.loc[lid, "p_from_mw"])
+        q_from = float(nn.res_line.loc[lid, "q_from_mvar"])
+        p_to = float(nn.res_line.loc[lid, "p_to_mw"])
+        q_to = float(nn.res_line.loc[lid, "q_to_mvar"])
 
-    p_feas = 100.0 * float(feasible) / float(n_samples)
-    logger.info(
-        "case=%s stage=gaussian_feasibility n=%d sigma=%.6g d=%d p_safe=%.6g ci95=[%.6g,%.6g]",
-        str(case_id),
-        int(n_samples),
-        float(sigma_mw),
-        int(d),
-        float(p_feas),
-        float(feas_ci[0]),
-        float(feas_ci[1]),
-    )
+        s_from = math.sqrt(p_from * p_from + q_from * q_from)
+        s_to = math.sqrt(p_to * p_to + q_to * q_to)
 
-    return (
-        int(feasible),
-        feas_ci,
-        int(in_ball),
-        ball_ci,
-        int(in_ball_and_feasible),
-        float(worst_max_violation),
-        int(worst_line_pos),
-        int(worst_line_idx),
-        float(worst_sample_l2),
-    )
+        s_from_ref = float(row["ac_s0_from_mva"])
+        s_to_ref = float(row["ac_s0_to_mva"])
 
+        d = max(abs(s_from - s_from_ref), abs(s_to - s_to_ref))
+        if d > max_abs_diff:
+            max_abs_diff = float(d)
+            argmax_line_idx = int(lid)
 
-def _run_soundness_stage(
-    *,
-    case_id: str,
-    dc_op,
-    f0: np.ndarray,
-    c: np.ndarray,
-    r_star: float,
-    n_ball_samples: int,
-    seed: int,
-    chunk_size: int,
-    tol_mw: float,
-) -> SoundnessCheck:
-    if n_ball_samples <= 0:
-        return SoundnessCheck(
-            status=SOUND_SKIPPED_NO_SAMPLES,
-            n_ball_samples=0,
-            violation_samples=0,
-            max_violation_mw=float("nan"),
-            max_violation_line_idx=-1,
-            tol_mw=float(tol_mw),
+    if math.isfinite(max_abs_diff) and max_abs_diff > float(tol_mva):
+        raise ValueError(
+            "AC MC base point mismatch vs results.json (different regime / dispatch / lossless policy). "
+            f"max_abs_diff_S_mva={max_abs_diff:.6g} > tol={float(tol_mva):.6g}, argmax_line_idx={argmax_line_idx}. "
+            "Fix by ensuring you run MC with the same ac.pf_solver / ac.lossless and same base dispatch."
         )
 
-    if not math.isfinite(float(r_star)):
-        return SoundnessCheck(
-            status=SOUND_SKIPPED_INVALID_RADIUS,
-            n_ball_samples=int(n_ball_samples),
-            violation_samples=int(n_ball_samples),
-            max_violation_mw=float("nan"),
-            max_violation_line_idx=-1,
-            tol_mw=float(tol_mw),
-        )
-
-    if float(r_star) <= 0.0:
-        return SoundnessCheck(
-            status=SOUND_SKIPPED_TRIVIAL_RADIUS,
-            n_ball_samples=int(n_ball_samples),
-            violation_samples=0,
-            max_violation_mw=float("-inf"),
-            max_violation_line_idx=-1,
-            tol_mw=float(tol_mw),
-        )
-
-    rng = np.random.default_rng(int(seed))
-
-    n_bus = int(dc_op.n_bus)
-    remaining = int(n_ball_samples)
-
-    violations = 0
-    worst_max_violation = float("-inf")
-    worst_line_idx = -1
-
-    total = 0
-
-    while remaining > 0:
-        k = min(int(chunk_size), remaining)
-        remaining -= k
-
-        delta_full = _sample_uniform_l2_ball(
-            rng=rng, n=k, n_bus=n_bus, radius=float(r_star)
-        )
-
-        df = _flows_from_delta_injections_balanced_full(
-            dc_op=dc_op, delta_full=delta_full
-        )
-        viol = df + f0[None, :]
-        np.abs(viol, out=viol)
-        viol -= c[None, :]
-
-        np.nan_to_num(
-            viol,
-            copy=False,
-            nan=float("inf"),
-            posinf=float("inf"),
-            neginf=-float("inf"),
-        )
-
-        max_v = np.max(viol, axis=1)
-        ok = max_v <= float(tol_mw)
-
-        violations += int(np.sum(~ok))
-        total += int(k)
-
-        batch_worst = float(np.max(max_v))
-        if batch_worst > worst_max_violation:
-            worst_max_violation = batch_worst
-            j = int(np.argmax(max_v))
-            lp = int(np.argmax(viol[j, :]))
-            worst_line_idx = (
-                int(dc_op.line_ids[lp]) if 0 <= lp < len(dc_op.line_ids) else -1
-            )
-
-    status = SOUND_PASS if violations == 0 else SOUND_FAIL
-    logger.info(
-        "case=%s stage=ball_soundness r*=%.6g n=%d violations=%d status=%s",
-        str(case_id),
-        float(r_star),
-        int(total),
-        int(violations),
-        str(status),
-    )
-
-    return SoundnessCheck(
-        status=status,
-        n_ball_samples=int(total),
-        violation_samples=int(violations),
-        max_violation_mw=float(worst_max_violation),
-        max_violation_line_idx=int(worst_line_idx),
-        tol_mw=float(tol_mw),
-    )
+    return {
+        "basepoint_ac_max_abs_diff_s_mva": float(max_abs_diff),
+        "basepoint_ac_tol_mva": float(tol_mva),
+        "basepoint_ac_argmax_line_idx": int(argmax_line_idx),
+    }
 
 
 def run_monte_carlo_verification(
@@ -616,174 +434,613 @@ def run_monte_carlo_verification(
     n_samples: int = DEFAULT_MC.n_samples,
     seed: int = DEFAULT_MC.seed,
     chunk_size: int = DEFAULT_MC.chunk_size,
-    feas_tol_mw: float = DEFAULT_MC.feas_tol_mw,
-    cert_tol_mw: float = DEFAULT_MC.cert_tol_mw,
+    feas_tol: float = DEFAULT_MC.feas_tol_mw,
+    cert_tol: float = DEFAULT_MC.cert_tol_mw,
     cert_max_samples: int = DEFAULT_MC.cert_max_samples,
     sigma_override_mw: float | None = None,
+    mode: str = "dc",
+    allow_download: bool = False,
+    # AC-only parameters (explicit)
+    ac_sigma_p_mw: float | None = None,
+    ac_sigma_q_mvar: float | None = None,
+    ac_pf_solver: str = "pandapower",
+    ac_lossless: bool = True,
+    ac_basepoint_s_tol_mva: float = 1e-3,
 ) -> VerificationResult:
-    """
-    Run verification for a single case.
+    mode_eff = str(mode).strip().lower()
+    if mode_eff not in {"dc", "ac"}:
+        raise ValueError("mode must be 'dc' or 'ac'")
 
-    Notes
-    -----
-    - `sigma_override_mw` (if provided) overrides results.json meta inj_std_mw for MC evaluation,
-      enabling cross-case comparable experiments (e.g., fixed rho targets).
-    """
     rp = Path(results_path).resolve()
-    ip = Path(input_case_path).resolve()
+    ip = Path(input_case_path).expanduser()
+    ip = ip.resolve() if not ip.is_absolute() else ip
 
     if n_samples <= 0:
         raise ValueError("n_samples must be positive.")
     if chunk_size <= 0:
         raise ValueError("chunk_size must be positive.")
 
-    tol_feas = float(feas_tol_mw)
+    tol_feas = float(feas_tol)
+    tol_cert = float(cert_tol)
     if not math.isfinite(tol_feas) or tol_feas < 0.0:
-        raise ValueError("feas_tol_mw must be finite and non-negative.")
-
-    tol_cert = float(cert_tol_mw)
+        raise ValueError("feas_tol must be finite and non-negative.")
     if not math.isfinite(tol_cert) or tol_cert < 0.0:
-        raise ValueError("cert_tol_mw must be finite and non-negative.")
+        raise ValueError("cert_tol must be finite and non-negative.")
 
     cert_max = int(cert_max_samples)
     if cert_max < 0:
         raise ValueError("cert_max_samples must be non-negative.")
 
     case_id = rp.stem
+    results = _load_results(rp)
+    meta = _get_meta(results)
 
-    with log_stage(logger, "Read Results (results.json)"):
-        results = _load_results(rp)
-        meta = _get_meta(results)
+    if not ip.exists():
+        if not bool(allow_download):
+            raise FileNotFoundError(
+                f"Input case file not found: {ip}. Enable allow_download to download deterministically."
+            )
+        from stability_radius.utils.download import ensure_case_file
 
-    with log_stage(logger, "Ensure input case file (download if missing)"):
-        ensured = ensure_case_file(str(ip))
-        ip_eff = Path(ensured).resolve()
+        ip = Path(ensure_case_file(str(ip))).resolve()
 
-    with log_stage(logger, "Read Data (MATPOWER/PGLib -> pandapower)"):
-        net = load_network(ip_eff)
+    net = load_network(ip)
 
-    with log_stage(
-        logger,
-        f"Build DC Model (DCOperator, slack_bus={slack_bus})",
-    ):
+    if mode_eff == "dc":
         dc_op = build_dc_operator(net, slack_bus=int(slack_bus))
 
-    line_indices, f0, c, r, margin_raw, norm_g = _extract_line_arrays(
-        results=results, net=net
-    )
+        line_indices, f0, c, r, margin_raw, norm_g = _extract_line_arrays_dc(
+            results=results, net=net
+        )
 
-    # sigma is taken from results meta by default (must match how radii/MC are interpreted)
-    sigma_source = "results_meta"
-    if sigma_override_mw is not None:
-        sigma_source = "override"
-        try:
+        if sigma_override_mw is not None:
             sigma_mw = float(sigma_override_mw)
-        except (TypeError, ValueError) as e:
-            raise ValueError(f"Invalid sigma_override_mw={sigma_override_mw!r}") from e
-    else:
-        sigma_meta = meta.get("inj_std_mw", None)
-        if sigma_meta is None:
-            raise ValueError(
-                "results.json is missing __meta__.inj_std_mw which is required for Gaussian verification. "
-                "Regenerate results with the current pipeline or pass sigma_override_mw."
-            )
-        try:
+            sigma_source = "override"
+        else:
+            meta_dc = meta.get("dc", {}) if isinstance(meta.get("dc", {}), dict) else {}
+            sigma_meta = meta_dc.get("inj_std_mw", None)
+            if sigma_meta is None:
+                raise ValueError(
+                    "results.json missing __meta__.dc.inj_std_mw; pass --sigma-override-mw."
+                )
             sigma_mw = float(sigma_meta)
-        except (TypeError, ValueError) as e:
-            raise ValueError(f"Invalid __meta__.inj_std_mw={sigma_meta!r}") from e
+            sigma_source = "results_meta"
 
-    if not math.isfinite(sigma_mw) or sigma_mw <= 0.0:
-        raise ValueError(f"sigma_mw must be finite and >0, got {sigma_mw!r}")
+        if not math.isfinite(sigma_mw) or sigma_mw <= 0.0:
+            raise ValueError("sigma_mw must be finite and >0.")
 
-    logger.info(
-        "case=%s sigma_mw=%.6g (source=%s)",
-        str(case_id),
-        float(sigma_mw),
-        sigma_source,
-    )
+        base_viol = np.where(np.abs(f0) > (c + tol_feas))[0]
+        base_feasible = bool(base_viol.size == 0)
+        base_max_violation = (
+            float(np.max(np.abs(f0[base_viol]) - c[base_viol]))
+            if base_viol.size
+            else 0.0
+        )
 
-    base_viol = np.where(np.abs(f0) > (c + tol_feas))[0]
-    base_feasible = bool(base_viol.size == 0)
-    base_max_violation = (
-        float(np.max(np.abs(f0[base_viol]) - c[base_viol])) if base_viol.size else 0.0
-    )
+        base_status = BASE_OK if base_feasible else BASE_INFEASIBLE
+        base_check = BasePointCheck(
+            status=base_status,
+            violated_lines=int(base_viol.size),
+            max_violation_mw=float(base_max_violation),
+        )
 
-    base_status = BASE_OK if base_feasible else BASE_INFEASIBLE
-    base_check = BasePointCheck(
-        status=base_status,
-        violated_lines=int(base_viol.size),
-        max_violation_mw=float(base_max_violation),
-    )
+        radius_check = _compute_r_star_and_argmin(
+            line_indices=line_indices,
+            radii=r,
+            margins_raw=margin_raw,
+            norm_g=norm_g,
+            base_status=base_status,
+        )
 
-    radius_check = _compute_r_star_and_argmin(
-        line_indices=line_indices,
-        radii=r,
-        margins_raw=margin_raw,
-        norm_g=norm_g,
-        base_status=base_status,
-    )
+        d = int(max(dc_op.n_bus - 1, 0))
+        if d <= 0:
+            raise ValueError("Invalid DCOperator dimension: n_bus must be >= 2.")
 
-    # Analytic ball mass (chi-square) for isotropic Gaussian in the balanced subspace.
-    d = int(max(dc_op.n_bus - 1, 0))
-    if d <= 0:
-        raise ValueError("Invalid DCOperator dimension: n_bus must be >= 2.")
+        p_ball_analytic = (
+            100.0
+            * _chi2_cdf(x=(float(radius_check.r_star) / float(sigma_mw)) ** 2, df=d)
+            if math.isfinite(radius_check.r_star) and radius_check.r_star >= 0
+            else float("nan")
+        )
 
-    if math.isfinite(float(radius_check.r_star)) and float(radius_check.r_star) >= 0.0:
-        x = (float(radius_check.r_star) / float(sigma_mw)) ** 2
-        p_ball_analytic = 100.0 * _chi2_cdf(x=x, df=d)
-    else:
-        p_ball_analytic = float("nan")
+        rng = np.random.default_rng(int(seed))
+        remaining = int(n_samples)
 
-    # Gaussian stage
-    with log_stage(logger, "Monte Carlo: Gaussian safety (balanced subspace)"):
-        (
-            gauss_feasible,
-            gauss_feas_ci,
-            gauss_in_ball,
-            gauss_ball_ci,
-            gauss_in_ball_and_feasible,
-            gauss_worst_max_violation,
-            gauss_worst_line_pos,
-            gauss_worst_line_idx,
-            gauss_worst_sample_l2,
-        ) = _run_gaussian_stage(
-            case_id=case_id,
-            dc_op=dc_op,
-            f0=f0,
-            c=c,
-            r_star=float(radius_check.r_star)
-            if math.isfinite(radius_check.r_star)
-            else 0.0,
-            sigma_mw=float(sigma_mw),
+        feasible = 0
+        in_ball = 0
+        in_ball_and_feasible = 0
+
+        worst_max_violation = float("-inf")
+        worst_line_pos = -1
+        worst_line_idx = -1
+        worst_sample_l2 = float("nan")
+
+        while remaining > 0:
+            k = min(int(chunk_size), remaining)
+            remaining -= k
+
+            delta_full = _sample_gaussian_balanced(
+                rng=rng, n=k, n_bus=int(dc_op.n_bus), sigma=float(sigma_mw)
+            )
+            norms = np.linalg.norm(delta_full, ord=2, axis=1)
+
+            in_ball_mask = (
+                norms <= float(radius_check.r_star)
+                if math.isfinite(radius_check.r_star)
+                else False
+            )
+            in_ball += int(np.sum(in_ball_mask))
+
+            df = dc_op.flows_from_delta_injections(delta_full)
+            viol = df + f0[None, :]
+            np.abs(viol, out=viol)
+            viol -= c[None, :]
+            np.nan_to_num(
+                viol,
+                copy=False,
+                nan=float("inf"),
+                posinf=float("inf"),
+                neginf=-float("inf"),
+            )
+
+            max_v = np.max(viol, axis=1)
+            feasible_mask = max_v <= float(tol_feas)
+
+            feasible += int(np.sum(feasible_mask))
+            in_ball_and_feasible += int(np.sum(in_ball_mask & feasible_mask))
+
+            batch_worst = float(np.max(max_v))
+            if batch_worst > worst_max_violation:
+                worst_max_violation = batch_worst
+                j = int(np.argmax(max_v))
+                worst_sample_l2 = float(norms[j])
+                lp = int(np.argmax(viol[j, :]))
+                worst_line_pos = lp
+                worst_line_idx = (
+                    int(dc_op.line_ids[lp]) if 0 <= lp < len(dc_op.line_ids) else -1
+                )
+
+        feas_ci = _wilson_ci95_percent(k=int(feasible), n=int(n_samples))
+        ball_ci = _wilson_ci95_percent(k=int(in_ball), n=int(n_samples))
+
+        if in_ball > 0:
+            eta = 100.0 * float(in_ball_and_feasible) / float(in_ball)
+            eta_ci = _wilson_ci95_percent(k=int(in_ball_and_feasible), n=int(in_ball))
+        else:
+            eta = float("nan")
+            eta_ci = (float("nan"), float("nan"))
+
+        denom = float(sigma_mw) * math.sqrt(float(d))
+        rho = (
+            float(radius_check.r_star) / denom
+            if (math.isfinite(radius_check.r_star) and denom > 0.0)
+            else float("nan")
+        )
+
+        p_safe = 100.0 * float(feasible) / float(n_samples)
+        p_ball_mc = 100.0 * float(in_ball) / float(n_samples)
+
+        n_ball_samples = min(int(n_samples), int(cert_max))
+        if base_status != BASE_OK:
+            soundness = SoundnessCheck(
+                status=SOUND_SKIPPED_BASE_INFEASIBLE,
+                n_ball_samples=0,
+                violation_samples=0,
+                max_violation_mw=float("nan"),
+                max_violation_line_idx=-1,
+                tol_mw=float(tol_cert),
+            )
+        elif radius_check.status == RADIUS_INVALID or not math.isfinite(
+            float(radius_check.r_star)
+        ):
+            soundness = SoundnessCheck(
+                status=SOUND_SKIPPED_INVALID_RADIUS,
+                n_ball_samples=0,
+                violation_samples=0,
+                max_violation_mw=float("nan"),
+                max_violation_line_idx=-1,
+                tol_mw=float(tol_cert),
+            )
+        elif float(radius_check.r_star) <= 0.0:
+            soundness = SoundnessCheck(
+                status=SOUND_SKIPPED_TRIVIAL_RADIUS,
+                n_ball_samples=int(n_ball_samples),
+                violation_samples=0,
+                max_violation_mw=float("-inf"),
+                max_violation_line_idx=-1,
+                tol_mw=float(tol_cert),
+            )
+        else:
+            rng2 = np.random.default_rng(int(seed) + 1_000_003)
+            remaining2 = int(n_ball_samples)
+            violations = 0
+            worst_v = float("-inf")
+            worst_idx = -1
+            total = 0
+
+            while remaining2 > 0:
+                k = min(int(chunk_size), remaining2)
+                remaining2 -= k
+
+                delta_full = _sample_uniform_l2_ball_balanced(
+                    rng=rng2,
+                    n=k,
+                    n_bus=int(dc_op.n_bus),
+                    radius=float(radius_check.r_star),
+                )
+                df = dc_op.flows_from_delta_injections(delta_full)
+                viol = df + f0[None, :]
+                np.abs(viol, out=viol)
+                viol -= c[None, :]
+                np.nan_to_num(
+                    viol,
+                    copy=False,
+                    nan=float("inf"),
+                    posinf=float("inf"),
+                    neginf=-float("inf"),
+                )
+
+                max_v = np.max(viol, axis=1)
+                ok = max_v <= float(tol_cert)
+
+                violations += int(np.sum(~ok))
+                total += int(k)
+
+                batch_worst = float(np.max(max_v))
+                if batch_worst > worst_v:
+                    worst_v = batch_worst
+                    j = int(np.argmax(max_v))
+                    lp = int(np.argmax(viol[j, :]))
+                    worst_idx = (
+                        int(dc_op.line_ids[lp]) if 0 <= lp < len(dc_op.line_ids) else -1
+                    )
+
+            soundness = SoundnessCheck(
+                status=SOUND_PASS if violations == 0 else SOUND_FAIL,
+                n_ball_samples=int(total),
+                violation_samples=int(violations),
+                max_violation_mw=float(worst_v),
+                max_violation_line_idx=int(worst_idx),
+                tol_mw=float(tol_cert),
+            )
+
+        prob_status = PROB_OK
+        if math.isfinite(float(p_ball_analytic)) and float(p_ball_analytic) <= 1e-12:
+            prob_status = PROB_DEGENERATE_DIMENSION
+
+        prob = ProbabilisticCheck(
+            status=prob_status,
+            p_safe_gaussian_percent=float(p_safe),
+            p_safe_gaussian_ci95_low_percent=float(feas_ci[0]),
+            p_safe_gaussian_ci95_high_percent=float(feas_ci[1]),
+            p_ball_analytic_percent=float(p_ball_analytic),
+            p_ball_mc_percent=float(p_ball_mc),
+            p_ball_mc_ci95_low_percent=float(ball_ci[0]),
+            p_ball_mc_ci95_high_percent=float(ball_ci[1]),
+            eta_safe_given_in_ball_percent=float(eta),
+            eta_ci95_low_percent=float(eta_ci[0]),
+            eta_ci95_high_percent=float(eta_ci[1]),
+            rho=float(rho),
+        )
+
+        overall = overall_from_components(
+            base_status=str(base_check.status),
+            radius_status=str(radius_check.status),
+            soundness_status=str(soundness.status),
+            probabilistic_status=str(prob.status),
+        )
+
+        inputs = VerificationInputs(
+            case_id=str(case_id),
+            results_path=str(rp),
+            input_case_path=str(ip),
+            slack_bus=int(slack_bus),
+            n_bus=int(dc_op.n_bus),
+            n_line=int(dc_op.n_line),
+            dim_balance=int(d),
             n_samples=int(n_samples),
             seed=int(seed),
             chunk_size=int(chunk_size),
-            feas_tol_mw=float(tol_feas),
+            sigma_mw=float(sigma_mw),
         )
 
-    # Conditional eta (safe | in_ball)
-    if gauss_in_ball > 0:
-        eta = 100.0 * float(gauss_in_ball_and_feasible) / float(gauss_in_ball)
-        eta_ci = _wilson_ci95_percent(
-            k=int(gauss_in_ball_and_feasible), n=int(gauss_in_ball)
+        cert_interp = interpret_certificate_components(
+            base=base_check, radius=radius_check, soundness=soundness
         )
+
+        comparisons: dict[str, Any] = {
+            "mode": "dc",
+            "certificate_soundness": str(cert_interp.soundness),
+            "certificate_usefulness": str(cert_interp.usefulness),
+            "certificate_notes": list(cert_interp.notes),
+            "gaussian_worst_max_violation_mw": float(worst_max_violation),
+            "gaussian_worst_max_violation_line_pos": int(worst_line_pos),
+            "gaussian_worst_max_violation_line_idx": int(worst_line_idx),
+            "gaussian_worst_sample_l2": float(worst_sample_l2),
+            "feas_tol_mw": float(tol_feas),
+            "sigma_source": str(sigma_source),
+        }
+
+        return VerificationResult(
+            schema_version=1,
+            inputs=inputs,
+            base_point=base_check,
+            radius=radius_check,
+            soundness=soundness,
+            probabilistic=prob,
+            comparisons=comparisons,
+            overall=overall,
+        )
+
+    # ---------------- AC verification ----------------
+    if ac_sigma_p_mw is None or ac_sigma_q_mvar is None:
+        raise ValueError(
+            "AC mode requires explicit ac_sigma_p_mw and ac_sigma_q_mvar (no hidden defaults)."
+        )
+
+    solver_eff = str(ac_pf_solver).strip().lower()
+    if solver_eff != "pandapower":
+        raise NotImplementedError(
+            "AC Monte Carlo per-sample PF currently supports ONLY pandapower. "
+            "Set ac.pf_solver=pandapower when generating results."
+        )
+
+    if not bool(ac_lossless):
+        raise NotImplementedError(
+            "AC MC with lossless=false is not supported. Set ac.lossless=true."
+        )
+
+    base_ac = meta.get("base_point_ac", None)
+    if not isinstance(base_ac, dict):
+        raise KeyError(
+            "results.json missing __meta__.base_point_ac (re-run compute with compute.ac.compute=1)."
+        )
+
+    if str(base_ac.get("pf_solver", "")).strip().lower() not in {"pandapower", "pypsa"}:
+        raise ValueError("Invalid __meta__.base_point_ac.pf_solver in results.json.")
+    if str(base_ac.get("pf_solver", "")).strip().lower() != solver_eff:
+        raise ValueError(
+            "AC MC solver mismatch with certificate base point. "
+            f"results.json pf_solver={base_ac.get('pf_solver')!r}, requested={solver_eff!r}."
+        )
+    if bool(base_ac.get("lossless", True)) != bool(ac_lossless):
+        raise ValueError(
+            "AC MC lossless mismatch with certificate base point. "
+            f"results.json lossless={bool(base_ac.get('lossless'))}, requested={bool(ac_lossless)}."
+        )
+
+    sigma_p = float(ac_sigma_p_mw)
+    sigma_q = float(ac_sigma_q_mvar)
+
+    # Extract AC radii from results
+    line_ids_sorted = [int(x) for x in sorted(net.line.index)]
+    m_line = int(len(line_ids_sorted))
+
+    r_line = np.full(m_line, float("nan"), dtype=float)
+    margin_line = np.full(m_line, float("nan"), dtype=float)
+    h_norm = np.full(m_line, float("nan"), dtype=float)
+
+    for pos, lid in enumerate(line_ids_sorted):
+        row = results.get(line_key(int(lid)))
+        if not isinstance(row, dict):
+            raise KeyError(f"results.json missing per-line entry: line_{lid}")
+        if "radius_ac_l2" not in row:
+            raise KeyError(
+                "results.json missing radius_ac_l2 (compute compute.ac.compute=1)."
+            )
+        r_line[pos] = float(row.get("radius_ac_l2", float("nan")))
+        margin_line[pos] = float(row.get("margin_ac_mva", float("nan")))
+        h_norm[pos] = float(row.get("||h||2", float("nan")))
+
+    finite = np.isfinite(r_line)
+    if not bool(np.any(finite)):
+        radius_check = RadiusCheck(
+            status=RADIUS_INVALID,
+            r_star=float("nan"),
+            argmin_line_pos=-1,
+            argmin_line_idx=-1,
+            min_margin_mw=float(np.nanmin(margin_line))
+            if margin_line.size
+            else float("nan"),
+            argmin_margin_mw=float("nan"),
+            argmin_norm_g=float("nan"),
+        )
+    else:
+        argmin_pos = int(np.argmin(np.where(finite, r_line, float("inf"))))
+        r_star = float(r_line[argmin_pos])
+        argmin_idx = int(line_ids_sorted[argmin_pos])
+        argmin_margin = float(margin_line[argmin_pos])
+        argmin_h = float(h_norm[argmin_pos])
+        min_margin = float(np.nanmin(margin_line))
+
+        if not math.isfinite(r_star) or r_star < 0:
+            status = RADIUS_INVALID
+        elif r_star == 0.0:
+            status = (
+                RADIUS_ZERO_BINDING
+                if math.isfinite(argmin_margin) and abs(argmin_margin) <= 1e-9
+                else RADIUS_ZERO_BAD_LIMITS
+            )
+        else:
+            status = RADIUS_OK
+
+        radius_check = RadiusCheck(
+            status=status,
+            r_star=float(r_star),
+            argmin_line_pos=int(argmin_pos),
+            argmin_line_idx=int(argmin_idx),
+            min_margin_mw=float(min_margin),
+            argmin_margin_mw=float(argmin_margin),
+            argmin_norm_g=float(argmin_h),
+        )
+
+    import pandapower as pp  # type: ignore
+
+    nn = apply_lossless_policy_to_pandapower_net(net)
+    slack_bus_id = resolve_slack_bus_id(nn, slack_bus)
+    ensure_ext_grid_at_slack(nn, slack_bus_id)
+
+    # Apply dispatch from results meta if present (only affects net.gen p_mw)
+    bp_dc = meta.get("base_point_dc", None)
+    dispatch_pairs = None
+    if isinstance(bp_dc, dict):
+        dispatch_pairs = bp_dc.get("gen_dispatch_mw_by_name", None)
+    apply_gen_dispatch_to_pandapower_net(nn, dispatch_pairs)
+
+    # Attach deterministic per-bus perturbation elements
+    if not hasattr(nn, "sgen") or nn.sgen is None:
+        raise RuntimeError("pandapower net has no sgen table (unexpected).")
+
+    bus_ids = [int(x) for x in sorted(nn.bus.index)]
+    sgen_idx: list[int] = []
+    for bid in bus_ids:
+        idx = int(
+            pp.create_sgen(
+                nn,
+                bus=int(bid),
+                p_mw=0.0,
+                q_mvar=0.0,
+                name=f"mc_delta_bus_{int(bid)}",
+                in_service=True,
+            )
+        )
+        sgen_idx.append(idx)
+
+    line_ids, limits_mva = _line_limits_mva_sorted(nn)
+
+    # Base PF (no perturbation) must match results.json regime
+    pp.runpp(nn, calculate_voltage_angles=True, enforce_q_lims=True, init="flat")
+    if not bool(getattr(nn, "converged", True)):
+        raise RuntimeError("AC MC: base PF did not converge (net.converged=False).")
+
+    base_diag = _check_ac_base_point_matches_results(
+        nn=nn,
+        results=results,
+        line_ids_sorted=line_ids_sorted,
+        tol_mva=float(ac_basepoint_s_tol_mva),
+    )
+
+    base_ok, base_worst, _ = _ac_pf_sample_violation_mva(
+        nn, line_ids=line_ids, limits_mva=limits_mva, feas_tol_mva=float(tol_feas)
+    )
+    base_check = BasePointCheck(
+        status=BASE_OK if base_ok else BASE_INFEASIBLE,
+        violated_lines=0 if base_ok else 1,
+        max_violation_mw=float(base_worst),
+    )
+
+    n_bus = int(len(bus_ids))
+    d = int(2 * (n_bus - 1))
+    if d <= 0:
+        raise ValueError("AC MC: invalid dimension (n_bus must be >=2).")
+
+    if (
+        abs(sigma_p - sigma_q) <= 1e-15
+        and math.isfinite(radius_check.r_star)
+        and radius_check.r_star >= 0
+    ):
+        p_ball_analytic = 100.0 * _chi2_cdf(
+            x=(float(radius_check.r_star) / float(sigma_p)) ** 2, df=d
+        )
+        prob_status = PROB_OK
+    else:
+        p_ball_analytic = float("nan")
+        prob_status = PROB_UNKNOWN
+
+    rng = np.random.default_rng(int(seed))
+    feasible = 0
+    in_ball = 0
+    in_ball_and_feasible = 0
+    pf_failures = 0
+
+    worst_max_violation = float("-inf")
+    worst_line_pos = -1
+    worst_line_idx = -1
+    worst_sample_l2 = float("nan")
+
+    remaining = int(n_samples)
+    while remaining > 0:
+        k = min(int(chunk_size), remaining)
+        remaining -= k
+
+        dp, dq = _sample_gaussian_ac(
+            rng=rng, n=k, n_bus=n_bus, sigma_p_mw=sigma_p, sigma_q_mvar=sigma_q
+        )
+        norms = np.sqrt(np.sum(dp * dp, axis=1) + np.sum(dq * dq, axis=1))
+
+        if math.isfinite(radius_check.r_star):
+            in_ball_mask = norms <= float(radius_check.r_star)
+            in_ball += int(np.sum(in_ball_mask))
+        else:
+            in_ball_mask = np.zeros(k, dtype=bool)
+
+        for j in range(k):
+            nn.sgen.loc[sgen_idx, "p_mw"] = dp[j, :]
+            nn.sgen.loc[sgen_idx, "q_mvar"] = dq[j, :]
+
+            try:
+                pp.runpp(
+                    nn,
+                    calculate_voltage_angles=True,
+                    enforce_q_lims=True,
+                    init="results",
+                )
+                conv = bool(getattr(nn, "converged", True))
+            except Exception:  # noqa: BLE001
+                conv = False
+
+            if not conv:
+                pf_failures += 1
+                is_feas = False
+                worst = float("inf")
+                wpos = -1
+            else:
+                is_feas, worst, wpos = _ac_pf_sample_violation_mva(
+                    nn,
+                    line_ids=line_ids,
+                    limits_mva=limits_mva,
+                    feas_tol_mva=float(tol_feas),
+                )
+
+            if is_feas:
+                feasible += 1
+            if bool(in_ball_mask[j]) and is_feas:
+                in_ball_and_feasible += 1
+
+            if worst > worst_max_violation:
+                worst_max_violation = float(worst)
+                worst_sample_l2 = float(norms[j])
+                worst_line_pos = int(wpos)
+                worst_line_idx = (
+                    int(line_ids[wpos]) if 0 <= wpos < len(line_ids) else -1
+                )
+
+    feas_ci = _wilson_ci95_percent(k=int(feasible), n=int(n_samples))
+    ball_ci = _wilson_ci95_percent(k=int(in_ball), n=int(n_samples))
+
+    if in_ball > 0:
+        eta = 100.0 * float(in_ball_and_feasible) / float(in_ball)
+        eta_ci = _wilson_ci95_percent(k=int(in_ball_and_feasible), n=int(in_ball))
     else:
         eta = float("nan")
         eta_ci = (float("nan"), float("nan"))
 
-    # rho = r* / (sigma * sqrt(d))
-    if math.isfinite(float(radius_check.r_star)) and float(radius_check.r_star) >= 0.0:
-        denom = float(sigma_mw) * math.sqrt(float(d))
-        rho = float(radius_check.r_star) / denom if denom > 0.0 else float("nan")
-    else:
-        rho = float("nan")
+    denom = (
+        float(sigma_p) * math.sqrt(float(d))
+        if math.isfinite(sigma_p) and sigma_p > 0
+        else float("nan")
+    )
+    rho = (
+        float(radius_check.r_star) / denom
+        if (math.isfinite(radius_check.r_star) and math.isfinite(denom) and denom > 0.0)
+        else float("nan")
+    )
 
-    p_safe = 100.0 * float(gauss_feasible) / float(n_samples)
-    p_ball_mc = 100.0 * float(gauss_in_ball) / float(n_samples)
+    p_safe = 100.0 * float(feasible) / float(n_samples)
+    p_ball_mc = 100.0 * float(in_ball) / float(n_samples)
 
-    # Soundness stage (hard correctness check)
     n_ball_samples = min(int(n_samples), int(cert_max))
-    if base_status != BASE_OK:
+    if base_check.status != BASE_OK:
         soundness = SoundnessCheck(
             status=SOUND_SKIPPED_BASE_INFEASIBLE,
             n_ball_samples=0,
@@ -813,37 +1070,68 @@ def run_monte_carlo_verification(
             tol_mw=float(tol_cert),
         )
     else:
-        with log_stage(logger, "Monte Carlo: L2-ball soundness (uniform in ball)"):
-            soundness = _run_soundness_stage(
-                case_id=case_id,
-                dc_op=dc_op,
-                f0=f0,
-                c=c,
-                r_star=float(radius_check.r_star),
-                n_ball_samples=int(n_ball_samples),
-                seed=int(seed) + 1_000_003,
-                chunk_size=int(chunk_size),
-                tol_mw=float(tol_cert),
-            )
+        rng2 = np.random.default_rng(int(seed) + 1_000_003)
+        violations = 0
+        worst_v = float("-inf")
+        worst_idx = -1
 
-    cert_interp = interpret_certificate_components(
-        base=base_check, radius=radius_check, soundness=soundness
-    )
+        dpb, dqb = _sample_uniform_l2_ball_ac(
+            rng=rng2,
+            n=int(n_ball_samples),
+            n_bus=n_bus,
+            radius=float(radius_check.r_star),
+        )
+        for j in range(int(n_ball_samples)):
+            nn.sgen.loc[sgen_idx, "p_mw"] = dpb[j, :]
+            nn.sgen.loc[sgen_idx, "q_mvar"] = dqb[j, :]
 
-    # Probabilistic status (soft)
-    prob_status = PROB_OK
-    if math.isfinite(float(p_ball_analytic)) and float(p_ball_analytic) <= 1e-12:
-        prob_status = PROB_DEGENERATE_DIMENSION
+            try:
+                pp.runpp(
+                    nn,
+                    calculate_voltage_angles=True,
+                    enforce_q_lims=True,
+                    init="results",
+                )
+                conv = bool(getattr(nn, "converged", True))
+            except Exception:  # noqa: BLE001
+                conv = False
+
+            if not conv:
+                violations += 1
+                worst = float("inf")
+                wpos = -1
+            else:
+                ok, worst, wpos = _ac_pf_sample_violation_mva(
+                    nn,
+                    line_ids=line_ids,
+                    limits_mva=limits_mva,
+                    feas_tol_mva=float(tol_cert),
+                )
+                if not ok:
+                    violations += 1
+
+            if worst > worst_v:
+                worst_v = float(worst)
+                worst_idx = int(line_ids[wpos]) if 0 <= wpos < len(line_ids) else -1
+
+        soundness = SoundnessCheck(
+            status=SOUND_PASS if violations == 0 else SOUND_FAIL,
+            n_ball_samples=int(n_ball_samples),
+            violation_samples=int(violations),
+            max_violation_mw=float(worst_v),
+            max_violation_line_idx=int(worst_idx),
+            tol_mw=float(tol_cert),
+        )
 
     prob = ProbabilisticCheck(
-        status=prob_status,
+        status=str(prob_status),
         p_safe_gaussian_percent=float(p_safe),
-        p_safe_gaussian_ci95_low_percent=float(gauss_feas_ci[0]),
-        p_safe_gaussian_ci95_high_percent=float(gauss_feas_ci[1]),
+        p_safe_gaussian_ci95_low_percent=float(feas_ci[0]),
+        p_safe_gaussian_ci95_high_percent=float(feas_ci[1]),
         p_ball_analytic_percent=float(p_ball_analytic),
         p_ball_mc_percent=float(p_ball_mc),
-        p_ball_mc_ci95_low_percent=float(gauss_ball_ci[0]),
-        p_ball_mc_ci95_high_percent=float(gauss_ball_ci[1]),
+        p_ball_mc_ci95_low_percent=float(ball_ci[0]),
+        p_ball_mc_ci95_high_percent=float(ball_ci[1]),
         eta_safe_given_in_ball_percent=float(eta),
         eta_ci95_low_percent=float(eta_ci[0]),
         eta_ci95_high_percent=float(eta_ci[1]),
@@ -860,50 +1148,40 @@ def run_monte_carlo_verification(
     inputs = VerificationInputs(
         case_id=str(case_id),
         results_path=str(rp),
-        input_case_path=str(ip_eff),
+        input_case_path=str(ip),
         slack_bus=int(slack_bus),
-        n_bus=int(dc_op.n_bus),
-        n_line=int(dc_op.n_line),
+        n_bus=int(n_bus),
+        n_line=int(len(line_ids)),
         dim_balance=int(d),
         n_samples=int(n_samples),
         seed=int(seed),
         chunk_size=int(chunk_size),
-        sigma_mw=float(sigma_mw),
+        sigma_mw=float(sigma_p),  # schema legacy
     )
 
-    comparisons: dict[str, Any] = {
+    cert_interp = interpret_certificate_components(
+        base=base_check, radius=radius_check, soundness=soundness
+    )
+
+    comparisons = {
+        "mode": "ac",
+        "units": "MVA for feasibility/violations; MW/MVAr for injections",
         "certificate_soundness": str(cert_interp.soundness),
         "certificate_usefulness": str(cert_interp.usefulness),
         "certificate_notes": list(cert_interp.notes),
-        "gaussian_worst_max_violation_mw": float(gauss_worst_max_violation),
-        "gaussian_worst_max_violation_line_pos": int(gauss_worst_line_pos),
-        "gaussian_worst_max_violation_line_idx": int(gauss_worst_line_idx),
-        "gaussian_worst_sample_l2": float(gauss_worst_sample_l2),
-        "feas_tol_mw": float(tol_feas),
-        "sigma_source": str(sigma_source),
+        "ac_sigma_p_mw": float(sigma_p),
+        "ac_sigma_q_mvar": float(sigma_q),
+        "ac_lossless": bool(ac_lossless),
+        "ac_pf_solver": str(solver_eff),
+        "ac_basepoint_s_tol_mva": float(ac_basepoint_s_tol_mva),
+        **base_diag,
+        "pf_failures_gaussian": int(pf_failures),
+        "gaussian_worst_max_violation_mva": float(worst_max_violation),
+        "gaussian_worst_max_violation_line_pos": int(worst_line_pos),
+        "gaussian_worst_max_violation_line_idx": int(worst_line_idx),
+        "gaussian_worst_sample_l2": float(worst_sample_l2),
+        "feas_tol_mva": float(tol_feas),
     }
-
-    logger.info(
-        "case=%s | base=%s | r*=%.6g | d=%d | cert_soundness=%s | usefulness=%s | "
-        "p_safe=%.3f%% | p_ball_analytic=%.3f%% | rho=%.6g | overall=%s",
-        str(case_id),
-        str(base_check.status),
-        float(radius_check.r_star),
-        int(d),
-        str(cert_interp.soundness),
-        str(cert_interp.usefulness),
-        float(p_safe),
-        float(p_ball_analytic),
-        float(rho),
-        str(overall.status),
-    )
-
-    logger.info(
-        "case=%s stage=summary overall=%s reasons=%s",
-        str(case_id),
-        str(overall.status),
-        list(overall.reasons),
-    )
 
     return VerificationResult(
         schema_version=1,
