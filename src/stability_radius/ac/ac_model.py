@@ -308,11 +308,32 @@ def _build_reduced_pf_jacobian_mw_per_unit(
     Variables: θ (non-slack), V (non-slack)
     Equations: P (non-slack), Q (non-slack)
 
+    Sign convention (critical for certificate soundness)
+    ----------------------------------------------------
+    Here P/Q are *net bus injections* computed from the network model:
+        S_i = V_i * conj(I_i),  I = Ybus * V
+
+    - Positive P means net active power injected *into the network* at bus i
+      (i.e., generation - load in the usual convention).
+    - Under the standard PF formulation P_calc(x) = P_spec, the first-order relation
+      for perturbations is:
+          J * dx = dP_spec   (and similarly for Q)
+      i.e., there is NO extra sign flip when mapping specified injection changes to state changes.
+
     Units
     -----
-    - P/Q in pu multiplied by sn_mva -> MW/MVAr
+    - P/Q are computed in per-unit and then scaled by sn_mva -> MW/MVAr
     - θ in rad
     - V in pu
+
+    Notes
+    -----
+    A dedicated finite-difference regression test compares predicted changes of
+    pandapower line-end flows (p_from_mw / p_to_mw) against the linearization that
+    uses this Jacobian, to catch:
+    - missing/extra sn_mva scaling,
+    - sign flips in the PF Jacobian convention,
+    - inconsistencies with pandapower's line-end flow sign convention ("power leaving the bus into the line").
     """
     if not _HAVE_SCIPY:
         raise ImportError(
@@ -446,7 +467,23 @@ def _build_reduced_pf_jacobian_mw_per_unit(
     J = sp.coo_matrix(
         (data, (rows, cols)), shape=(2 * n_red, 2 * n_red), dtype=float
     ).tocsc()
-    logger.debug("Built reduced AC PF Jacobian J: shape=%s nnz=%d", J.shape, int(J.nnz))
+
+    # Debug-only: helps catch accidental sn_mva scaling changes.
+    if J.nnz > 0:
+        try:
+            max_abs = float(np.max(np.abs(J.data)))
+        except Exception:
+            max_abs = float("nan")
+    else:
+        max_abs = 0.0
+
+    logger.debug(
+        "Built reduced AC PF Jacobian J: shape=%s nnz=%d sn_mva=%.6g max|J_ij|=%.6g",
+        J.shape,
+        int(J.nnz),
+        float(sn_mva),
+        float(max_abs),
+    )
     return J, mask_non_slack, red_pos
 
 
