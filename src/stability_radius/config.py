@@ -10,6 +10,14 @@ YAML config loading
 -------------------
 The project uses Hydra-style (OmegaConf-compatible) YAML files under `conf/`.
 We support a minimal deterministic composition mechanism via `extends`.
+
+Determinism contract (important)
+--------------------------------
+Some parameters must be identical across entrypoints:
+- Programmatic usage: DEFAULT_* dataclasses from this module
+- CLI/YAML usage: composed config chain from conf/config.yaml
+
+If these diverge, CI tests and CLI experiments can silently use different limits.
 """
 
 from __future__ import annotations
@@ -25,6 +33,11 @@ from omegaconf import OmegaConf  # type: ignore
 logger = logging.getLogger(__name__)
 
 HAVE_OMEGACONF: bool = True
+
+# NOTE:
+# This value MUST match `conf/config_shared.yaml: opf.unconstrained_line_nom_mw`.
+# It is used as a finite surrogate for "unconstrained" thermal limits in PyPSA.
+DEFAULT_UNCONSTRAINED_LINE_NOM_MW: float = 1.0e5
 
 
 @dataclass(frozen=True)
@@ -83,7 +96,7 @@ class OPFConfig:
     highs: HiGHSConfig = field(default_factory=HiGHSConfig)
 
     # MUST match conf/config_shared.yaml (reproducibility across entrypoints).
-    unconstrained_line_nom_mw: float = 1.0e5
+    unconstrained_line_nom_mw: float = DEFAULT_UNCONSTRAINED_LINE_NOM_MW
 
     # MUST match conf/config_shared.yaml (security margin policy).
     headroom_factor: float = 0.98

@@ -13,6 +13,12 @@ Determinism policy
 - No implicit downloading unless allow_download=True.
 - Stable ordering: sorted bus/line indices.
 - No hidden "compatibility" results: optional radii are computed only when explicitly enabled.
+
+Determinism note (important)
+----------------------------
+Some configuration parameters must be identical regardless of entry point (YAML vs Python).
+In particular, OPFConfig.unconstrained_line_nom_mw is used as a finite surrogate limit for
+"unconstrained" lines in PyPSA, so it must be reproducible.
 """
 
 import logging
@@ -111,6 +117,45 @@ def _ensure_input_case_file(
             f"Internal error: ensure_case_file() returned non-existent path: {ensured}"
         )
     return str(ensured)
+
+
+def _assert_and_log_effective_unconstrained_line_nom_mw(
+    *, cfg: OPFConfig, source: str
+) -> float:
+    """
+    Validate and log effective `opf.unconstrained_line_nom_mw`.
+
+    This serves two purposes:
+    1) Determinism: make the value visible at workflow start (helps debugging YAML vs Python paths).
+    2) Fail-fast: prevent silent invalid values (NaN/inf/<=0) from propagating into OPF models.
+
+    Parameters
+    ----------
+    cfg:
+        Effective OPFConfig used by the workflow.
+    source:
+        Human-readable source label ("DEFAULT_OPF" / "caller_provided" / etc.)
+
+    Returns
+    -------
+    float
+        The validated value (MW).
+    """
+    v = float(cfg.unconstrained_line_nom_mw)
+    if (not np.isfinite(v)) or v <= 0.0:
+        logger.error(
+            "Invalid opf.unconstrained_line_nom_mw: %r (source=%s). Must be finite and >0.",
+            cfg.unconstrained_line_nom_mw,
+            str(source),
+        )
+        raise ValueError("opf.unconstrained_line_nom_mw must be finite and >0.")
+
+    logger.info(
+        "Determinism: effective opf.unconstrained_line_nom_mw=%.6g MW (source=%s)",
+        float(v),
+        str(source),
+    )
+    return float(v)
 
 
 def _line_like_sort_key(k: str) -> tuple[int, int, str]:
@@ -367,6 +412,12 @@ def compute_results_for_case(
     bd = str(base_dispatch).strip().lower()
     if bd not in {"case", "dc_opf"}:
         raise ValueError("base_dispatch must be case|dc_opf")
+
+    # Determinism visibility / fail-fast validation (logged at compute start).
+    _assert_and_log_effective_unconstrained_line_nom_mw(
+        cfg=cfg,
+        source=("caller_provided" if opf_cfg is not None else "DEFAULT_OPF"),
+    )
 
     if not bool(compute_dc) and not bool(compute_ac):
         raise ValueError("At least one of compute_dc or compute_ac must be enabled.")
