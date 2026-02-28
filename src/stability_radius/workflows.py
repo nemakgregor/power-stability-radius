@@ -76,6 +76,32 @@ class DCExtensionsConfig:
     nminus1_islanding: str = "skip"  # "skip" | "raise"
 
 
+@dataclass(frozen=True)
+class ACExtensionsConfig:
+    """
+    Optional AC post-processing extensions (sigma-radius, metric-radius).
+
+    Notes
+    -----
+    - sigma_p_mw_source / sigma_q_mvar_source control how sigma arrays are built:
+        * "uniform" : broadcast scalar sigma_p_mw_uniform / sigma_q_mvar_uniform to all buses.
+        * "file"    : load from external file (Phase 4 — UC.jl integration, not yet implemented).
+        * ""        : disabled (no sigma arrays → sigma/metric radii are skipped).
+    - metric_enabled gates AC metric-radius computation alongside sigma-radius.
+      When enabled and sigma arrays are available, M = diag(1/sigma^2) is used,
+      which should reproduce the sigma-radius (serves as a cross-check).
+    - save_h_vectors: if True, h-vectors are returned under the "_h_vectors" key
+      for the caller (CLI) to save as a compressed .npz file.
+    """
+
+    sigma_p_mw_source: str = ""  # "uniform" | "file" | ""
+    sigma_q_mvar_source: str = ""  # "uniform" | "file" | ""
+    sigma_p_mw_uniform: float = 1.0
+    sigma_q_mvar_uniform: float = 1.0
+    metric_enabled: bool = False
+    save_h_vectors: bool = False
+
+
 def _resolve_path(p: str | os.PathLike[str], *, base_dir: Path | None) -> Path:
     """Resolve a potentially-relative path (with "~" expansion)."""
     path = Path(p).expanduser()
@@ -365,6 +391,121 @@ def _check_opf_dc_consistency(
     }
 
 
+def _expand_h_reduced_to_full(
+    h_reduced: np.ndarray, *, n_bus: int, slack_pos: int
+) -> np.ndarray:
+    """
+    Expand reduced h-vectors (2*n_red,) to full dimension (2*n_bus,).
+
+    The reduced h-vector has shape (m, 2*n_red) where n_red = n_bus - 1
+    (slack bus removed from both theta and V blocks). This inserts a zero
+    at the slack bus position in each block.
+
+    Parameters
+    ----------
+    h_reduced : (m, 2*n_red) array
+    n_bus     : total bus count (including slack)
+    slack_pos : position of the slack bus in the sorted bus ordering (0-based)
+
+    Returns
+    -------
+    (m, 2*n_bus) array with zeros at slack positions in both blocks.
+    """
+    h = np.asarray(h_reduced, dtype=float)
+    n_red = n_bus - 1
+    if h.ndim != 2 or h.shape[1] != 2 * n_red:
+        raise ValueError(f"h_reduced shape must be (m, {2 * n_red}), got {h.shape}")
+
+    m = h.shape[0]
+    theta_red = h[:, :n_red]
+    v_red = h[:, n_red:]
+
+    theta_full = np.insert(theta_red, slack_pos, 0.0, axis=1)
+    v_full = np.insert(v_red, slack_pos, 0.0, axis=1)
+    return np.hstack([theta_full, v_full])
+
+
+def _build_sigma_arrays(
+    *, ac_ext: ACExtensionsConfig, n_bus: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Build per-bus sigma_p_mw and sigma_q_mvar arrays from config.
+
+    Returns (sigma_p, sigma_q) each of shape (n_bus,).
+    """
+    src_p = str(ac_ext.sigma_p_mw_source).strip().lower()
+    src_q = str(ac_ext.sigma_q_mvar_source).strip().lower()
+
+    if src_p == "uniform":
+        v = float(ac_ext.sigma_p_mw_uniform)
+        if not np.isfinite(v) or v <= 0.0:
+            raise ValueError(f"sigma_p_mw_uniform must be finite and >0, got {v}")
+        sigma_p = np.full(n_bus, v, dtype=float)
+    elif src_p == "file":
+        raise NotImplementedError(
+            "sigma_p_mw_source='file' is not yet implemented (Phase 4 — UC.jl integration)."
+        )
+    else:
+        raise ValueError(
+            f"sigma_p_mw_source must be 'uniform' or 'file' when sigma is enabled, got {src_p!r}"
+        )
+
+    if src_q == "uniform":
+        v = float(ac_ext.sigma_q_mvar_uniform)
+        if not np.isfinite(v) or v <= 0.0:
+            raise ValueError(f"sigma_q_mvar_uniform must be finite and >0, got {v}")
+        sigma_q = np.full(n_bus, v, dtype=float)
+    elif src_q == "file":
+        raise NotImplementedError(
+            "sigma_q_mvar_source='file' is not yet implemented (Phase 4 — UC.jl integration)."
+        )
+    else:
+        raise ValueError(
+            f"sigma_q_mvar_source must be 'uniform' or 'file' when sigma is enabled, got {src_q!r}"
+        )
+
+    return sigma_p, sigma_q
+
+
+def _extract_binding_end_data(
+    *, ac_results: dict[str, dict[str, Any]], h_from: np.ndarray, h_to: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[int]]:
+    """
+    Select binding-end h-vectors, s0, and limits from AC L2 results.
+
+    Returns (h_bind, s0_mva, s_limit_mva, line_ids) where h_bind has
+    shape (n_lines, d) with each row being the binding-end h-vector.
+    """
+    line_keys = sorted(
+        (k for k in ac_results if k.startswith("line_")),
+        key=lambda k: int(k.split("_", 1)[1]),
+    )
+    n_lines = len(line_keys)
+    d = h_from.shape[1]
+
+    h_bind = np.empty((n_lines, d), dtype=float)
+    s0_mva = np.empty(n_lines, dtype=float)
+    s_limit_mva = np.empty(n_lines, dtype=float)
+    line_ids: list[int] = []
+
+    for pos, k in enumerate(line_keys):
+        row = ac_results[k]
+        lid = int(k.split("_", 1)[1])
+        line_ids.append(lid)
+
+        binding_end = str(row["binding_end"])
+        if binding_end == "from":
+            h_bind[pos, :] = h_from[pos, :]
+            s0_mva[pos] = float(row["ac_s0_from_mva"])
+        else:
+            h_bind[pos, :] = h_to[pos, :]
+            s0_mva[pos] = float(row["ac_s0_to_mva"])
+
+        s_limit_mva[pos] = float(row["ac_s_limit_mva"])
+
+    return h_bind, s0_mva, s_limit_mva, line_ids
+
+
 def compute_results_for_case(
     *,
     input_path: str,
@@ -384,6 +525,7 @@ def compute_results_for_case(
     ac_pf_init: str,
     ac_pf_solver: str,
     ac_lossless: bool,
+    ac_extensions: ACExtensionsConfig | None = None,
     # shared
     opf_cfg: OPFConfig | None = None,
     opf_dc_flow_consistency_tol_mw: float = _DEFAULT_OPF_DC_FLOW_CONSISTENCY_TOL_MW,
@@ -408,6 +550,7 @@ def compute_results_for_case(
 
     cfg = opf_cfg if opf_cfg is not None else DEFAULT_OPF
     ext = dc_extensions if dc_extensions is not None else DCExtensionsConfig()
+    ac_ext = ac_extensions if ac_extensions is not None else ACExtensionsConfig()
 
     bd = str(base_dispatch).strip().lower()
     if bd not in {"case", "dc_opf"}:
@@ -583,6 +726,19 @@ def compute_results_for_case(
     # ---------- AC stage (base point is AC PF) ----------
     bp_ac_meta: dict[str, Any] | None = None
     ac_pf_status = "n/a"
+    ac_sigma_computed = False
+    ac_metric_computed = False
+    h_vectors_saved: dict[str, np.ndarray] | None = None
+
+    # Determine whether h-vectors are needed (sigma, metric, or save).
+    ac_sigma_enabled = bool(
+        str(ac_ext.sigma_p_mw_source).strip()
+        and str(ac_ext.sigma_q_mvar_source).strip()
+    )
+    ac_need_h = (
+        ac_sigma_enabled or bool(ac_ext.metric_enabled) or bool(ac_ext.save_h_vectors)
+    )
+
     if bool(compute_ac):
         if ac_chunk_size <= 0:
             raise ValueError("ac.chunk_size must be positive")
@@ -615,8 +771,92 @@ def compute_results_for_case(
                 chunk_size=int(ac_chunk_size),
                 balance=bool(ac_balance),
                 lossless=True,  # enforced
+                return_h_vectors=bool(ac_need_h),
             )
+
+            # Extract h-vector data before merging (the "_h_vectors" key is not per-line).
+            h_vecs_raw: dict[str, np.ndarray] | None = None
+            if ac_need_h and "_h_vectors" in ac:
+                h_vecs_raw = ac.pop("_h_vectors")
+
             results_lines = _merge_line_results(results_lines, ac)
+
+        # ---------- AC sigma/metric post-processing ----------
+        if ac_sigma_enabled and h_vecs_raw is not None:
+            with log_stage(logger, f"{case_tag}: Compute Radii (AC Sigma)"):
+                bus_ids = [int(x) for x in sorted(net.bus.index)]
+                n_bus = len(bus_ids)
+                slack_pos = bus_ids.index(int(slack_bus))
+
+                h_from_full = _expand_h_reduced_to_full(
+                    h_vecs_raw["h_from"], n_bus=n_bus, slack_pos=slack_pos
+                )
+                h_to_full = _expand_h_reduced_to_full(
+                    h_vecs_raw["h_to"], n_bus=n_bus, slack_pos=slack_pos
+                )
+
+                h_bind, s0_mva, s_limit_mva, line_ids_ac = _extract_binding_end_data(
+                    ac_results=ac, h_from=h_from_full, h_to=h_to_full
+                )
+
+                sigma_p, sigma_q = _build_sigma_arrays(ac_ext=ac_ext, n_bus=n_bus)
+
+                from stability_radius.radii.ac_sigma_radius import (
+                    compute_ac_sigma_radius,
+                )
+
+                ac_sigma = compute_ac_sigma_radius(
+                    h_vectors=h_bind,
+                    s_limit_mva=s_limit_mva,
+                    s0_mva=s0_mva,
+                    sigma_p_mw=sigma_p,
+                    sigma_q_mvar=sigma_q,
+                    line_ids=line_ids_ac,
+                    balance=bool(ac_balance),
+                )
+                results_lines = _merge_line_results(results_lines, ac_sigma)
+                ac_sigma_computed = True
+
+            if bool(ac_ext.metric_enabled):
+                with log_stage(logger, f"{case_tag}: Compute Radii (AC Metric)"):
+                    from stability_radius.radii.ac_metric_radius import (
+                        compute_ac_metric_radius,
+                    )
+
+                    # M = diag(1/sigma^2) — inverse covariance (sigma-radius cross-check).
+                    M_diag = 1.0 / np.concatenate(
+                        [sigma_p * sigma_p, sigma_q * sigma_q]
+                    )
+
+                    ac_metric = compute_ac_metric_radius(
+                        h_vectors=h_bind,
+                        s_limit_mva=s_limit_mva,
+                        s0_mva=s0_mva,
+                        M=M_diag,
+                        line_ids=line_ids_ac,
+                        balance=bool(ac_balance),
+                    )
+                    results_lines = _merge_line_results(results_lines, ac_metric)
+                    ac_metric_computed = True
+
+        # ---------- h-vector saving ----------
+        if bool(ac_ext.save_h_vectors) and h_vecs_raw is not None:
+            bus_ids = [int(x) for x in sorted(net.bus.index)]
+            n_bus = len(bus_ids)
+            slack_pos = bus_ids.index(int(slack_bus))
+
+            h_vectors_saved = {
+                "h_from": _expand_h_reduced_to_full(
+                    h_vecs_raw["h_from"], n_bus=n_bus, slack_pos=slack_pos
+                ),
+                "h_to": _expand_h_reduced_to_full(
+                    h_vecs_raw["h_to"], n_bus=n_bus, slack_pos=slack_pos
+                ),
+                "bus_ids": np.array(bus_ids, dtype=int),
+                "line_ids": np.array(
+                    [int(x) for x in sorted(net.line.index)], dtype=int
+                ),
+            }
 
     elapsed = float(time.time() - t0)
     logger.info("%s: Total compute time: %.3f sec", case_tag, elapsed)
@@ -650,6 +890,12 @@ def compute_results_for_case(
                 "chunk_size": int(ac_chunk_size),
                 "balance": bool(ac_balance),
                 "pf_status": str(ac_pf_status),
+                "sigma_p_mw_source": str(ac_ext.sigma_p_mw_source),
+                "sigma_q_mvar_source": str(ac_ext.sigma_q_mvar_source),
+                "sigma_computed": bool(ac_sigma_computed),
+                "metric_enabled": bool(ac_ext.metric_enabled),
+                "metric_computed": bool(ac_metric_computed),
+                "save_h_vectors": bool(ac_ext.save_h_vectors),
             },
             # critical artifacts for reproducibility & MC consistency checks
             "base_point_dc": bp_dc_meta,
@@ -670,4 +916,8 @@ def compute_results_for_case(
         }
     }
     results.update(results_lines)
+
+    if h_vectors_saved is not None:
+        results["_h_vectors"] = h_vectors_saved
+
     return results
