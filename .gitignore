@@ -1,14 +1,12 @@
 .venv
 openapi
 
-.pyc
-__pycache__/
 .ipynb_checkpoints
-__pycache__
-*.pyc
+
 
 runs/
 outputs/
+verification/
 *.log
 data/
 
@@ -19,6 +17,3 @@ res_sr.md
 __pycache__/
 *.pyc
 
-# Python bytecode
-__pycache__/
-*.pyc

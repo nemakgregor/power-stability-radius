@@ -43,6 +43,28 @@ compute:
     # the run fails fast (no implicit solver switching).
     pf_init: flat  # flat | dc | pp
 
+    # ---- AC sigma-radius / metric-radius extensions ----
+    # These are disabled by default; enable via CLI flags or experiment config.
+    sigma:
+      # Source for per-bus injection std deviations:
+      # - ""        : disabled (no sigma/metric radii computed)
+      # - "uniform" : broadcast scalar values to all buses
+      # - "file"    : load from JSON/CSV (Phase 4 — UC.jl integration, not yet implemented)
+      sigma_p_mw_source: ""
+      sigma_q_mvar_source: ""
+
+      # Scalar values used when source = "uniform":
+      sigma_p_mw_uniform: 1.0
+      sigma_q_mvar_uniform: 1.0
+
+    metric:
+      # When enabled AND sigma arrays are available, also compute metric-radius
+      # with M = diag(1/sigma^2) as a cross-check against sigma-radius.
+      enabled: false
+
+    # Save full h-vectors (adjoint sensitivities) to .npz alongside results.json.
+    save_h_vectors: false
+
   # ---- Outputs ----
   output:
     export_results: ""

@@ -45,7 +45,11 @@ from stability_radius.statistics.table import (
     infer_default_flat_columns,
 )
 from stability_radius.utils import log_stage, setup_logging
-from stability_radius.workflows import DCExtensionsConfig, compute_results_for_case
+from stability_radius.workflows import (
+    ACExtensionsConfig,
+    DCExtensionsConfig,
+    compute_results_for_case,
+)
 
 logger = logging.getLogger("stability_radius.cli")
 
@@ -361,6 +365,38 @@ def build_parser(cfg: Any) -> argparse.ArgumentParser:
     )
     p_compute.add_argument(
         "--ac-lossless", type=int, default=int(_cfg_get(cfg, "ac.lossless", 1))
+    )
+
+    # AC extensions (sigma-radius, metric-radius, h-vector saving)
+    p_compute.add_argument(
+        "--ac-sigma-p-source",
+        type=str,
+        default=str(_cfg_get(cfg, "compute.ac.sigma.sigma_p_mw_source", "")),
+    )
+    p_compute.add_argument(
+        "--ac-sigma-q-source",
+        type=str,
+        default=str(_cfg_get(cfg, "compute.ac.sigma.sigma_q_mvar_source", "")),
+    )
+    p_compute.add_argument(
+        "--ac-sigma-p-uniform",
+        type=float,
+        default=float(_cfg_get(cfg, "compute.ac.sigma.sigma_p_mw_uniform", 1.0)),
+    )
+    p_compute.add_argument(
+        "--ac-sigma-q-uniform",
+        type=float,
+        default=float(_cfg_get(cfg, "compute.ac.sigma.sigma_q_mvar_uniform", 1.0)),
+    )
+    p_compute.add_argument(
+        "--ac-metric-enabled",
+        type=int,
+        default=int(_cfg_get(cfg, "compute.ac.metric.enabled", 0)),
+    )
+    p_compute.add_argument(
+        "--ac-save-h-vectors",
+        type=int,
+        default=int(_cfg_get(cfg, "compute.ac.save_h_vectors", 0)),
     )
 
     # outputs
@@ -691,6 +727,16 @@ def run_compute(
                 "pf_solver": str(args.ac_pf_solver),
                 "pf_init": str(args.ac_pf_init),
                 "lossless": int(args.ac_lossless),
+                "sigma": {
+                    "sigma_p_mw_source": str(args.ac_sigma_p_source),
+                    "sigma_q_mvar_source": str(args.ac_sigma_q_source),
+                    "sigma_p_mw_uniform": float(args.ac_sigma_p_uniform),
+                    "sigma_q_mvar_uniform": float(args.ac_sigma_q_uniform),
+                },
+                "metric": {
+                    "enabled": int(args.ac_metric_enabled),
+                },
+                "save_h_vectors": int(args.ac_save_h_vectors),
             },
             "output": {
                 "export_results": str(args.export_results),
@@ -713,6 +759,15 @@ def run_compute(
         nminus1_islanding=str(args.nminus1_islanding),
     )
 
+    ac_ext = ACExtensionsConfig(
+        sigma_p_mw_source=str(args.ac_sigma_p_source),
+        sigma_q_mvar_source=str(args.ac_sigma_q_source),
+        sigma_p_mw_uniform=float(args.ac_sigma_p_uniform),
+        sigma_q_mvar_uniform=float(args.ac_sigma_q_uniform),
+        metric_enabled=bool(int(args.ac_metric_enabled)),
+        save_h_vectors=bool(int(args.ac_save_h_vectors)),
+    )
+
     results = compute_results_for_case(
         input_path=str(args.input),
         slack_bus=int(args.slack_bus),
@@ -729,12 +784,21 @@ def run_compute(
         ac_pf_init=str(args.ac_pf_init),
         ac_pf_solver=str(args.ac_pf_solver),
         ac_lossless=bool(int(args.ac_lossless)),
+        ac_extensions=ac_ext,
         opf_cfg=opf_cfg,
         opf_dc_flow_consistency_tol_mw=float(args.opf_dc_flow_consistency_tol_mw),
         opf_bus_balance_tol_mw=float(args.opf_bus_balance_tol_mw),
         path_base_dir=Path.cwd(),
         allow_download=bool(args.allow_download),
     )
+
+    # Save h-vectors to .npz if present (non-JSON-serializable, must be extracted first).
+    h_vectors_data = results.pop("_h_vectors", None)
+    if h_vectors_data is not None:
+        h_path = run_dir / "h_vectors.npz"
+        with log_stage(logger, "Write h-vectors (.npz)"):
+            np.savez_compressed(str(h_path), **h_vectors_data)
+            logger.info("Saved h-vectors: %s", str(h_path))
 
     with log_stage(logger, "Write Results (JSON)"):
         (run_dir / "results.json").write_text(
@@ -791,6 +855,10 @@ def run_compute(
         summary_fields.append("radius_nminus1")
     if _results_has_field(results, "radius_ac_l2"):
         summary_fields.append("radius_ac_l2")
+    if _results_has_field(results, "radius_ac_sigma"):
+        summary_fields.append("radius_ac_sigma")
+    if _results_has_field(results, "radius_ac_metric"):
+        summary_fields.append("radius_ac_metric")
 
     for field in summary_fields:
         logger.info("%s", format_radius_summary(results, radius_field=field))
