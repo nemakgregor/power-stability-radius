@@ -52,6 +52,7 @@ def compute_ac_l2_radius(
     chunk_size: int = 256,
     balance: bool = True,
     lossless: bool = True,
+    return_h_vectors: bool = False,
 ) -> Dict[str, Dict[str, Any]]:
     """
     Compute a fast AC L2 "stability radius" certificate around an AC PF base point.
@@ -129,6 +130,11 @@ def compute_ac_l2_radius(
         q_end[2 * i + 1] = float(q1[i])
         s_end[2 * i + 1] = float(s0_to[i])
         margin_end[2 * i + 1] = float(margin_to[i])
+
+    # ---------- optional h-vector storage ----------
+    if return_h_vectors:
+        h_from = np.zeros((m, 2 * n_red), dtype=float)
+        h_to = np.zeros((m, 2 * n_red), dtype=float)
 
     # ---------- chunked adjoint solves ----------
     fallback_used = 0
@@ -228,6 +234,13 @@ def compute_ac_l2_radius(
             a_p = Y[0:n_red, j]
             a_q = Y[n_red : 2 * n_red, j]
 
+            if return_h_vectors:
+                line_pos = con_idx // 2
+                if (con_idx % 2) == 0:
+                    h_from[line_pos, :] = Y[:, j]
+                else:
+                    h_to[line_pos, :] = Y[:, j]
+
             if bool(balance):
                 denom = _balanced_two_block_norm_from_red(
                     a_p_red=a_p, a_q_red=a_q, n_bus_total=n_bus
@@ -317,5 +330,11 @@ def compute_ac_l2_radius(
             int(len(line_ids)),
             bool(balance),
         )
+
+    if return_h_vectors:
+        results["_h_vectors"] = {
+            "h_from": h_from,
+            "h_to": h_to,
+        }
 
     return results
