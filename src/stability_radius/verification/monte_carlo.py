@@ -374,6 +374,54 @@ def _ac_pf_sample_violation_mva(
     return feasible, float(worst), int(worst_pos)
 
 
+def _ac_pf_sample_per_line_violations_mva(
+    net: Any,
+    *,
+    line_ids: list[int],
+    limits_mva: np.ndarray,
+    feas_tol_mva: float,
+) -> tuple[bool, float, int, np.ndarray]:
+    """Like _ac_pf_sample_violation_mva but also returns per-line overload flags.
+
+    Returns
+    -------
+    (is_feasible, worst_violation, worst_line_pos, overloaded)
+    where *overloaded* is a bool array of shape (n_lines,), True where
+    max(|S_from|, |S_to|) > limit + feas_tol.
+    """
+    if not hasattr(net, "res_line") or net.res_line is None or len(net.res_line) == 0:
+        raise RuntimeError("pandapower did not produce res_line results.")
+
+    m = len(line_ids)
+    overloaded = np.zeros(m, dtype=bool)
+    worst = float("-inf")
+    worst_pos = -1
+
+    for pos, lid in enumerate(line_ids):
+        row = net.line.loc[lid]
+        if not bool(row.get("in_service", True)):
+            continue
+
+        p_from = float(net.res_line.loc[lid, "p_from_mw"])
+        q_from = float(net.res_line.loc[lid, "q_from_mvar"])
+        p_to = float(net.res_line.loc[lid, "p_to_mw"])
+        q_to = float(net.res_line.loc[lid, "q_to_mvar"])
+
+        s_from = math.sqrt(p_from * p_from + q_from * q_from)
+        s_to = math.sqrt(p_to * p_to + q_to * q_to)
+        s = max(s_from, s_to)
+
+        viol = float(s - float(limits_mva[pos]))
+        if viol > float(feas_tol_mva):
+            overloaded[pos] = True
+        if viol > worst:
+            worst = viol
+            worst_pos = int(pos)
+
+    feasible = bool(worst <= float(feas_tol_mva))
+    return feasible, float(worst), int(worst_pos), overloaded
+
+
 def _check_ac_base_point_matches_results(
     *,
     nn: Any,
@@ -446,6 +494,7 @@ def run_monte_carlo_verification(
     ac_pf_solver: str = "pandapower",
     ac_lossless: bool = True,
     ac_basepoint_s_tol_mva: float = 1e-3,
+    track_per_line_overloads: bool = False,
 ) -> VerificationResult:
     mode_eff = str(mode).strip().lower()
     if mode_eff not in {"dc", "ac"}:
@@ -958,6 +1007,11 @@ def run_monte_carlo_verification(
     worst_line_idx = -1
     worst_sample_l2 = float("nan")
 
+    track_pl = bool(track_per_line_overloads) and mode_eff == "ac"
+    per_line_overload_counts: np.ndarray | None = None
+    if track_pl:
+        per_line_overload_counts = np.zeros(len(line_ids), dtype=np.int64)
+
     remaining = int(n_samples)
     while remaining > 0:
         k = min(int(chunk_size), remaining)
@@ -994,6 +1048,18 @@ def run_monte_carlo_verification(
                 is_feas = False
                 worst = float("inf")
                 wpos = -1
+                if track_pl and per_line_overload_counts is not None:
+                    per_line_overload_counts += 1
+            elif track_pl and per_line_overload_counts is not None:
+                is_feas, worst, wpos, overloaded = (
+                    _ac_pf_sample_per_line_violations_mva(
+                        nn,
+                        line_ids=line_ids,
+                        limits_mva=limits_mva,
+                        feas_tol_mva=float(tol_feas),
+                    )
+                )
+                per_line_overload_counts[overloaded] += 1
             else:
                 is_feas, worst, wpos = _ac_pf_sample_violation_mva(
                     nn,
@@ -1182,6 +1248,18 @@ def run_monte_carlo_verification(
         "gaussian_worst_sample_l2": float(worst_sample_l2),
         "feas_tol_mva": float(tol_feas),
     }
+
+    if track_pl and per_line_overload_counts is not None:
+        n_eff = int(n_samples)
+        per_line_fracs = per_line_overload_counts.astype(float) / float(max(n_eff, 1))
+        comparisons["per_line_overload_counts"] = {
+            line_key(int(line_ids[pos])): int(per_line_overload_counts[pos])
+            for pos in range(len(line_ids))
+        }
+        comparisons["per_line_overload_fractions"] = {
+            line_key(int(line_ids[pos])): float(per_line_fracs[pos])
+            for pos in range(len(line_ids))
+        }
 
     return VerificationResult(
         schema_version=1,
