@@ -32,3 +32,7 @@ from .types import (  # noqa: F401
     VerificationResult,
     overall_from_components,
 )
+from .verify_worst_case import (  # noqa: F401
+    WorstCaseVerificationResult,
+    verify_worst_case,
+)
