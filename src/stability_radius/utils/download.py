@@ -27,6 +27,8 @@ Deprecated API
 - download_ieee30(): deprecated wrapper, use download_ieee_case(30, ...) instead.
 """
 
+import gzip
+import hashlib
 import logging
 import os
 import re
@@ -54,8 +56,11 @@ _PGLIB_OPF_BASE_URL_RAW = (
 )
 _PGLIB_OPF_BASE_URL_GITHUB = "https://github.com/power-grid-lib/pglib-opf/raw/master"
 
+_UC_JL_BASE_URL = "https://axavier.org/UnitCommitment.jl/0.4/instances/matpower"
+
 _ENV_MATPOWER_BASE_URLS = "SR_MATPOWER_BASE_URLS"
 _ENV_PGLIB_OPF_BASE_URLS = "SR_PGLIB_OPF_BASE_URLS"
+_ENV_UC_JL_BASE_URLS = "SR_UC_JL_BASE_URLS"
 
 _RE_IEEE_CASE_FILENAME = re.compile(r"^(?:case|ieee)(\d+)\.m$", flags=re.IGNORECASE)
 _RE_PGLIB_OPF_FILENAME = re.compile(r"^pglib_opf_.*\.m$", flags=re.IGNORECASE)
@@ -382,6 +387,158 @@ def download_pglib_opf_case(
         retries_per_url=int(retries_per_url),
         backoff_sec=float(backoff_sec),
     )
+
+
+def _sha256(path: Path) -> str:
+    """Compute SHA-256 hex digest of a file."""
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 16), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _response_content(response: object) -> bytes:
+    """Extract raw bytes from a response object.
+
+    Supports real ``requests.Response`` (has ``.content`` as bytes)
+    and minimal fakes used in tests.
+    """
+    raw = getattr(response, "content", None)
+    if raw is not None:
+        return bytes(raw)
+    raise TypeError("Unsupported response type: expected .content attribute")
+
+
+def download_uc_jl_instance(
+    case_name: str,
+    dest_dir: Union[str, Path],
+    *,
+    date: str = "2017-01-01",
+    overwrite: bool = False,
+    timeout: float = 30.0,
+    base_url: str = _UC_JL_BASE_URL,
+    session: Optional[Any] = None,
+    retries: int = 1,
+    backoff_sec: float = 0.0,
+) -> Path:
+    """Download a UnitCommitment.jl JSON instance (gzip-compressed).
+
+    The remote file is expected at::
+
+        {base_url}/{case_name}/{date}.json.gz
+
+    The downloaded file is decompressed and saved as
+    ``{dest_dir}/{case_name}.json``.
+
+    Determinism
+    -----------
+    - If the destination file already exists and *overwrite* is False,
+      its SHA-256 is logged and the download is skipped.
+    - Candidate base URLs can be overridden via the environment variable
+      ``SR_UC_JL_BASE_URLS`` (comma-separated).
+
+    Parameters
+    ----------
+    case_name:
+        E.g. ``"case14"`` or ``"case118"``.
+    dest_dir:
+        Directory where the decompressed JSON file is written.
+    date:
+        Date component of the URL path. Default ``"2017-01-01"``.
+    overwrite:
+        Re-download even if a local file exists.
+    timeout:
+        HTTP request timeout in seconds.
+    base_url:
+        Root URL for UC.jl instance hosting.
+    session:
+        Optional ``requests``-like session (for testing/DI).
+    retries:
+        Number of download attempts per URL.
+    backoff_sec:
+        Sleep between retries.
+
+    Returns
+    -------
+    Path
+        Absolute path to the decompressed ``.json`` file.
+
+    Raises
+    ------
+    DownloadError
+        If all download attempts fail.
+    """
+    if not case_name:
+        raise ValueError("case_name must be a non-empty string")
+
+    dest = Path(dest_dir).expanduser().resolve()
+    dest.mkdir(parents=True, exist_ok=True)
+    target = dest / f"{case_name}.json"
+
+    if target.exists() and not overwrite:
+        digest = _sha256(target)
+        logger.info(
+            "UC.jl instance already exists, skipping download: %s (sha256=%s)",
+            target,
+            digest,
+        )
+        return target
+
+    env_urls = _parse_env_base_urls(_ENV_UC_JL_BASE_URLS)
+    base_urls = env_urls if env_urls else [base_url.rstrip("/")]
+
+    http = session if session is not None else requests
+    if http is None:
+        raise ImportError(
+            "requests is required for downloading (or pass a custom `session`)."
+        )
+
+    remote_name = f"{date}.json.gz"
+    last_exc: Exception | None = None
+
+    for base in base_urls:
+        url = f"{base.rstrip('/')}/{case_name}/{remote_name}"
+        for attempt in range(1, int(retries) + 1):
+            try:
+                logger.debug(
+                    "Downloading UC.jl instance (attempt %d/%d): %s",
+                    attempt,
+                    retries,
+                    url,
+                )
+                response = http.get(url, timeout=timeout)
+                if hasattr(response, "raise_for_status"):
+                    response.raise_for_status()
+
+                raw_bytes = _response_content(response)
+                json_bytes = gzip.decompress(raw_bytes)
+
+                target.write_bytes(json_bytes)
+                digest = _sha256(target)
+                logger.info(
+                    "Downloaded and decompressed UC.jl instance: %s (sha256=%s)",
+                    target,
+                    digest,
+                )
+                return target
+            except Exception as e:  # noqa: BLE001
+                last_exc = e
+                logger.warning(
+                    "UC.jl download failed (attempt %d/%d): %s (%s)",
+                    attempt,
+                    retries,
+                    url,
+                    e,
+                )
+                if attempt < retries and backoff_sec > 0:
+                    time.sleep(float(backoff_sec))
+
+    raise DownloadError(
+        f"Failed to download UC.jl instance '{case_name}' "
+        f"from {len(base_urls)} candidate URL(s).",
+        urls=tuple(f"{b.rstrip('/')}/{case_name}/{remote_name}" for b in base_urls),
+    ) from last_exc
 
 
 def ensure_case_file(

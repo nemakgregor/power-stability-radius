@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import gzip
+import json
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import List, Tuple
 
 import pytest
@@ -100,3 +103,169 @@ def test_download_pglib_opf_case_falls_back_from_raw_to_github(tmp_path):
     assert len(fake.calls) == 2
     assert "raw.githubusercontent.com" in fake.calls[0][0]
     assert "github.com" in fake.calls[1][0]
+
+
+# ---------------------------------------------------------------------------
+# UC.jl download tests
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _FakeBinaryResponse:
+    """Fake response carrying raw bytes (for gzip-compressed payloads)."""
+
+    content: bytes
+    status_code: int = 200
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+
+class _FakeBinarySession:
+    """Fake session that returns gzip-compressed bytes."""
+
+    def __init__(self, payload_bytes: bytes):
+        self._payload = payload_bytes
+        self.calls: List[Tuple[str, float]] = []
+
+    def get(self, url: str, timeout: float):
+        self.calls.append((url, timeout))
+        return _FakeBinaryResponse(content=self._payload)
+
+
+class _FailingBinarySession:
+    """Fake session that always raises on GET."""
+
+    def __init__(self) -> None:
+        self.calls: List[Tuple[str, float]] = []
+
+    def get(self, url: str, timeout: float):
+        self.calls.append((url, timeout))
+        raise RuntimeError("Simulated network failure")
+
+
+def _make_gzipped_json(data: dict) -> bytes:
+    """Produce gzip-compressed JSON bytes from a dict."""
+    return gzip.compress(json.dumps(data).encode("utf-8"))
+
+
+def test_download_uc_jl_instance_writes_decompressed_json(tmp_path):
+    from stability_radius.utils.download import download_uc_jl_instance
+
+    payload = {"Buses": {"b1": {"Load (MW)": [100, 110]}}}
+    gz_bytes = _make_gzipped_json(payload)
+    fake = _FakeBinarySession(gz_bytes)
+
+    result = download_uc_jl_instance(
+        "case14",
+        tmp_path,
+        session=fake,
+        base_url="https://example.com/uc",
+    )
+
+    assert result == tmp_path / "case14.json"
+    assert result.exists()
+
+    written = json.loads(result.read_text(encoding="utf-8"))
+    assert written == payload
+
+    assert len(fake.calls) == 1
+    url, _ = fake.calls[0]
+    assert url == "https://example.com/uc/case14/2017-01-01.json.gz"
+
+
+def test_download_uc_jl_instance_custom_date(tmp_path):
+    from stability_radius.utils.download import download_uc_jl_instance
+
+    payload = {"Buses": {}}
+    gz_bytes = _make_gzipped_json(payload)
+    fake = _FakeBinarySession(gz_bytes)
+
+    download_uc_jl_instance(
+        "case30",
+        tmp_path,
+        date="2018-06-15",
+        session=fake,
+        base_url="https://example.com/uc",
+    )
+
+    url, _ = fake.calls[0]
+    assert "2018-06-15.json.gz" in url
+
+
+def test_download_uc_jl_instance_skips_when_exists(tmp_path):
+    from stability_radius.utils.download import download_uc_jl_instance
+
+    target = tmp_path / "case14.json"
+    target.write_text('{"existing": true}', encoding="utf-8")
+
+    fake = _FakeBinarySession(b"should-not-be-used")
+    result = download_uc_jl_instance("case14", tmp_path, session=fake)
+
+    assert result == target
+    assert json.loads(target.read_text(encoding="utf-8")) == {"existing": True}
+    assert fake.calls == []
+
+
+def test_download_uc_jl_instance_overwrites_when_requested(tmp_path):
+    from stability_radius.utils.download import download_uc_jl_instance
+
+    target = tmp_path / "case14.json"
+    target.write_text('{"old": true}', encoding="utf-8")
+
+    new_payload = {"new": True}
+    fake = _FakeBinarySession(_make_gzipped_json(new_payload))
+
+    result = download_uc_jl_instance(
+        "case14",
+        tmp_path,
+        overwrite=True,
+        session=fake,
+        base_url="https://example.com/uc",
+    )
+
+    assert result == target
+    assert json.loads(target.read_text(encoding="utf-8")) == new_payload
+    assert len(fake.calls) == 1
+
+
+def test_download_uc_jl_instance_raises_on_failure(tmp_path):
+    from stability_radius.utils.download import DownloadError, download_uc_jl_instance
+
+    fake = _FailingBinarySession()
+
+    with pytest.raises(DownloadError, match="case14"):
+        download_uc_jl_instance(
+            "case14",
+            tmp_path,
+            session=fake,
+            base_url="https://example.com/uc",
+        )
+
+    assert len(fake.calls) == 1
+
+
+def test_download_uc_jl_instance_validates_case_name():
+    from stability_radius.utils.download import download_uc_jl_instance
+
+    with pytest.raises(ValueError, match="non-empty"):
+        download_uc_jl_instance("", Path("/tmp"))
+
+
+def test_download_uc_jl_instance_creates_dest_dir(tmp_path):
+    from stability_radius.utils.download import download_uc_jl_instance
+
+    nested = tmp_path / "a" / "b" / "c"
+    payload = {"Buses": {"b1": {}}}
+    fake = _FakeBinarySession(_make_gzipped_json(payload))
+
+    result = download_uc_jl_instance(
+        "case14",
+        nested,
+        session=fake,
+        base_url="https://example.com/uc",
+    )
+
+    assert result.exists()
+    assert nested.is_dir()
