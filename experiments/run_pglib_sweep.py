@@ -121,15 +121,17 @@ def run(config_path: Path) -> None:
                 if r_ac is not None and np.isfinite(r_ac):
                     ac_radii.append(float(r_ac))
 
-        summary.append({
-            "case": name,
-            "n_lines": len([k for k in results if k.startswith("line_")]),
-            "dc_r_min": float(min(dc_radii)) if dc_radii else float("nan"),
-            "dc_r_median": float(np.median(dc_radii)) if dc_radii else float("nan"),
-            "ac_r_min": float(min(ac_radii)) if ac_radii else float("nan"),
-            "ac_r_median": float(np.median(ac_radii)) if ac_radii else float("nan"),
-            "compute_time_sec": float(meta.get("compute_time_sec", float("nan"))),
-        })
+        summary.append(
+            {
+                "case": name,
+                "n_lines": len([k for k in results if k.startswith("line_")]),
+                "dc_r_min": float(min(dc_radii)) if dc_radii else float("nan"),
+                "dc_r_median": float(np.median(dc_radii)) if dc_radii else float("nan"),
+                "ac_r_min": float(min(ac_radii)) if ac_radii else float("nan"),
+                "ac_r_median": float(np.median(ac_radii)) if ac_radii else float("nan"),
+                "compute_time_sec": float(meta.get("compute_time_sec", float("nan"))),
+            }
+        )
 
     # Write summary JSON.
     summary_path = output_dir / "summary.json"

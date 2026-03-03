@@ -53,7 +53,10 @@ def run(config_path: Path, *, repeats: int = 3) -> None:
     cases = cfg["cases"]
     compute_cfg = cfg.get("compute", {})
     data_dir = Path(cfg.get("data_dir", "data/input"))
-    output_dir = Path(cfg.get("output_dir", "experiments/output/pglib_sweep")).parent / "scalability"
+    output_dir = (
+        Path(cfg.get("output_dir", "experiments/output/pglib_sweep")).parent
+        / "scalability"
+    )
     allow_download = bool(cfg.get("allow_download", False))
 
     dc_cfg = compute_cfg.get("dc", {})
@@ -138,18 +141,20 @@ def run(config_path: Path, *, repeats: int = 3) -> None:
                 logger.exception("AC compute failed for %s", name)
                 ac_times.append(float("nan"))
 
-        records.append({
-            "case": name,
-            "n_bus": n_bus,
-            "n_line": n_line,
-            "repeats": repeats,
-            "dc_time_sec_mean": float(np.nanmean(dc_times)),
-            "dc_time_sec_std": float(np.nanstd(dc_times)),
-            "dc_time_sec_all": [float(t) for t in dc_times],
-            "ac_time_sec_mean": float(np.nanmean(ac_times)),
-            "ac_time_sec_std": float(np.nanstd(ac_times)),
-            "ac_time_sec_all": [float(t) for t in ac_times],
-        })
+        records.append(
+            {
+                "case": name,
+                "n_bus": n_bus,
+                "n_line": n_line,
+                "repeats": repeats,
+                "dc_time_sec_mean": float(np.nanmean(dc_times)),
+                "dc_time_sec_std": float(np.nanstd(dc_times)),
+                "dc_time_sec_all": [float(t) for t in dc_times],
+                "ac_time_sec_mean": float(np.nanmean(ac_times)),
+                "ac_time_sec_std": float(np.nanstd(ac_times)),
+                "ac_time_sec_all": [float(t) for t in ac_times],
+            }
+        )
 
     # Write results.
     out_path = output_dir / "scalability.json"
