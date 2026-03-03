@@ -5,8 +5,20 @@
 # radii, and writes per-case JSON results to experiments/output/pglib_sweep/.
 
 cases:
+  - name: pglib_opf_case5_pjm
+    file: pglib_opf_case5_pjm.m
+    slack_bus: 0
+
+  - name: pglib_opf_case14_ieee
+    file: pglib_opf_case14_ieee.m
+    slack_bus: 0
+
   - name: pglib_opf_case30_ieee
     file: pglib_opf_case30_ieee.m
+    slack_bus: 0
+
+  - name: pglib_opf_case57_ieee
+    file: pglib_opf_case57_ieee.m
     slack_bus: 0
 
   - name: pglib_opf_case118_ieee
@@ -21,8 +33,8 @@ cases:
     file: pglib_opf_case1354_pegase.m
     slack_bus: 0
 
-  - name: pglib_opf_case9241_pegase
-    file: pglib_opf_case9241_pegase.m
+  - name: pglib_opf_case2869_pegase
+    file: pglib_opf_case2869_pegase.m
     slack_bus: 0
 
 # Shared compute parameters (applied to every case).
