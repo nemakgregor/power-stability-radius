@@ -96,7 +96,7 @@ class TestCantelliUpperBound:
 class TestComputeBaselineMetrics:
     def test_from_results_dict(self) -> None:
         results: dict = {
-            "__meta__": {"schema_version": 2},
+            "__meta__": {"schema_version": 3},
             "line_0": {
                 "ac_s_limit_mva": 100.0,
                 "ac_s0_from_mva": 80.0,

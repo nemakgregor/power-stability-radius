@@ -14,6 +14,9 @@ data/
 list.md
 res_sr.md
 
+# Experiment outputs (generated data, plots)
+experiments/output/
+
 # Python bytecode
 __pycache__/
 *.pyc

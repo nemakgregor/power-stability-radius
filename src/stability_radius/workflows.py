@@ -86,7 +86,8 @@ class ACExtensionsConfig:
     -----
     - sigma_p_mw_source / sigma_q_mvar_source control how sigma arrays are built:
         * "uniform" : broadcast scalar sigma_p_mw_uniform / sigma_q_mvar_uniform to all buses.
-        * "file"    : load from external file (Phase 4 — UC.jl integration, not yet implemented).
+        * "uc_jl"   : use per-bus arrays from sigma_p_mw_array / sigma_q_mvar_array
+                       (typically loaded from a UnitCommitment.jl instance via parsers.uc_jl).
         * ""        : disabled (no sigma arrays → sigma/metric radii are skipped).
     - metric_enabled gates AC metric-radius computation alongside sigma-radius.
       When enabled and sigma arrays are available, M = diag(1/sigma^2) is used,
@@ -95,10 +96,13 @@ class ACExtensionsConfig:
       for the caller (CLI) to save as a compressed .npz file.
     """
 
-    sigma_p_mw_source: str = ""  # "uniform" | "file" | ""
-    sigma_q_mvar_source: str = ""  # "uniform" | "file" | ""
+    sigma_p_mw_source: str = ""  # "uniform" | "uc_jl" | ""
+    sigma_q_mvar_source: str = ""  # "uniform" | "uc_jl" | ""
     sigma_p_mw_uniform: float = 1.0
     sigma_q_mvar_uniform: float = 1.0
+    sigma_p_mw_array: np.ndarray | None = None  # per-bus array (n_bus,) for "uc_jl" source
+    sigma_q_mvar_array: np.ndarray | None = None  # per-bus array (n_bus,) for "uc_jl" source
+    sigma_n_timesteps: int | None = None  # number of timesteps from UC.jl instance
     metric_enabled: bool = False
     save_h_vectors: bool = False
 
@@ -442,13 +446,19 @@ def _build_sigma_arrays(
         if not np.isfinite(v) or v <= 0.0:
             raise ValueError(f"sigma_p_mw_uniform must be finite and >0, got {v}")
         sigma_p = np.full(n_bus, v, dtype=float)
-    elif src_p == "file":
-        raise NotImplementedError(
-            "sigma_p_mw_source='file' is not yet implemented (Phase 4 — UC.jl integration)."
-        )
+    elif src_p == "uc_jl":
+        if ac_ext.sigma_p_mw_array is None:
+            raise ValueError(
+                "sigma_p_mw_source='uc_jl' requires sigma_p_mw_array to be set."
+            )
+        sigma_p = np.asarray(ac_ext.sigma_p_mw_array, dtype=float).reshape(-1)
+        if sigma_p.shape != (n_bus,):
+            raise ValueError(
+                f"sigma_p_mw_array must have shape ({n_bus},), got {sigma_p.shape}"
+            )
     else:
         raise ValueError(
-            f"sigma_p_mw_source must be 'uniform' or 'file' when sigma is enabled, got {src_p!r}"
+            f"sigma_p_mw_source must be 'uniform' or 'uc_jl' when sigma is enabled, got {src_p!r}"
         )
 
     if src_q == "uniform":
@@ -456,13 +466,19 @@ def _build_sigma_arrays(
         if not np.isfinite(v) or v <= 0.0:
             raise ValueError(f"sigma_q_mvar_uniform must be finite and >0, got {v}")
         sigma_q = np.full(n_bus, v, dtype=float)
-    elif src_q == "file":
-        raise NotImplementedError(
-            "sigma_q_mvar_source='file' is not yet implemented (Phase 4 — UC.jl integration)."
-        )
+    elif src_q == "uc_jl":
+        if ac_ext.sigma_q_mvar_array is None:
+            raise ValueError(
+                "sigma_q_mvar_source='uc_jl' requires sigma_q_mvar_array to be set."
+            )
+        sigma_q = np.asarray(ac_ext.sigma_q_mvar_array, dtype=float).reshape(-1)
+        if sigma_q.shape != (n_bus,):
+            raise ValueError(
+                f"sigma_q_mvar_array must have shape ({n_bus},), got {sigma_q.shape}"
+            )
     else:
         raise ValueError(
-            f"sigma_q_mvar_source must be 'uniform' or 'file' when sigma is enabled, got {src_q!r}"
+            f"sigma_q_mvar_source must be 'uniform' or 'uc_jl' when sigma is enabled, got {src_q!r}"
         )
 
     return sigma_p, sigma_q
@@ -864,9 +880,30 @@ def compute_results_for_case(
     logger.info("%s: Total compute time: %.3f sec", case_tag, elapsed)
 
     # ---- meta ----
+    # Build sigma serialisation for __meta__.ac.
+    _sigma_p_meta: list[float] | float | None = None
+    _sigma_q_meta: list[float] | float | None = None
+    _sigma_source: str | None = None
+    _sigma_n_ts: int | None = None
+
+    if ac_sigma_computed:
+        src_p = str(ac_ext.sigma_p_mw_source).strip().lower()
+        _sigma_source = src_p if src_p else None
+        _sigma_n_ts = ac_ext.sigma_n_timesteps
+
+        if src_p == "uniform":
+            _sigma_p_meta = float(ac_ext.sigma_p_mw_uniform)
+        elif src_p == "uc_jl" and ac_ext.sigma_p_mw_array is not None:
+            _sigma_p_meta = ac_ext.sigma_p_mw_array.tolist()
+        src_q = str(ac_ext.sigma_q_mvar_source).strip().lower()
+        if src_q == "uniform":
+            _sigma_q_meta = float(ac_ext.sigma_q_mvar_uniform)
+        elif src_q == "uc_jl" and ac_ext.sigma_q_mvar_array is not None:
+            _sigma_q_meta = ac_ext.sigma_q_mvar_array.tolist()
+
     results: dict[str, Any] = {
         "__meta__": {
-            "schema_version": 2,
+            "schema_version": 3,
             "input_path": str(input_path_abs),
             "slack_bus": int(slack_bus),
             "base_dispatch": str(bd),
@@ -892,8 +929,10 @@ def compute_results_for_case(
                 "chunk_size": int(ac_chunk_size),
                 "balance": bool(ac_balance),
                 "pf_status": str(ac_pf_status),
-                "sigma_p_mw_source": str(ac_ext.sigma_p_mw_source),
-                "sigma_q_mvar_source": str(ac_ext.sigma_q_mvar_source),
+                "sigma_source": _sigma_source,
+                "sigma_p_mw": _sigma_p_meta,
+                "sigma_q_mvar": _sigma_q_meta,
+                "sigma_n_timesteps": _sigma_n_ts,
                 "sigma_computed": bool(ac_sigma_computed),
                 "metric_enabled": bool(ac_ext.metric_enabled),
                 "metric_computed": bool(ac_metric_computed),
