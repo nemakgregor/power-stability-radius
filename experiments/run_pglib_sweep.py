@@ -159,6 +159,7 @@ def _print_table(rows: list[dict]) -> None:
     header = (
         f"{'Case':<28s} {'n_b':>5s} {'n_l':>5s} "
         f"{'r*_DC (MW)':>12s} {'r*_AC (MW)':>12s} {'AC/DC':>7s} "
+        f"{'AC feas':>7s} "
         f"{'T_tot (s)':>10s} "
         f"{'Bottleneck':>11s} {'Margin':>10s}"
     )
@@ -174,9 +175,13 @@ def _print_table(rows: list[dict]) -> None:
         ratio_str = f"{r['ac_dc_ratio']:.3f}" if np.isfinite(r["ac_dc_ratio"]) else "n/a"
         bn_str = f"L{r['bottleneck_line']}" if r["bottleneck_line"] >= 0 else "n/a"
         margin_str = f"{r['bottleneck_margin']:.2f}" if np.isfinite(r["bottleneck_margin"]) else "n/a"
+        feas_str = r.get("ac_feasible", "n/a")
+        if isinstance(feas_str, bool):
+            feas_str = "YES" if feas_str else "NO"
         print(
             f"{r['case']:<28s} {r['n_buses']:>5d} {r['n_lines']:>5d} "
             f"{r['dc_r_star']:>12.4f} {r['ac_r_star']:>12.4f} {ratio_str:>7s} "
+            f"{feas_str:>7s} "
             f"{r['time_total']:>10.2f} "
             f"{bn_str:>11s} {margin_str:>10s}"
         )
@@ -363,6 +368,34 @@ def run(config_path: Path) -> None:
         # Bottleneck line.
         bn_line, bn_margin, _ = _find_bottleneck(combined)
 
+        # AC feasibility info.
+        ac_meta = meta.get("ac", {})
+        ac_feas = ac_meta.get("feasibility")
+        ac_feasible: bool | str = "n/a"
+        ac_n_violated = 0
+        if isinstance(ac_feas, dict):
+            ac_feasible = bool(ac_feas.get("is_feasible", True))
+            ac_n_violated = int(ac_feas.get("n_constrained_violated", 0))
+            if not ac_feasible:
+                logger.warning(
+                    "%s: AC base point INFEASIBLE: %d constrained lines violated "
+                    "(worst_margin=%.4f MVA on line %d)",
+                    name,
+                    ac_n_violated,
+                    float(ac_feas.get("worst_margin_mva", float("nan"))),
+                    int(ac_feas.get("worst_line_id", -1)),
+                )
+
+        # Headroom factor actually used (may differ from configured due to adaptive schedule).
+        opf_meta = meta.get("opf", {})
+        hf_used = opf_meta.get("headroom_factor_used", float("nan"))
+        hf_configured = opf_meta.get("headroom_factor_configured", float("nan"))
+        if np.isfinite(hf_used) and np.isfinite(hf_configured) and hf_used != hf_configured:
+            logger.info(
+                "%s: Adaptive headroom: configured=%.4f, used=%.4f",
+                name, hf_configured, hf_used,
+            )
+
         # Log consistency check info from meta.
         consistency_max_diff = meta.get("opf_dc_flow_max_abs_diff_mw", float("nan"))
         if np.isfinite(consistency_max_diff):
@@ -377,6 +410,9 @@ def run(config_path: Path) -> None:
             "dc_r_star": dc_r_star,
             "ac_r_star": ac_r_star,
             "ac_dc_ratio": ac_dc_ratio,
+            "ac_feasible": ac_feasible,
+            "ac_n_violated": ac_n_violated,
+            "headroom_factor_used": float(hf_used) if np.isfinite(hf_used) else None,
             "time_total": time_total,
             "bottleneck_line": bn_line,
             "bottleneck_margin": bn_margin,

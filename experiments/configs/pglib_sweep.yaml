@@ -24,14 +24,23 @@ cases:
   - name: pglib_opf_case300_ieee
     file: pglib_opf_case300_ieee.m
     headroom_factor: 0.98     # tight topology; 0.95 infeasible, 1.0 gives zero DC radius
+    ac:
+      distributed_slack: false  # pandapower crashes (realloc corruption) with distributed_slack on this case
+      pf_init: flat             # flat init avoids dc-init interaction with 129 trafos
 
   - name: pglib_opf_case1354_pegase
     file: pglib_opf_case1354_pegase.m
     headroom_factor: 0.95     # OPF infeasible below 0.95; AC margins may be negative
+    ac:
+      distributed_slack: false  # pandapower crashes (realloc corruption) with distributed_slack on large PEGASE cases
+      pf_init: flat             # flat init for stability with many trafos
 
   - name: pglib_opf_case2869_pegase
     file: pglib_opf_case2869_pegase.m
     headroom_factor: 0.95     # OPF infeasible below 0.95; AC PF convergence is the barrier
+    ac:
+      distributed_slack: false  # pandapower crashes (realloc corruption) with distributed_slack on large PEGASE cases
+      pf_init: flat             # flat init for stability with 531 trafos
 
 # Shared compute parameters (applied to every case).
 compute:

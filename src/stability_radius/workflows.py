@@ -24,7 +24,7 @@ In particular, OPFConfig.unconstrained_line_nom_mw is used as a finite surrogate
 import logging
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as _dataclass_replace
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +39,10 @@ from stability_radius.base_point.pandapower_tools import resolve_slack_bus_id
 from stability_radius.config import DEFAULT_OPF, OPFConfig
 from stability_radius.dc.dc_model import build_dc_matrices, build_dc_operator
 from stability_radius.parsers.matpower import load_network
+from stability_radius.radii.ac_feasibility import (
+    ACFeasibilityResult,
+    check_ac_base_point_feasibility,
+)
 from stability_radius.radii.common import (
     LineBaseQuantities,
     assert_line_limit_sources_present,
@@ -527,6 +531,81 @@ def _extract_binding_end_data(
     return h_bind, s0_mva, s_limit_mva, line_ids
 
 
+# ---------------------------------------------------------------------------
+# Adaptive headroom for DC OPF
+# ---------------------------------------------------------------------------
+
+# Default schedule: configured headroom first, then relax towards 1.0.
+_HEADROOM_FALLBACK_VALUES = (0.92, 0.95, 0.98, 1.0)
+
+
+def _build_headroom_schedule(base_headroom: float) -> list[float]:
+    """Build adaptive headroom schedule starting from *base_headroom*.
+
+    The schedule starts with the user-configured headroom (most aggressive,
+    i.e. most thermal margin reserved for AC deviations).  If DC OPF is
+    infeasible at that level, subsequent attempts relax towards 1.0.
+    """
+    schedule = [float(base_headroom)]
+    for fb in _HEADROOM_FALLBACK_VALUES:
+        if fb > base_headroom:
+            schedule.append(float(fb))
+    return schedule
+
+
+def _solve_dc_opf_with_adaptive_headroom(
+    *,
+    net: Any,
+    slack_bus: int,
+    opf_cfg: OPFConfig,
+    limit_factor: float,
+    case_tag: str,
+) -> tuple[Any, "LineBaseQuantities", float]:
+    """Attempt DC OPF with adaptive headroom schedule.
+
+    Returns (bp_dc, base_dc, used_headroom_factor).  Raises RuntimeError
+    if all headroom values fail.
+    """
+    schedule = _build_headroom_schedule(float(opf_cfg.headroom_factor))
+
+    last_error: Exception | None = None
+    for hf in schedule:
+        trial_cfg = _dataclass_replace(opf_cfg, headroom_factor=float(hf))
+        try:
+            bp_dc, base_dc = build_dc_base_point_dc_opf(
+                net=net,
+                slack_bus=int(slack_bus),
+                opf_cfg=trial_cfg,
+                limit_factor=float(limit_factor),
+            )
+            if hf != schedule[0]:
+                logger.info(
+                    "%s: DC OPF succeeded with relaxed headroom_factor=%.4f "
+                    "(original=%.4f, %d attempts)",
+                    case_tag,
+                    hf,
+                    float(opf_cfg.headroom_factor),
+                    schedule.index(hf) + 1,
+                )
+            return bp_dc, base_dc, float(hf)
+        except RuntimeError as e:
+            if "infeasible" in str(e).lower():
+                logger.warning(
+                    "%s: DC OPF infeasible with headroom_factor=%.4f, "
+                    "trying next value...",
+                    case_tag,
+                    hf,
+                )
+                last_error = e
+                continue
+            raise  # non-infeasibility RuntimeError: re-raise
+
+    raise RuntimeError(
+        f"{case_tag}: DC OPF infeasible for all headroom values "
+        f"{schedule}. Last error: {last_error}"
+    )
+
+
 def compute_results_for_case(
     *,
     input_path: str,
@@ -619,11 +698,16 @@ def compute_results_for_case(
     bp_dc_meta: dict[str, Any] | None = None
     base_dc: LineBaseQuantities | None = None
     gen_dispatch_for_ac: dict[str, float] = {}
+    used_headroom_factor: float = float(cfg.headroom_factor)
 
     if bd == "dc_opf":
         with log_stage(logger, f"{case_tag}: Base dispatch via DC OPF (PyPSA+HiGHS)"):
-            bp_dc, base_dc = build_dc_base_point_dc_opf(
-                net=net, slack_bus=int(slack_bus), opf_cfg=cfg, limit_factor=1.0
+            bp_dc, base_dc, used_headroom_factor = _solve_dc_opf_with_adaptive_headroom(
+                net=net,
+                slack_bus=int(slack_bus),
+                opf_cfg=cfg,
+                limit_factor=1.0,
+                case_tag=case_tag,
             )
             bp_dc_meta = bp_dc.to_meta_dict()
             gen_dispatch_for_ac = dict(bp_dc.gen_dispatch_mw_by_name)
@@ -747,6 +831,7 @@ def compute_results_for_case(
     ac_pf_status = "n/a"
     ac_sigma_computed = False
     ac_metric_computed = False
+    ac_feasibility: ACFeasibilityResult | None = None
     h_vectors_saved: dict[str, np.ndarray] | None = None
 
     # Determine whether h-vectors are needed (sigma, metric, or save).
@@ -775,7 +860,9 @@ def compute_results_for_case(
                     pf_solver=str(ac_pf_solver),
                     pf_init=str(ac_pf_init),
                     lossless=bool(ac_lossless),
-                    gen_dispatch_mw_by_name=gen_dispatch_for_ac if bd == "dc_opf" else {},
+                    gen_dispatch_mw_by_name=gen_dispatch_for_ac
+                    if bd == "dc_opf"
+                    else {},
                     line_indices=[int(x) for x in sorted(net.line.index)],
                     distributed_slack=bool(ac_distributed_slack),
                     trafo_model=str(ac_trafo_model),
@@ -790,6 +877,21 @@ def compute_results_for_case(
             )
             ac_pf_status = "failed"
             compute_ac = False  # disable remaining AC stages
+
+        # ---------- AC feasibility gate ----------
+        if bool(compute_ac):
+            with log_stage(logger, f"{case_tag}: AC Feasibility Check"):
+                ac_feasibility = check_ac_base_point_feasibility(
+                    net=net, base_pf=base_pf
+                )
+                if not ac_feasibility.is_feasible:
+                    logger.warning(
+                        "%s: AC base point violates %d constrained line limits. "
+                        "AC radii on those lines will be negative. "
+                        "Consider using a smaller headroom_factor or ACOPF dispatch.",
+                        case_tag,
+                        ac_feasibility.n_constrained_violated,
+                    )
 
         if bool(compute_ac):
             with log_stage(logger, f"{case_tag}: Compute Radii (AC L2)"):
@@ -827,8 +929,10 @@ def compute_results_for_case(
                         h_vecs_raw["h_to"], n_bus=n_bus, slack_pos=slack_pos
                     )
 
-                    h_bind, s0_mva, s_limit_mva, line_ids_ac = _extract_binding_end_data(
-                        ac_results=ac, h_from=h_from_full, h_to=h_to_full
+                    h_bind, s0_mva, s_limit_mva, line_ids_ac = (
+                        _extract_binding_end_data(
+                            ac_results=ac, h_from=h_from_full, h_to=h_to_full
+                        )
                     )
 
                     sigma_p, sigma_q = _build_sigma_arrays(ac_ext=ac_ext, n_bus=n_bus)
@@ -945,6 +1049,9 @@ def compute_results_for_case(
                 "chunk_size": int(ac_chunk_size),
                 "balance": bool(ac_balance),
                 "pf_status": str(ac_pf_status),
+                "feasibility": ac_feasibility.to_meta_dict()
+                if ac_feasibility is not None
+                else None,
                 "sigma_source": _sigma_source,
                 "sigma_p_mw": _sigma_p_meta,
                 "sigma_q_mvar": _sigma_q_meta,
@@ -961,7 +1068,10 @@ def compute_results_for_case(
                 "solver": str(cfg.highs.solver_name) if bd == "dc_opf" else "n/a",
                 "threads": int(cfg.highs.threads) if bd == "dc_opf" else -1,
                 "random_seed": int(cfg.highs.random_seed) if bd == "dc_opf" else -1,
-                "headroom_factor": float(cfg.headroom_factor)
+                "headroom_factor_configured": float(cfg.headroom_factor)
+                if bd == "dc_opf"
+                else float("nan"),
+                "headroom_factor_used": float(used_headroom_factor)
                 if bd == "dc_opf"
                 else float("nan"),
                 "unconstrained_line_nom_mw": float(cfg.unconstrained_line_nom_mw)
