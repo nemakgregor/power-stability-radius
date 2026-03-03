@@ -32,6 +32,10 @@ from .types import (  # noqa: F401
     VerificationResult,
     overall_from_components,
 )
+from .ac_monte_carlo_sigma import (  # noqa: F401
+    ACSigmaMCResult,
+    run_ac_monte_carlo_sigma,
+)
 from .verify_worst_case import (  # noqa: F401
     WorstCaseVerificationResult,
     verify_worst_case,
