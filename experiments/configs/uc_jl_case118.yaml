@@ -1,0 +1,36 @@
+# Experiment 2 config: sigma-radius with UC.jl-derived per-bus injection σ.
+#
+# This experiment uses a UnitCommitment.jl instance for case118 to extract
+# realistic per-bus injection standard deviations, then computes the AC
+# sigma-radius certificate.
+
+case:
+  name: case118
+  matpower_file: pglib_opf_case118_ieee.m
+  slack_bus: 0
+
+uc_jl:
+  case_name: case118
+  date: "2017-01-01"       # UC.jl time-series date
+  dest_dir: data/uc_jl     # where to store downloaded UC.jl JSON
+  power_factor: 0.9        # for σ_Q estimation from σ_P
+
+compute:
+  base_dispatch: case
+  dc:
+    mode: materialize
+    chunk_size: 64
+    dtype: float64
+    inj_std_mw: 10.0
+  ac:
+    chunk_size: 64
+    balance: true
+    pf_init: flat
+    pf_solver: pandapower
+    lossless: true
+    sigma:
+      source: uc_jl          # "uniform" | "uc_jl"
+
+allow_download: true
+data_dir: data/input
+output_dir: experiments/output/sigma_radius

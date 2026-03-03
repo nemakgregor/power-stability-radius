@@ -1,0 +1,45 @@
+# Experiment 1 config: DC vs AC radius sweep across PGLib networks.
+#
+# Each entry defines a PGLib case to evaluate.
+# The experiment script iterates over these cases, computes both DC and AC
+# radii, and writes per-case JSON results to experiments/output/pglib_sweep/.
+
+cases:
+  - name: pglib_opf_case30_ieee
+    file: pglib_opf_case30_ieee.m
+    slack_bus: 0
+
+  - name: pglib_opf_case118_ieee
+    file: pglib_opf_case118_ieee.m
+    slack_bus: 0
+
+  - name: pglib_opf_case300_ieee
+    file: pglib_opf_case300_ieee.m
+    slack_bus: 0
+
+  - name: pglib_opf_case1354_pegase
+    file: pglib_opf_case1354_pegase.m
+    slack_bus: 0
+
+  - name: pglib_opf_case9241_pegase
+    file: pglib_opf_case9241_pegase.m
+    slack_bus: 0
+
+# Shared compute parameters (applied to every case).
+compute:
+  base_dispatch: case       # "case" | "dc_opf"
+  dc:
+    mode: materialize
+    chunk_size: 64
+    dtype: float64
+    inj_std_mw: 10.0
+  ac:
+    chunk_size: 64
+    balance: true
+    pf_init: flat
+    pf_solver: pandapower
+    lossless: true
+
+allow_download: true
+data_dir: data/input
+output_dir: experiments/output/pglib_sweep
