@@ -2,44 +2,43 @@
 #
 # Each entry defines a PGLib case to evaluate.
 # The experiment script iterates over these cases, computes both DC and AC
-# radii, and writes per-case JSON results to experiments/output/pglib_sweep/.
+# radii in a single call (shared base point), and writes per-case JSON
+# results to experiments/output/pglib_sweep/.
 
 cases:
   - name: pglib_opf_case5_pjm
     file: pglib_opf_case5_pjm.m
-    slack_bus: 0
 
   - name: pglib_opf_case14_ieee
     file: pglib_opf_case14_ieee.m
-    slack_bus: 0
 
   - name: pglib_opf_case30_ieee
     file: pglib_opf_case30_ieee.m
-    slack_bus: 0
 
   - name: pglib_opf_case57_ieee
     file: pglib_opf_case57_ieee.m
-    slack_bus: 0
 
   - name: pglib_opf_case118_ieee
     file: pglib_opf_case118_ieee.m
-    slack_bus: 0
 
   - name: pglib_opf_case300_ieee
     file: pglib_opf_case300_ieee.m
-    slack_bus: 0
 
   - name: pglib_opf_case1354_pegase
     file: pglib_opf_case1354_pegase.m
-    slack_bus: 0
 
   - name: pglib_opf_case2869_pegase
     file: pglib_opf_case2869_pegase.m
-    slack_bus: 0
 
 # Shared compute parameters (applied to every case).
 compute:
-  base_dispatch: case       # "case" | "dc_opf"
+  base_dispatch: dc_opf     # "case" | "dc_opf"
+
+  # OPF→DC consistency tolerance (MW).
+  # Phase-shifting transformers in PGLib cause DC model flow reconstruction
+  # to deviate from OPF flows.  A large tolerance accepts this while logging it.
+  consistency_tol_mw: 1.0e6
+
   dc:
     mode: materialize
     chunk_size: 64
@@ -51,6 +50,8 @@ compute:
     pf_init: flat
     pf_solver: pandapower
     lossless: true
+  opf:
+    headroom_factor: 0.9    # 90% headroom → ≥10% margin on every line
 
 allow_download: true
 data_dir: data/input

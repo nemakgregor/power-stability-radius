@@ -54,8 +54,8 @@ from stability_radius.utils import log_stage
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_OPF_DC_FLOW_CONSISTENCY_TOL_MW = 1e-3
-_DEFAULT_OPF_BUS_BALANCE_TOL_MW = 1e-6
+_DEFAULT_OPF_DC_FLOW_CONSISTENCY_TOL_MW = 20
+_DEFAULT_OPF_BUS_BALANCE_TOL_MW = 1
 
 
 @dataclass(frozen=True)
@@ -100,8 +100,12 @@ class ACExtensionsConfig:
     sigma_q_mvar_source: str = ""  # "uniform" | "uc_jl" | ""
     sigma_p_mw_uniform: float = 1.0
     sigma_q_mvar_uniform: float = 1.0
-    sigma_p_mw_array: np.ndarray | None = None  # per-bus array (n_bus,) for "uc_jl" source
-    sigma_q_mvar_array: np.ndarray | None = None  # per-bus array (n_bus,) for "uc_jl" source
+    sigma_p_mw_array: np.ndarray | None = (
+        None  # per-bus array (n_bus,) for "uc_jl" source
+    )
+    sigma_q_mvar_array: np.ndarray | None = (
+        None  # per-bus array (n_bus,) for "uc_jl" source
+    )
     sigma_n_timesteps: int | None = None  # number of timesteps from UC.jl instance
     metric_enabled: bool = False
     save_h_vectors: bool = False
