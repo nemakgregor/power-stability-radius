@@ -293,7 +293,7 @@ Unified поля per line (используются в таблицах и AC MC
 
 ---
 
-## 10. Схема данных `results.json` (CURRENT, schema_version=2)
+## 10. Схема данных `results.json` (CURRENT, schema_version=3)
 
 ### 10.1. Верхний уровень
 - `__meta__`: объект с метаданными режима и схемы
@@ -301,13 +301,20 @@ Unified поля per line (используются в таблицах и AC MC
 
 ### 10.2. `__meta__` (ключевые поля)
 Минимально значимые:
-- `schema_version: 2`
+- `schema_version: 3`
 - `input_path: <abs or resolved path>`
 - `slack_bus: int` (как передан пользователем)
 - `base_dispatch: "case" | "dc_opf"`
 - `compute_dc: bool`, `compute_ac: bool`
 - `dc: { mode, dtype, chunk_size, inj_std_mw, nminus1_computed }`
 - `ac: { pf_solver, pf_init, lossless(true), chunk_size, balance, pf_status }`
+- `ac.sigma_source: "uniform" | "uc_jl" | null` — source of injection σ arrays
+- `ac.sigma_p_mw: list[float] | float | null` — per-bus σ_P or scalar (uniform), null if not computed
+- `ac.sigma_q_mvar: list[float] | float | null` — per-bus σ_Q or scalar (uniform), null if not computed
+- `ac.sigma_n_timesteps: int | null` — number of timesteps (from UC.jl), null if not applicable
+- `ac.sigma_computed: bool`
+- `ac.metric_enabled: bool`, `ac.metric_computed: bool`
+- `ac.save_h_vectors: bool`
 - `base_point_dc`: либо `null`, либо JSON-friendly структура
 - `base_point_ac`: либо `null`, либо JSON-friendly структура
 - `compute_time_sec: float`
@@ -333,6 +340,14 @@ Unified поля per line (используются в таблицах и AC MC
 - `||h||2`
 - `binding_end`
 - `radius_ac_l2`
+
+Sigma-radius поля (если `ac.sigma_computed=true`):
+- `sigma_flow_mva` — flow standard deviation at binding end (MVA)
+- `radius_ac_sigma` — dimensionless radius in σ units
+- `overload_probability_ac` — Gaussian overload probability
+- `worst_case_dp_mw` — list[float] per-bus worst-case ΔP perturbation (MW), or null
+- `worst_case_dq_mvar` — list[float] per-bus worst-case ΔQ perturbation (MVAr), or null
+- `worst_case_s_predicted_mva` — predicted |S| at binding end under worst-case perturbation (MVA)
 
 ---
 

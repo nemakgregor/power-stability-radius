@@ -81,7 +81,7 @@ def _make_minimal_vr(
     )
 
     return VerificationResult(
-        schema_version=1,
+        schema_version=3,
         inputs=inputs,
         base_point=base,
         radius=radius,

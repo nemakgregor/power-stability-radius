@@ -23,7 +23,7 @@ def test_report_formats_na_for_nan_metrics() -> None:
     )
 
     vr = VerificationResult(
-        schema_version=1,
+        schema_version=3,
         inputs=VerificationInputs(
             case_id="case1354_pegase",
             results_path="/abs/results.json",
