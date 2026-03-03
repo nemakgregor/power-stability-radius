@@ -35,6 +35,7 @@ from stability_radius.base_point import (
     build_dc_base_point_dc_opf,
     solve_ac_pf_base_point,
 )
+from stability_radius.base_point.pandapower_tools import resolve_slack_bus_id
 from stability_radius.config import DEFAULT_OPF, OPFConfig
 from stability_radius.dc.dc_model import build_dc_matrices, build_dc_operator
 from stability_radius.parsers.matpower import load_network
@@ -786,7 +787,8 @@ def compute_results_for_case(
             with log_stage(logger, f"{case_tag}: Compute Radii (AC Sigma)"):
                 bus_ids = [int(x) for x in sorted(net.bus.index)]
                 n_bus = len(bus_ids)
-                slack_pos = bus_ids.index(int(slack_bus))
+                slack_bus_id = resolve_slack_bus_id(net, int(slack_bus))
+                slack_pos = bus_ids.index(slack_bus_id)
 
                 h_from_full = _expand_h_reduced_to_full(
                     h_vecs_raw["h_from"], n_bus=n_bus, slack_pos=slack_pos
