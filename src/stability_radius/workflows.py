@@ -54,7 +54,7 @@ from stability_radius.utils import log_stage
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_OPF_DC_FLOW_CONSISTENCY_TOL_MW = 20
+_DEFAULT_OPF_DC_FLOW_CONSISTENCY_TOL_MW = 1e-3
 _DEFAULT_OPF_BUS_BALANCE_TOL_MW = 1
 
 
@@ -767,118 +767,128 @@ def compute_results_for_case(
         if apfi not in {"flat", "dc", "pp"}:
             raise ValueError("ac.pf_init must be flat|dc|pp")
 
-        with log_stage(
-            logger, f"{case_tag}: Solve AC PF base point (solver={ac_pf_solver})"
-        ):
-            bp_ac, base_pf = solve_ac_pf_base_point(
-                net=net,
-                slack_bus=int(slack_bus),
-                pf_solver=str(ac_pf_solver),
-                pf_init=str(ac_pf_init),
-                lossless=bool(ac_lossless),
-                gen_dispatch_mw_by_name=gen_dispatch_for_ac if bd == "dc_opf" else {},
-                line_indices=[int(x) for x in sorted(net.line.index)],
+        try:
+            with log_stage(
+                logger, f"{case_tag}: Solve AC PF base point (solver={ac_pf_solver})"
+            ):
+                bp_ac, base_pf = solve_ac_pf_base_point(
+                    net=net,
+                    slack_bus=int(slack_bus),
+                    pf_solver=str(ac_pf_solver),
+                    pf_init=str(ac_pf_init),
+                    lossless=bool(ac_lossless),
+                    gen_dispatch_mw_by_name=gen_dispatch_for_ac if bd == "dc_opf" else {},
+                    line_indices=[int(x) for x in sorted(net.line.index)],
+                )
+                bp_ac_meta = bp_ac.to_meta_dict()
+                ac_pf_status = str(bp_ac.status)
+        except Exception:
+            logger.warning(
+                "%s: AC power flow failed to converge; "
+                "skipping AC radius computation. DC results are still returned.",
+                case_tag,
             )
-            bp_ac_meta = bp_ac.to_meta_dict()
-            ac_pf_status = str(bp_ac.status)
+            ac_pf_status = "failed"
+            compute_ac = False  # disable remaining AC stages
 
-        with log_stage(logger, f"{case_tag}: Compute Radii (AC L2)"):
-            from stability_radius.radii.ac_l2 import compute_ac_l2_radius
+        if bool(compute_ac):
+            with log_stage(logger, f"{case_tag}: Compute Radii (AC L2)"):
+                from stability_radius.radii.ac_l2 import compute_ac_l2_radius
 
-            ac = compute_ac_l2_radius(
-                net,
-                base_pf=base_pf,
-                slack_bus=int(slack_bus),
-                chunk_size=int(ac_chunk_size),
-                balance=bool(ac_balance),
-                lossless=True,  # enforced
-                return_h_vectors=bool(ac_need_h),
-            )
-
-            # Extract h-vector data before merging (the "_h_vectors" key is not per-line).
-            h_vecs_raw: dict[str, np.ndarray] | None = None
-            if ac_need_h and "_h_vectors" in ac:
-                h_vecs_raw = ac.pop("_h_vectors")
-
-            results_lines = _merge_line_results(results_lines, ac)
-
-        # ---------- AC sigma/metric post-processing ----------
-        if ac_sigma_enabled and h_vecs_raw is not None:
-            with log_stage(logger, f"{case_tag}: Compute Radii (AC Sigma)"):
-                bus_ids = [int(x) for x in sorted(net.bus.index)]
-                n_bus = len(bus_ids)
-                slack_bus_id = resolve_slack_bus_id(net, int(slack_bus))
-                slack_pos = bus_ids.index(slack_bus_id)
-
-                h_from_full = _expand_h_reduced_to_full(
-                    h_vecs_raw["h_from"], n_bus=n_bus, slack_pos=slack_pos
-                )
-                h_to_full = _expand_h_reduced_to_full(
-                    h_vecs_raw["h_to"], n_bus=n_bus, slack_pos=slack_pos
-                )
-
-                h_bind, s0_mva, s_limit_mva, line_ids_ac = _extract_binding_end_data(
-                    ac_results=ac, h_from=h_from_full, h_to=h_to_full
-                )
-
-                sigma_p, sigma_q = _build_sigma_arrays(ac_ext=ac_ext, n_bus=n_bus)
-
-                from stability_radius.radii.ac_sigma_radius import (
-                    compute_ac_sigma_radius,
-                )
-
-                ac_sigma = compute_ac_sigma_radius(
-                    h_vectors=h_bind,
-                    s_limit_mva=s_limit_mva,
-                    s0_mva=s0_mva,
-                    sigma_p_mw=sigma_p,
-                    sigma_q_mvar=sigma_q,
-                    line_ids=line_ids_ac,
+                ac = compute_ac_l2_radius(
+                    net,
+                    base_pf=base_pf,
+                    slack_bus=int(slack_bus),
+                    chunk_size=int(ac_chunk_size),
                     balance=bool(ac_balance),
+                    lossless=True,  # enforced
+                    return_h_vectors=bool(ac_need_h),
                 )
-                results_lines = _merge_line_results(results_lines, ac_sigma)
-                ac_sigma_computed = True
 
-            if bool(ac_ext.metric_enabled):
-                with log_stage(logger, f"{case_tag}: Compute Radii (AC Metric)"):
-                    from stability_radius.radii.ac_metric_radius import (
-                        compute_ac_metric_radius,
+                # Extract h-vector data before merging (the "_h_vectors" key is not per-line).
+                h_vecs_raw: dict[str, np.ndarray] | None = None
+                if ac_need_h and "_h_vectors" in ac:
+                    h_vecs_raw = ac.pop("_h_vectors")
+
+                results_lines = _merge_line_results(results_lines, ac)
+
+            # ---------- AC sigma/metric post-processing ----------
+            if ac_sigma_enabled and h_vecs_raw is not None:
+                with log_stage(logger, f"{case_tag}: Compute Radii (AC Sigma)"):
+                    bus_ids = [int(x) for x in sorted(net.bus.index)]
+                    n_bus = len(bus_ids)
+                    slack_bus_id = resolve_slack_bus_id(net, int(slack_bus))
+                    slack_pos = bus_ids.index(slack_bus_id)
+
+                    h_from_full = _expand_h_reduced_to_full(
+                        h_vecs_raw["h_from"], n_bus=n_bus, slack_pos=slack_pos
+                    )
+                    h_to_full = _expand_h_reduced_to_full(
+                        h_vecs_raw["h_to"], n_bus=n_bus, slack_pos=slack_pos
                     )
 
-                    # M = diag(1/sigma^2) — inverse covariance (sigma-radius cross-check).
-                    M_diag = 1.0 / np.concatenate(
-                        [sigma_p * sigma_p, sigma_q * sigma_q]
+                    h_bind, s0_mva, s_limit_mva, line_ids_ac = _extract_binding_end_data(
+                        ac_results=ac, h_from=h_from_full, h_to=h_to_full
                     )
 
-                    ac_metric = compute_ac_metric_radius(
+                    sigma_p, sigma_q = _build_sigma_arrays(ac_ext=ac_ext, n_bus=n_bus)
+
+                    from stability_radius.radii.ac_sigma_radius import (
+                        compute_ac_sigma_radius,
+                    )
+
+                    ac_sigma = compute_ac_sigma_radius(
                         h_vectors=h_bind,
                         s_limit_mva=s_limit_mva,
                         s0_mva=s0_mva,
-                        M=M_diag,
+                        sigma_p_mw=sigma_p,
+                        sigma_q_mvar=sigma_q,
                         line_ids=line_ids_ac,
                         balance=bool(ac_balance),
                     )
-                    results_lines = _merge_line_results(results_lines, ac_metric)
-                    ac_metric_computed = True
+                    results_lines = _merge_line_results(results_lines, ac_sigma)
+                    ac_sigma_computed = True
 
-        # ---------- h-vector saving ----------
-        if bool(ac_ext.save_h_vectors) and h_vecs_raw is not None:
-            bus_ids = [int(x) for x in sorted(net.bus.index)]
-            n_bus = len(bus_ids)
-            slack_pos = bus_ids.index(int(slack_bus))
+                if bool(ac_ext.metric_enabled):
+                    with log_stage(logger, f"{case_tag}: Compute Radii (AC Metric)"):
+                        from stability_radius.radii.ac_metric_radius import (
+                            compute_ac_metric_radius,
+                        )
 
-            h_vectors_saved = {
-                "h_from": _expand_h_reduced_to_full(
-                    h_vecs_raw["h_from"], n_bus=n_bus, slack_pos=slack_pos
-                ),
-                "h_to": _expand_h_reduced_to_full(
-                    h_vecs_raw["h_to"], n_bus=n_bus, slack_pos=slack_pos
-                ),
-                "bus_ids": np.array(bus_ids, dtype=int),
-                "line_ids": np.array(
-                    [int(x) for x in sorted(net.line.index)], dtype=int
-                ),
-            }
+                        # M = diag(1/sigma^2) — inverse covariance (sigma-radius cross-check).
+                        M_diag = 1.0 / np.concatenate(
+                            [sigma_p * sigma_p, sigma_q * sigma_q]
+                        )
+
+                        ac_metric = compute_ac_metric_radius(
+                            h_vectors=h_bind,
+                            s_limit_mva=s_limit_mva,
+                            s0_mva=s0_mva,
+                            M=M_diag,
+                            line_ids=line_ids_ac,
+                            balance=bool(ac_balance),
+                        )
+                        results_lines = _merge_line_results(results_lines, ac_metric)
+                        ac_metric_computed = True
+
+            # ---------- h-vector saving ----------
+            if bool(ac_ext.save_h_vectors) and h_vecs_raw is not None:
+                bus_ids = [int(x) for x in sorted(net.bus.index)]
+                n_bus = len(bus_ids)
+                slack_pos = bus_ids.index(int(slack_bus))
+
+                h_vectors_saved = {
+                    "h_from": _expand_h_reduced_to_full(
+                        h_vecs_raw["h_from"], n_bus=n_bus, slack_pos=slack_pos
+                    ),
+                    "h_to": _expand_h_reduced_to_full(
+                        h_vecs_raw["h_to"], n_bus=n_bus, slack_pos=slack_pos
+                    ),
+                    "bus_ids": np.array(bus_ids, dtype=int),
+                    "line_ids": np.array(
+                        [int(x) for x in sorted(net.line.index)], dtype=int
+                    ),
+                }
 
     elapsed = float(time.time() - t0)
     logger.info("%s: Total compute time: %.3f sec", case_tag, elapsed)

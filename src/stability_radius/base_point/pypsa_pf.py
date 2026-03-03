@@ -248,7 +248,9 @@ def _solve_ac_pf_with_pandapower(
     init_eff = str(init).strip().lower()
     if init_eff not in {"flat", "dc", "pp"}:
         raise ValueError("init must be flat|dc|pp for pandapower solver as well.")
-    if init_eff in {"dc", "pp"}:
+    # Allow "dc" init (DC power flow warmstart) — it provides a much better
+    # starting point for Newton-Raphson on difficult networks (e.g. case57).
+    if init_eff == "pp":
         init_eff = "flat"
 
     logger.info(
@@ -259,16 +261,37 @@ def _solve_ac_pf_with_pandapower(
         init_eff,
     )
 
+    max_iter = 30
+
     try:
         pp.runpp(
             nn,
             calculate_voltage_angles=True,
             enforce_q_lims=True,
             init=str(init_eff),
+            max_iteration=max_iter,
         )
-    except Exception as e:  # noqa: BLE001
-        logger.exception("pandapower.runpp failed: %s", e)
-        raise RuntimeError("pandapower.runpp failed.") from e
+    except Exception as e_first:
+        # If flat start failed, retry with DC initialisation.
+        if init_eff == "flat":
+            logger.warning(
+                "pandapower.runpp failed with init='flat', retrying with init='dc' (%d iterations)",
+                max_iter,
+            )
+            try:
+                pp.runpp(
+                    nn,
+                    calculate_voltage_angles=True,
+                    enforce_q_lims=True,
+                    init="dc",
+                    max_iteration=max_iter,
+                )
+            except Exception as e_retry:
+                logger.exception("pandapower.runpp failed with init='dc': %s", e_retry)
+                raise RuntimeError("pandapower.runpp failed.") from e_retry
+        else:
+            logger.exception("pandapower.runpp failed: %s", e_first)
+            raise RuntimeError("pandapower.runpp failed.") from e_first
 
     converged = bool(getattr(nn, "converged", True))
     if not converged:
@@ -635,7 +658,7 @@ def solve_ac_pf_base_point_from_pandapower(
                 f"trafo_{tid}",
                 bus0=str(hv),
                 bus1=str(lv),
-                model="t",
+                model="pi",
                 s_nom=float(sn_trafo),
                 r=0.0 if bool(lossless) else float(r_pu),
                 x=float(x_pu),

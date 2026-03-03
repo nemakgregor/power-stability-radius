@@ -147,7 +147,7 @@ def build_dc_base_point_case(
         raise ValueError("DCOperator returned unexpected flow shape.")
 
     p0_abs = np.abs(flows)
-    margins = np.maximum(limits - p0_abs, 0.0)
+    margins = limits - p0_abs
 
     base = LineBaseQuantities(
         line_indices=line_ids,

@@ -264,7 +264,12 @@ def solve_dc_opf_base_flows_from_pandapower(
         )
 
     if hasattr(net, "ext_grid") and net.ext_grid is not None and len(net.ext_grid):
-        p_nom_ext = max(float(total_load), 1.0)
+        # ext_grid represents the slack bus (generator of last resort).
+        # Capacity is set to unconstrained_nom to ensure feasibility even
+        # when other generators have minimum output constraints.
+        # p_min_pu=0 because absorption (p<0) would be rewarded by the LP
+        # objective (marginal_cost * p < 0 when p < 0).
+        p_nom_ext = float(unconstrained_nom)
         bus_id_set = set(bus_ids)
         for eid in [int(x) for x in sorted(net.ext_grid.index)]:
             row = net.ext_grid.loc[eid]
@@ -355,12 +360,18 @@ def solve_dc_opf_base_flows_from_pandapower(
             _r_pu, x_pu = _trafo_series_rx_pu_from_pp_row(row)
             x_pu_scaled = float(x_pu * scale)
 
+            # MATPOWER DC convention: b = 1/(x·τ).
+            # Absorb tap into reactance so the T-model (with τ=1) reduces
+            # to the same symmetric series model used by DCOperator:
+            #   Y_ff = Y_tt = 1/x_dc = 1/(x·τ) = b/τ
+            x_pu_dc = float(x_pu_scaled * tap)
+
             n.add(
                 "Transformer",
                 f"trafo_{tid}",
                 bus0=str(hv),
                 bus1=str(lv),
-                model="t",
+                model="pi",
                 s_nom=float(s_nom),
                 r=0.0,
                 x=float(x_pu_scaled),
@@ -386,8 +397,25 @@ def solve_dc_opf_base_flows_from_pandapower(
 
     res = n.optimize(solver_name=solver_name, solver_options=cfg.highs.solver_options())
 
-    objective = float(getattr(n, "objective", float("nan")))
-    status = str(getattr(res, "status", "ok")) if res is not None else "ok"
+    # PyPSA returns (status_str, termination_condition_str) tuple
+    # or an object with .status attribute depending on version.
+    if isinstance(res, tuple) and len(res) >= 2:
+        status = str(res[0])
+        termination = str(res[1])
+    else:
+        status = str(getattr(res, "status", "ok")) if res is not None else "ok"
+        termination = str(getattr(res, "termination_condition", "unknown"))
+
+    # Handle infeasible / failed optimization before accessing results.
+    obj_raw = getattr(n, "objective", None)
+    if obj_raw is None or status not in {"ok", "optimal"} or termination == "infeasible":
+        raise RuntimeError(
+            f"DC OPF failed: status={status!r}, termination={termination!r}, "
+            f"objective={obj_raw!r}. "
+            "The problem may be infeasible (check line limits, headroom_factor, "
+            "and generator bounds)."
+        )
+    objective = float(obj_raw)
 
     snap = n.snapshots[0]
 
