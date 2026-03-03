@@ -270,6 +270,27 @@ def run(config_path: Path) -> None:
         logger.info("Processing %s", name)
         logger.info("=" * 60)
 
+        # ---- Per-case OPFConfig override (headroom_factor) ----
+        case_headroom = case.get("headroom_factor")
+        if case_headroom is not None:
+            case_opf_cfg = OPFConfig(
+                headroom_factor=float(case_headroom),
+            )
+            logger.info(
+                "%s: per-case headroom_factor=%.4f (overrides global %.4f)",
+                name, float(case_headroom), opf_cfg.headroom_factor,
+            )
+        else:
+            case_opf_cfg = opf_cfg
+
+        # ---- Per-case AC config overrides ----
+        case_ac_overrides = case.get("ac", {})
+        if case_ac_overrides:
+            case_ac_cfg = {**ac_cfg, **case_ac_overrides}
+            logger.info("%s: per-case AC overrides: %s", name, case_ac_overrides)
+        else:
+            case_ac_cfg = ac_cfg
+
         # ---- Ensure file exists & auto-detect slack bus ----
         try:
             input_path_abs = ensure_case_file(input_path)
@@ -290,8 +311,8 @@ def run(config_path: Path) -> None:
                 slack_bus=slack_bus,
                 base_dispatch=base_dispatch,
                 dc_cfg=dc_cfg,
-                ac_cfg=ac_cfg,
-                opf_cfg=opf_cfg,
+                ac_cfg=case_ac_cfg,
+                opf_cfg=case_opf_cfg,
                 allow_download=False,
                 opf_dc_flow_consistency_tol_mw=consistency_tol,
             )

@@ -240,8 +240,7 @@ def _apply_distributed_slack_weights(nn: Any) -> None:
         gen_count_positive = int((headroom > 0).sum())
 
         logger.info(
-            "Distributed slack: gen headroom sum=%.4f MW, "
-            "participating gens=%d/%d",
+            "Distributed slack: gen headroom sum=%.4f MW, participating gens=%d/%d",
             gen_headroom_sum,
             gen_count_positive,
             int(len(nn.gen)),
@@ -328,7 +327,8 @@ def _solve_ac_pf_with_pandapower(
         trafo_model_eff,
     )
 
-    max_iter = 30
+    n_buses = int(len(nn.bus)) if hasattr(nn, "bus") and nn.bus is not None else 0
+    max_iter = 100 if n_buses > 1000 else 30
 
     runpp_kwargs: dict[str, Any] = dict(
         calculate_voltage_angles=True,
@@ -343,21 +343,40 @@ def _solve_ac_pf_with_pandapower(
     try:
         pp.runpp(nn, **runpp_kwargs)
     except Exception as e_first:
-        # If flat start failed, retry with DC initialisation.
-        if init_eff == "flat":
+        # Retry with the opposite initialisation strategy.
+        alt_init = "dc" if init_eff == "flat" else "flat"
+        logger.warning(
+            "pandapower.runpp failed with init='%s', retrying with init='%s' (%d iterations)",
+            init_eff,
+            alt_init,
+            max_iter,
+        )
+        runpp_kwargs["init"] = alt_init
+        try:
+            pp.runpp(nn, **runpp_kwargs)
+        except Exception:
+            # Final fallback: relax settings (no Q limits, no distributed slack).
             logger.warning(
-                "pandapower.runpp failed with init='flat', retrying with init='dc' (%d iterations)",
+                "pandapower.runpp failed with both init strategies; "
+                "retrying with relaxed settings (enforce_q_lims=False, "
+                "distributed_slack=False, init='flat', max_iteration=%d)",
                 max_iter,
             )
-            runpp_kwargs["init"] = "dc"
+            relaxed_kwargs: dict[str, Any] = dict(
+                calculate_voltage_angles=True,
+                enforce_q_lims=False,
+                init="flat",
+                max_iteration=max_iter,
+                trafo_model=str(trafo_model_eff),
+            )
             try:
-                pp.runpp(nn, **runpp_kwargs)
-            except Exception as e_retry:
-                logger.exception("pandapower.runpp failed with init='dc': %s", e_retry)
-                raise RuntimeError("pandapower.runpp failed.") from e_retry
-        else:
-            logger.exception("pandapower.runpp failed: %s", e_first)
-            raise RuntimeError("pandapower.runpp failed.") from e_first
+                pp.runpp(nn, **relaxed_kwargs)
+            except Exception as e_relaxed:
+                logger.exception(
+                    "pandapower.runpp failed even with relaxed settings: %s",
+                    e_relaxed,
+                )
+                raise RuntimeError("pandapower.runpp failed.") from e_relaxed
 
     converged = bool(getattr(nn, "converged", True))
     if not converged:
