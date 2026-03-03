@@ -4,13 +4,25 @@
 # The experiment script iterates over these cases, computes both DC and AC
 # radii in a single call (shared base point), and writes per-case JSON
 # results to experiments/output/pglib_sweep/.
+#
+# Cases are grouped by source:
+#   IEEE PF   — classic IEEE power flow cases (TL-Stat thermal limits)
+#   IEEE RTS  — IEEE Reliability Test System (original thermal limits)
+#   ACTIVSg   — Texas A&M synthetic grids (original thermal limits)
+#   GOC       — Grid Optimization Competition (original thermal limits)
+#   Polish    — Polish power system snapshots (original thermal limits)
+#   PEGASE    — pan-European network models (TL-UB thermal limits, problematic)
 
 cases:
+  # ── IEEE PF cases (TL-Stat thermal limits) ──────────────────────────
   - name: pglib_opf_case5_pjm
     file: pglib_opf_case5_pjm.m
 
   - name: pglib_opf_case14_ieee
     file: pglib_opf_case14_ieee.m
+
+  - name: pglib_opf_case24_ieee_rts
+    file: pglib_opf_case24_ieee_rts.m
 
   - name: pglib_opf_case30_ieee
     file: pglib_opf_case30_ieee.m
@@ -18,9 +30,33 @@ cases:
   - name: pglib_opf_case57_ieee
     file: pglib_opf_case57_ieee.m
 
+  - name: pglib_opf_case73_ieee_rts
+    file: pglib_opf_case73_ieee_rts.m
+
   - name: pglib_opf_case118_ieee
     file: pglib_opf_case118_ieee.m
 
+  # ── ACTIVSg / GOC cases (original thermal limits) ──────────────────
+  - name: pglib_opf_case200_activ
+    file: pglib_opf_case200_activ.m
+
+  - name: pglib_opf_case500_goc
+    file: pglib_opf_case500_goc.m
+
+  - name: pglib_opf_case2000_goc
+    file: pglib_opf_case2000_goc.m
+
+  - name: pglib_opf_case10000_goc
+    file: pglib_opf_case10000_goc.m
+
+  # ── Polish cases (original thermal limits) ──────────────────────────
+  - name: pglib_opf_case2383wp_k
+    file: pglib_opf_case2383wp_k.m
+
+  - name: pglib_opf_case2736sp_k
+    file: pglib_opf_case2736sp_k.m
+
+  # ── Problematic cases (TL-UB / tight topology) ─────────────────────
   - name: pglib_opf_case300_ieee
     file: pglib_opf_case300_ieee.m
     headroom_factor: 0.98     # tight topology; 0.95 infeasible, 1.0 gives zero DC radius
