@@ -216,6 +216,49 @@ def _trafo_series_rx_pu_from_pp_row(trafo_row: Any) -> tuple[float, float]:
     return r_pu, x_pu
 
 
+def _apply_distributed_slack_weights(nn: Any) -> None:
+    """Set ``slack_weight`` on generators and ext_grid proportionally to headroom.
+
+    Headroom for each generator is ``max_p_mw - p_mw`` (clamped to >= 0).
+    For ``ext_grid`` entries (which lack explicit bounds in pandapower), a
+    participation weight equal to the average headroom of normal generators
+    is assigned so that the slack bus absorbs a moderate share of losses
+    rather than all of them.
+
+    This function modifies ``nn`` **in-place**.
+    """
+    gen_headroom_sum = 0.0
+    gen_count_positive = 0
+
+    if hasattr(nn, "gen") and nn.gen is not None and len(nn.gen):
+        max_p = nn.gen["max_p_mw"].fillna(0.0)
+        p_set = nn.gen["p_mw"].fillna(0.0)
+        headroom = (max_p - p_set).clip(lower=0.0)
+        nn.gen["slack_weight"] = headroom
+
+        gen_headroom_sum = float(headroom.sum())
+        gen_count_positive = int((headroom > 0).sum())
+
+        logger.info(
+            "Distributed slack: gen headroom sum=%.4f MW, "
+            "participating gens=%d/%d",
+            gen_headroom_sum,
+            gen_count_positive,
+            int(len(nn.gen)),
+        )
+
+    if hasattr(nn, "ext_grid") and nn.ext_grid is not None and len(nn.ext_grid):
+        if gen_count_positive > 0 and gen_headroom_sum > 0:
+            avg_headroom = gen_headroom_sum / gen_count_positive
+        else:
+            avg_headroom = 100.0  # reasonable default (MW)
+        nn.ext_grid["slack_weight"] = avg_headroom
+        logger.info(
+            "Distributed slack: ext_grid slack_weight=%.4f MW (avg gen headroom)",
+            avg_headroom,
+        )
+
+
 def _solve_ac_pf_with_pandapower(
     *,
     net: Any,
@@ -224,8 +267,21 @@ def _solve_ac_pf_with_pandapower(
     gen_dispatch_mw_by_name: Mapping[str, float] | None,
     lossless: bool,
     init: str,
+    distributed_slack: bool = False,
+    trafo_model: str = "pi",
 ) -> PyPSAAPFResult:
-    """Solve PF using pandapower.runpp and return PyPSAAPFResult."""
+    """Solve PF using pandapower.runpp and return PyPSAAPFResult.
+
+    Parameters
+    ----------
+    distributed_slack:
+        When True, distribute the active-power slack among generators
+        proportionally to their headroom (P_max - P_set).  This avoids
+        dumping all loss-compensation onto a single slack bus and keeps
+        generator outputs within bounds.  Requires pandapower >= 2.10.
+    trafo_model:
+        Transformer equivalent circuit model: ``"pi"`` (recommended) or ``"t"``.
+    """
     try:
         import pandapower as pp  # type: ignore
     except ImportError as e:
@@ -245,6 +301,10 @@ def _solve_ac_pf_with_pandapower(
     )
     apply_gen_dispatch_to_pandapower_net(nn, gen_dispatch_mw_by_name)
 
+    # ---- Distributed slack: set participation weights based on headroom ----
+    if bool(distributed_slack):
+        _apply_distributed_slack_weights(nn)
+
     init_eff = str(init).strip().lower()
     if init_eff not in {"flat", "dc", "pp"}:
         raise ValueError("init must be flat|dc|pp for pandapower solver as well.")
@@ -253,24 +313,35 @@ def _solve_ac_pf_with_pandapower(
     if init_eff == "pp":
         init_eff = "flat"
 
+    trafo_model_eff = str(trafo_model).strip().lower()
+    if trafo_model_eff not in {"pi", "t"}:
+        raise ValueError("trafo_model must be pi|t")
+
     logger.info(
-        "Solving AC PF with pandapower.runpp: buses=%d lines=%d lossless=%s init=%s",
+        "Solving AC PF with pandapower.runpp: buses=%d lines=%d lossless=%s init=%s "
+        "distributed_slack=%s trafo_model=%s",
         int(len(nn.bus)),
         int(len(nn.line)) if hasattr(nn, "line") and nn.line is not None else 0,
         bool(lossless),
         init_eff,
+        bool(distributed_slack),
+        trafo_model_eff,
     )
 
     max_iter = 30
 
+    runpp_kwargs: dict[str, Any] = dict(
+        calculate_voltage_angles=True,
+        enforce_q_lims=True,
+        init=str(init_eff),
+        max_iteration=max_iter,
+        trafo_model=str(trafo_model_eff),
+    )
+    if bool(distributed_slack):
+        runpp_kwargs["distributed_slack"] = True
+
     try:
-        pp.runpp(
-            nn,
-            calculate_voltage_angles=True,
-            enforce_q_lims=True,
-            init=str(init_eff),
-            max_iteration=max_iter,
-        )
+        pp.runpp(nn, **runpp_kwargs)
     except Exception as e_first:
         # If flat start failed, retry with DC initialisation.
         if init_eff == "flat":
@@ -278,14 +349,9 @@ def _solve_ac_pf_with_pandapower(
                 "pandapower.runpp failed with init='flat', retrying with init='dc' (%d iterations)",
                 max_iter,
             )
+            runpp_kwargs["init"] = "dc"
             try:
-                pp.runpp(
-                    nn,
-                    calculate_voltage_angles=True,
-                    enforce_q_lims=True,
-                    init="dc",
-                    max_iteration=max_iter,
-                )
+                pp.runpp(nn, **runpp_kwargs)
             except Exception as e_retry:
                 logger.exception("pandapower.runpp failed with init='dc': %s", e_retry)
                 raise RuntimeError("pandapower.runpp failed.") from e_retry
@@ -368,6 +434,8 @@ def solve_ac_pf_base_point_from_pandapower(
     init: str = "flat",
     dc_init_vm_pu: np.ndarray | None = None,
     dc_init_va_rad: np.ndarray | None = None,
+    distributed_slack: bool = False,
+    trafo_model: str = "pi",
 ) -> PyPSAAPFResult:
     """
     Solve AC PF and return base voltages + per-line P/Q flows.
@@ -402,6 +470,8 @@ def solve_ac_pf_base_point_from_pandapower(
             gen_dispatch_mw_by_name=gen_dispatch_mw_by_name,
             lossless=bool(lossless),
             init=init_eff,
+            distributed_slack=bool(distributed_slack),
+            trafo_model=str(trafo_model),
         )
 
     pp_init: PyPSAAPFResult | None = None
@@ -413,6 +483,8 @@ def solve_ac_pf_base_point_from_pandapower(
             gen_dispatch_mw_by_name=gen_dispatch_mw_by_name,
             lossless=bool(lossless),
             init="flat",
+            distributed_slack=bool(distributed_slack),
+            trafo_model=str(trafo_model),
         )
         logger.info(
             "AC PF init='pp': obtained pandapower base point for initial guess."

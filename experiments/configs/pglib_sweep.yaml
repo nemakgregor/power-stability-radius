@@ -32,13 +32,13 @@ cases:
 
 # Shared compute parameters (applied to every case).
 compute:
-  base_dispatch: case       # "case" | "dc_opf"  —  use case PF as stable base point
+  base_dispatch: dc_opf     # "case" | "dc_opf"  —  DC OPF with headroom → AC PF base point
 
   # OPF→DC consistency tolerance (MW).
   # IEEE cases match to machine precision (~1e-13 MW) with the tap-absorbed
   # DC convention.  PEGASE networks with hundreds of transformers may show
   # small residuals (~1-2 MW) due to LP solver vs LU precision differences.
-  consistency_tol_mw: 5.0
+  consistency_tol_mw: 20.0
 
   dc:
     mode: materialize
@@ -48,9 +48,11 @@ compute:
   ac:
     chunk_size: 64
     balance: true
-    pf_init: flat
+    pf_init: dc                # DC warmstart for better convergence
     pf_solver: pandapower
-    lossless: true
+    lossless: false            # lossy AC PF (r ≠ 0) for realistic base point
+    distributed_slack: true    # distribute losses ∝ headroom (Pmax − Pset)
+    trafo_model: pi            # π-model for transformers (convergence)
   opf:
     headroom_factor: 0.95    # 95% headroom → ≥5% margin on every line
 

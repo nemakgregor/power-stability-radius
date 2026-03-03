@@ -546,6 +546,8 @@ def compute_results_for_case(
     ac_pf_init: str,
     ac_pf_solver: str,
     ac_lossless: bool,
+    ac_distributed_slack: bool = False,
+    ac_trafo_model: str = "pi",
     ac_extensions: ACExtensionsConfig | None = None,
     # shared
     opf_cfg: OPFConfig | None = None,
@@ -586,11 +588,7 @@ def compute_results_for_case(
     if not bool(compute_dc) and not bool(compute_ac):
         raise ValueError("At least one of compute_dc or compute_ac must be enabled.")
 
-    if bool(ac_lossless) is False:
-        raise NotImplementedError(
-            "ac_lossless=false is not supported by the current AC certificate/MC. "
-            "Set ac.lossless=true."
-        )
+    # ac_lossless=False is now supported: lossy AC PF + lossy AC Jacobian.
 
     dc_probabilistic_enabled = bool(ext.probabilistic_enabled)
     dc_nminus1_enabled = bool(ext.nminus1_enabled)
@@ -779,6 +777,8 @@ def compute_results_for_case(
                     lossless=bool(ac_lossless),
                     gen_dispatch_mw_by_name=gen_dispatch_for_ac if bd == "dc_opf" else {},
                     line_indices=[int(x) for x in sorted(net.line.index)],
+                    distributed_slack=bool(ac_distributed_slack),
+                    trafo_model=str(ac_trafo_model),
                 )
                 bp_ac_meta = bp_ac.to_meta_dict()
                 ac_pf_status = str(bp_ac.status)
@@ -801,7 +801,7 @@ def compute_results_for_case(
                     slack_bus=int(slack_bus),
                     chunk_size=int(ac_chunk_size),
                     balance=bool(ac_balance),
-                    lossless=True,  # enforced
+                    lossless=bool(ac_lossless),
                     return_h_vectors=bool(ac_need_h),
                 )
 
@@ -939,7 +939,9 @@ def compute_results_for_case(
             "ac": {
                 "pf_solver": str(ac_pf_solver),
                 "pf_init": str(ac_pf_init),
-                "lossless": True,
+                "lossless": bool(ac_lossless),
+                "distributed_slack": bool(ac_distributed_slack),
+                "trafo_model": str(ac_trafo_model),
                 "chunk_size": int(ac_chunk_size),
                 "balance": bool(ac_balance),
                 "pf_status": str(ac_pf_status),

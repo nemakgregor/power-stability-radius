@@ -25,22 +25,23 @@ def solve_ac_pf_base_point(
     lossless: bool,
     gen_dispatch_mw_by_name: Mapping[str, float] | Sequence[Sequence[Any]] | None,
     line_indices: Sequence[int] | None = None,
+    distributed_slack: bool = False,
+    trafo_model: str = "pi",
 ) -> tuple[BasePointAC, PyPSAAPFResult]:
     """
     Solve AC PF base point and return both:
     - BasePointAC (JSON-friendly, stores Vm/Va for reproducibility)
     - PyPSAAPFResult (used by AC certificate computation code)
 
-    Raises
-    ------
-    NotImplementedError
-        If lossless=False (explicitly not supported by current AC certificate implementation).
+    Parameters
+    ----------
+    distributed_slack:
+        Distribute the slack (loss compensation) among generators
+        proportionally to their headroom.  Passed to pandapower backend.
+    trafo_model:
+        Transformer model: ``"pi"`` or ``"t"``.
     """
-    if not bool(lossless):
-        raise NotImplementedError(
-            "AC base point with lossless=false is not supported in this project version. "
-            "Set ac.lossless=true to match the AC certificate regime."
-        )
+    # lossless=false is now supported (pi-model with losses).
 
     solver_eff = str(pf_solver).strip().lower()
     if solver_eff not in {"pandapower", "pypsa"}:
@@ -76,6 +77,8 @@ def solve_ac_pf_base_point(
         lossless=bool(lossless),
         solver=str(solver_eff),
         init=str(init_eff),
+        distributed_slack=bool(distributed_slack),
+        trafo_model=str(trafo_model),
     )
 
     # Limits per line (MVA) for reproducibility / verification checks

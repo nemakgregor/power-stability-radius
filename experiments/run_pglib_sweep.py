@@ -108,6 +108,8 @@ def _compute_case(
         ac_pf_init=str(ac_cfg.get("pf_init", "flat")),
         ac_pf_solver=str(ac_cfg.get("pf_solver", "pandapower")),
         ac_lossless=bool(ac_cfg.get("lossless", True)),
+        ac_distributed_slack=bool(ac_cfg.get("distributed_slack", False)),
+        ac_trafo_model=str(ac_cfg.get("trafo_model", "pi")),
         # OPF
         opf_cfg=opf_cfg,
         opf_dc_flow_consistency_tol_mw=float(opf_dc_flow_consistency_tol_mw),
