@@ -125,7 +125,7 @@ cases:
 
 # Shared compute parameters (applied to every case).
 compute:
-  base_dispatch: acpf     # "case" | "dc_opf" | "acpf"  —  DC OPF with headroom → AC PF base point
+  base_dispatch: ac_fpf     # "case" | "dc_opf" | "acpf" | "ac_fpf"
 
   # OPF→DC consistency tolerance (MW).
   # IEEE cases match to machine precision (~1e-13 MW) with the tap-absorbed
@@ -156,5 +156,5 @@ compute:
 
 allow_download: true
 data_dir: data/input
-output_dir: experiments/output/pglib_sweep
+output_dir: experiments/output/sweep_pglib
 case_timeout_sec: 600    # per-case subprocess timeout (seconds); 0 = no timeout
