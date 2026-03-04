@@ -156,5 +156,5 @@ compute:
 
 allow_download: true
 data_dir: data/input
-output_dir: experiments/output/sweep_pglib
+output_dir: experiments/output/test_run
 case_timeout_sec: 600    # per-case subprocess timeout (seconds); 0 = no timeout

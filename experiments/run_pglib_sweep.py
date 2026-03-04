@@ -125,7 +125,10 @@ def _compute_case(
 
 
 def _case_worker(
-    result_queue: mp.Queue, kwargs: dict, log_level: int = logging.INFO
+    result_queue: mp.Queue,
+    kwargs: dict,
+    log_level: int = logging.INFO,
+    log_path: str | None = None,
 ) -> None:
     """Run ``_compute_case`` in a child process.
 
@@ -140,6 +143,26 @@ def _case_worker(
         format="%(asctime)s %(levelname)-8s [subprocess] %(name)s: %(message)s",
         force=True,  # override if already configured (e.g. Linux fork)
     )
+
+    # Add file handler so subprocess logs (including third-party) go to debug.log.
+    if log_path:
+        fh = logging.FileHandler(log_path, mode="a", encoding="utf-8")
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(
+            logging.Formatter(
+                "%(asctime)s %(levelname)-8s [subprocess] %(name)s: %(message)s"
+            )
+        )
+        root = logging.getLogger()
+        root.addHandler(fh)
+        # Lower root level to DEBUG so messages reach the file handler;
+        # keep the console StreamHandler at INFO to avoid flooding stdout.
+        root.setLevel(logging.DEBUG)
+        for h in root.handlers:
+            if isinstance(h, logging.StreamHandler) and not isinstance(
+                h, logging.FileHandler
+            ):
+                h.setLevel(log_level)
     child_logger = logging.getLogger(__name__)
     case_name = kwargs.get("input_path", "unknown")
     child_logger.info(
@@ -158,7 +181,9 @@ def _case_worker(
         result_queue.put(("error", tb))
 
 
-def _run_case_isolated(timeout: int = 900, **kwargs) -> dict:
+def _run_case_isolated(
+    timeout: int = 900, log_path: str | None = None, **kwargs
+) -> dict:
     """Run ``_compute_case`` in a subprocess for crash isolation.
 
     pandapower can trigger C-level memory corruption
@@ -170,10 +195,26 @@ def _run_case_isolated(timeout: int = 900, **kwargs) -> dict:
     logger.info("Launching subprocess for case: %s (timeout=%ds)", case_name, timeout)
     result_queue: mp.Queue = mp.Queue(maxsize=1)
 
-    proc = mp.Process(target=_case_worker, args=(result_queue, kwargs))
+    proc = mp.Process(
+        target=_case_worker,
+        args=(result_queue, kwargs),
+        kwargs={"log_path": log_path},
+    )
     proc.start()
     logger.info("Subprocess started: PID=%s, waiting up to %ds...", proc.pid, timeout)
-    proc.join(timeout=timeout)
+
+    # Drain the result queue BEFORE joining.  Python docs warn that
+    # proc.join() can deadlock if the child put data on a Queue whose
+    # internal pipe buffer is full — the feeder thread blocks and the
+    # child cannot exit.  Reading the queue first avoids this.
+    result_tuple: tuple | None = None
+    try:
+        result_tuple = result_queue.get(timeout=timeout)
+    except Exception:
+        pass
+
+    # Now safe to join (queue is drained).
+    proc.join(timeout=30)
 
     if proc.exitcode is None:
         logger.error(
@@ -204,10 +245,10 @@ def _run_case_isolated(timeout: int = 900, **kwargs) -> dict:
         "Subprocess PID=%s exited OK (code=0) for case: %s", proc.pid, case_name
     )
 
-    try:
-        status, payload = result_queue.get_nowait()
-    except Exception:
+    if result_tuple is None:
         raise RuntimeError("Subprocess completed but produced no result.")
+
+    status, payload = result_tuple
 
     if status == "error":
         raise RuntimeError(f"Case computation failed in subprocess:\n{payload}")
@@ -366,7 +407,16 @@ def _setup_logging(output_dir: Path) -> logging.FileHandler:
     fh.setFormatter(
         logging.Formatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s")
     )
-    logging.getLogger().addHandler(fh)
+    root = logging.getLogger()
+    root.addHandler(fh)
+    # Lower root level to DEBUG so third-party messages reach the file handler;
+    # keep existing console handlers at INFO to avoid flooding stdout.
+    root.setLevel(logging.DEBUG)
+    for h in root.handlers:
+        if isinstance(h, logging.StreamHandler) and not isinstance(
+            h, logging.FileHandler
+        ):
+            h.setLevel(logging.INFO)
     logger.info("Debug log: %s", log_path)
     return fh
 
@@ -399,6 +449,7 @@ def run(config_path: Path) -> None:
 
     # ---- File logging (debug.log) ----
     file_handler = _setup_logging(output_dir)
+    log_path = str(output_dir / "debug.log")
 
     logger.info("Config: %s", config_path)
     logger.info("OPFConfig: headroom_factor=%.4f", opf_cfg.headroom_factor)
@@ -461,6 +512,7 @@ def run(config_path: Path) -> None:
             t_start = time.perf_counter()
             combined = _run_case_isolated(
                 timeout=case_timeout,
+                log_path=log_path,
                 input_path=input_path_abs,
                 slack_bus=slack_bus,
                 base_dispatch=base_dispatch,

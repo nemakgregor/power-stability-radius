@@ -373,7 +373,7 @@ def solve_ac_fpf(
 
     runopp_kwargs: dict[str, Any] = dict(
         calculate_voltage_angles=True,
-        init="flat",
+        init="dc",
         OPF_FLOW_LIM=2,  # use apparent power (MVA) for line limits
         RETURN_RAW_DER=0,
     )
@@ -430,7 +430,9 @@ def solve_ac_fpf(
             try:
                 logger.info("AC FPF attempt 3/3 (relaxed all): vm=[0.80,1.20]")
                 t2 = _time.perf_counter()
-                pp.runopp(nn, **runopp_kwargs)
+                # Use flat init as last resort in case DC init itself is problematic.
+                runopp_kwargs_flat = {**runopp_kwargs, "init": "flat"}
+                pp.runopp(nn, **runopp_kwargs_flat)
                 logger.info(
                     "AC FPF attempt 3/3 (relaxed all) completed in %.2f sec",
                     _time.perf_counter() - t2,
