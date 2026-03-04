@@ -640,6 +640,11 @@ def compute_results_for_case(
     ac_extensions: ACExtensionsConfig | None = None,
     # AC FPF
     ac_fpf_pg0_source: str = "case",
+    ac_fpf_vm_min_pu: float = 0.9,
+    ac_fpf_vm_max_pu: float = 1.1,
+    ac_fpf_max_iteration: int = 300,
+    ac_fpf_max_loading_percent: float = 99.0,
+    ac_fpf_init: str = "dc",
     # shared
     opf_cfg: OPFConfig | None = None,
     opf_dc_flow_consistency_tol_mw: float = _DEFAULT_OPF_DC_FLOW_CONSISTENCY_TOL_MW,
@@ -808,10 +813,14 @@ def compute_results_for_case(
 
     # ---------- AC FPF: Solve AC OPF feasibility to extract bus injections ----------
     if bd == "ac_fpf" and (bool(compute_dc) or bool(compute_ac)):
-        from stability_radius.base_point.pandapower_opp import ACFPFConfig as _ACFPFConfig
+        from stability_radius.base_point.pandapower_opp import (
+            ACFPFConfig as _ACFPFConfig,
+        )
 
         try:
-            with log_stage(logger, f"{case_tag}: Early AC FPF (runopp) for ac_fpf base dispatch"):
+            with log_stage(
+                logger, f"{case_tag}: Early AC FPF (runopp) for ac_fpf base dispatch"
+            ):
                 n_buses_net = (
                     int(len(net.bus))
                     if hasattr(net, "bus") and net.bus is not None
@@ -822,7 +831,14 @@ def compute_results_for_case(
                     if hasattr(net, "line") and net.line is not None
                     else 0
                 )
-                fpf_cfg = _ACFPFConfig(pg0_source=str(ac_fpf_pg0_source))
+                fpf_cfg = _ACFPFConfig(
+                    pg0_source=str(ac_fpf_pg0_source),
+                    vm_min_pu=float(ac_fpf_vm_min_pu),
+                    vm_max_pu=float(ac_fpf_vm_max_pu),
+                    max_iteration=int(ac_fpf_max_iteration),
+                    max_loading_percent=float(ac_fpf_max_loading_percent),
+                    init=str(ac_fpf_init),
+                )
                 logger.info(
                     "%s: AC FPF: starting runopp solve (buses=%d, lines=%d, "
                     "lossless=%s, pg0_source=%s)",
@@ -1025,7 +1041,11 @@ def compute_results_for_case(
             raise ValueError("ac.pf_init must be flat|dc|pp")
 
         try:
-            if bd in {"acpf", "ac_fpf"} and acpf_bp_ac is not None and acpf_base_pf is not None:
+            if (
+                bd in {"acpf", "ac_fpf"}
+                and acpf_bp_ac is not None
+                and acpf_base_pf is not None
+            ):
                 # Reuse early AC PF/FPF solved for ACPF/AC_FPF base dispatch.
                 logger.info("%s: Reusing early AC result for %s mode.", case_tag, bd)
                 bp_ac = acpf_bp_ac

@@ -116,6 +116,11 @@ def _compute_case(
         ac_trafo_model=str(ac_cfg.get("trafo_model", "pi")),
         # AC FPF
         ac_fpf_pg0_source=str(ac_fpf_cfg.get("pg0_source", "case")),
+        ac_fpf_vm_min_pu=float(ac_fpf_cfg.get("vm_min_pu", 0.9)),
+        ac_fpf_vm_max_pu=float(ac_fpf_cfg.get("vm_max_pu", 1.1)),
+        ac_fpf_max_iteration=int(ac_fpf_cfg.get("max_iteration", 300)),
+        ac_fpf_max_loading_percent=float(ac_fpf_cfg.get("max_loading_percent", 99.0)),
+        ac_fpf_init=str(ac_fpf_cfg.get("init", "dc")),
         # OPF
         opf_cfg=opf_cfg,
         opf_dc_flow_consistency_tol_mw=float(opf_dc_flow_consistency_tol_mw),
@@ -483,6 +488,14 @@ def run(config_path: Path) -> None:
         else:
             case_ac_cfg = ac_cfg
 
+        # ---- Per-case AC FPF config overrides ----
+        case_ac_fpf_overrides = case.get("ac_fpf", {})
+        if case_ac_fpf_overrides:
+            case_ac_fpf_cfg = {**ac_fpf_cfg, **case_ac_fpf_overrides}
+            logger.info("%s: per-case AC FPF overrides: %s", name, case_ac_fpf_overrides)
+        else:
+            case_ac_fpf_cfg = ac_fpf_cfg
+
         # ---- Per-case base_dispatch override ----
         case_base_dispatch_override = case.get("base_dispatch")
         if case_base_dispatch_override is not None:
@@ -534,7 +547,7 @@ def run(config_path: Path) -> None:
                 base_dispatch=case_base_dispatch,
                 dc_cfg=dc_cfg,
                 ac_cfg=case_ac_cfg,
-                ac_fpf_cfg=ac_fpf_cfg,
+                ac_fpf_cfg=case_ac_fpf_cfg,
                 opf_cfg=case_opf_cfg,
                 allow_download=False,
                 opf_dc_flow_consistency_tol_mw=consistency_tol,

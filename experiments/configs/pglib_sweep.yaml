@@ -65,32 +65,65 @@ cases:
 
   - name: pglib_opf_case1888_rte
     file: pglib_opf_case1888_rte.m
+    timeout: 900
+    ac:
+      distributed_slack: false
+      pf_init: flat
+    ac_fpf:
+      init: flat
+      vm_min_pu: 0.85
+      vm_max_pu: 1.15
+      max_iteration: 500
 
   - name: pglib_opf_case1951_rte
     file: pglib_opf_case1951_rte.m
+    timeout: 900
+    ac:
+      distributed_slack: false
+      pf_init: flat
+    ac_fpf:
+      init: flat
+      vm_min_pu: 0.85
+      vm_max_pu: 1.15
+      max_iteration: 500
 
   - name: pglib_opf_case2853_sdet
     file: pglib_opf_case2853_sdet.m
+    timeout: 1200
+    ac:
+      distributed_slack: false
+      pf_init: flat
+    ac_fpf:
+      init: flat
+      vm_min_pu: 0.85
+      vm_max_pu: 1.15
+      max_iteration: 500
 
   - name: pglib_opf_case6468_rte
     file: pglib_opf_case6468_rte.m
     headroom_factor: 0.98
+    timeout: 1800
     ac:
-      distributed_slack: false  # pandapower crashes (realloc corruption) with distributed_slack on this case
-      pf_init: flat             # flat init avoids dc-init interaction with 129 trafos
-    # NOTE: DC OPF may be infeasible at any headroom due to tight thermal limits
-    # and generator min-output constraints in the RTE network topology.
-    # When infeasible, the case is tracked in summary.json with status=dc_opf_infeasible.
+      distributed_slack: false
+      pf_init: flat
+    ac_fpf:
+      init: flat
+      vm_min_pu: 0.85
+      vm_max_pu: 1.15
+      max_iteration: 500
 
   - name: pglib_opf_case6515_rte
     file: pglib_opf_case6515_rte.m
     headroom_factor: 0.98
+    timeout: 1800
     ac:
-      distributed_slack: false  # pandapower crashes (realloc corruption) with distributed_slack on this case
-      pf_init: flat             # flat init avoids dc-init interaction with 129 trafos
-    # NOTE: DC OPF may be infeasible at any headroom due to tight thermal limits
-    # and generator min-output constraints in the RTE network topology.
-    # When infeasible, the case is tracked in summary.json with status=dc_opf_infeasible.
+      distributed_slack: false
+      pf_init: flat
+    ac_fpf:
+      init: flat
+      vm_min_pu: 0.85
+      vm_max_pu: 1.15
+      max_iteration: 500
 
   # ── Polish cases (original thermal limits) ──────────────────────────
   - name: pglib_opf_case2383wp_k
@@ -153,6 +186,9 @@ compute:
     pg0_source: case           # initial dispatch guess: "case" | "midpoint"
     vm_min_pu: 0.9
     vm_max_pu: 1.1
+    max_iteration: 300         # PDIPM iterations (default was 100, now 300)
+    max_loading_percent: 99.0  # 1% margin for PIPS tolerance
+    init: dc                   # "dc" or "flat" initialization
   opf:
     headroom_factor: 0.90    # 90% headroom → ≥10% margin on every constrained line
 
