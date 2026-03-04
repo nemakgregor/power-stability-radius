@@ -27,6 +27,7 @@ import json
 import logging
 import multiprocessing as mp
 import os
+import shutil
 import time
 from pathlib import Path
 
@@ -292,6 +293,106 @@ def _find_bottleneck(results: dict) -> tuple[int, float, str]:
     return best_line, best_margin, mode
 
 
+def _extract_summary_row(name: str, combined: dict, time_total: float) -> dict:
+    """Extract summary metrics from a per-case result dict.
+
+    Used both for freshly computed results and for reused JSON files.
+    """
+    meta = combined.get("__meta__", {})
+    bp_dc = meta.get("base_point_dc") or {}
+    bp_ac = meta.get("base_point_ac") or {}
+    n_buses = len(bp_dc.get("bus_ids", bp_ac.get("bus_ids", [])))
+    n_lines = sum(1 for k in combined if k.startswith("line_"))
+
+    # DC global radius (min over all lines).
+    dc_radii = []
+    for key, val in combined.items():
+        if key.startswith("line_") and isinstance(val, dict):
+            r = val.get("radius_l2")
+            if r is not None and np.isfinite(r):
+                dc_radii.append(float(r))
+    dc_r_star = float(min(dc_radii)) if dc_radii else float("nan")
+
+    # AC global radius (min over all lines).
+    ac_radii = []
+    for key, val in combined.items():
+        if key.startswith("line_") and isinstance(val, dict):
+            r = val.get("radius_ac_l2")
+            if r is not None and np.isfinite(r):
+                ac_radii.append(float(r))
+    ac_r_star = float(min(ac_radii)) if ac_radii else float("nan")
+
+    # AC/DC ratio.
+    if np.isfinite(dc_r_star) and dc_r_star > 0 and np.isfinite(ac_r_star):
+        ac_dc_ratio = ac_r_star / dc_r_star
+    else:
+        ac_dc_ratio = float("nan")
+
+    # Bottleneck line.
+    bn_line, bn_margin, _ = _find_bottleneck(combined)
+
+    # AC feasibility info.
+    ac_meta = meta.get("ac", {})
+    ac_feas = ac_meta.get("feasibility")
+    ac_feasible: bool | str = "n/a"
+    ac_n_violated = 0
+    if isinstance(ac_feas, dict):
+        ac_feasible = bool(ac_feas.get("is_feasible", True))
+        ac_n_violated = int(ac_feas.get("n_constrained_violated", 0))
+
+    # Headroom factor actually used.
+    opf_meta = meta.get("opf", {})
+    hf_used = opf_meta.get("headroom_factor_used", float("nan"))
+
+    # Consistency check info.
+    dc_consistency_passed = meta.get("opf_dc_consistency_passed")
+    dc_consistency_max_diff = meta.get("opf_dc_flow_max_abs_diff_mw", float("nan"))
+
+    # AC PF repair metadata.
+    ac_pf_attempt = ac_meta.get("pf_attempt", "n/a")
+    ac_pf_repairs = list(ac_meta.get("pf_repairs", []))
+
+    # Ext_grid absorption.
+    ext_absorb_mw = float(opf_meta.get("ext_grid_absorption_mw", 0.0))
+
+    return {
+        "case": name,
+        "n_buses": n_buses,
+        "n_lines": n_lines,
+        "dc_r_star": dc_r_star,
+        "ac_r_star": ac_r_star,
+        "ac_dc_ratio": ac_dc_ratio,
+        "ac_feasible": ac_feasible,
+        "ac_n_violated": ac_n_violated,
+        "headroom_factor_used": float(hf_used) if np.isfinite(hf_used) else None,
+        "time_total": time_total,
+        "bottleneck_line": bn_line,
+        "bottleneck_margin": bn_margin,
+        "status": "ok",
+        "ac_pf_attempt": ac_pf_attempt,
+        "ac_pf_repairs": ac_pf_repairs,
+        "dc_consistency_passed": dc_consistency_passed,
+        "dc_consistency_max_diff_mw": float(dc_consistency_max_diff)
+        if np.isfinite(dc_consistency_max_diff)
+        else None,
+        "ext_grid_absorption_mw": ext_absorb_mw if ext_absorb_mw > 1e-3 else 0.0,
+    }
+
+
+def _update_summary_and_plot(
+    summary_rows: list[dict], output_dir: Path
+) -> None:
+    """Write summary.json and regenerate the plot with rows sorted by n_buses."""
+    sorted_rows = sorted(summary_rows, key=lambda r: (r["n_buses"], r["case"]))
+    summary_path = output_dir / "summary.json"
+    with summary_path.open("w", encoding="utf-8") as fh:
+        json.dump(sorted_rows, fh, indent=2, default=_numpy_serialiser)
+    try:
+        _plot_bar_chart(sorted_rows, output_dir)
+    except Exception:
+        logger.warning("Could not update plot (matplotlib error)", exc_info=True)
+
+
 def _print_table(rows: list[dict]) -> None:
     """Print Table 1 to stdout in a fixed-width format."""
     header = (
@@ -416,7 +517,7 @@ def _setup_logging(output_dir: Path) -> logging.FileHandler:
     return fh
 
 
-def run(config_path: Path) -> None:
+def run(config_path: Path, reuse_dir: Path | None = None) -> None:
     cfg = _load_config(config_path)
     cases = cfg["cases"]
     compute_cfg = cfg.get("compute", {})
@@ -451,6 +552,8 @@ def run(config_path: Path) -> None:
     logger.info("Consistency tolerance: %.2f MW", consistency_tol)
     logger.info("Base dispatch: %s", base_dispatch)
     logger.info("Case timeout: %d sec", case_timeout)
+    if reuse_dir is not None:
+        logger.info("Reuse dir: %s (will skip already-solved cases)", reuse_dir)
     logger.info("Cases: %d", len(cases))
 
     summary_rows: list[dict] = []
@@ -464,6 +567,32 @@ def run(config_path: Path) -> None:
         logger.info("=" * 60)
         logger.info("Processing [%d/%d] %s", case_idx, n_cases, name)
         logger.info("=" * 60)
+
+        # ---- Reuse existing result if available ----
+        if reuse_dir is not None:
+            reuse_path = Path(reuse_dir) / f"{name}.json"
+            if reuse_path.is_file():
+                try:
+                    with reuse_path.open("r", encoding="utf-8") as fh:
+                        reused = json.load(fh)
+                    row = _extract_summary_row(name, reused, time_total=0.0)
+                    summary_rows.append(row)
+                    logger.info(
+                        "%s: REUSED from %s (n_buses=%d, dc_r*=%.4f, ac_r*=%.4f)",
+                        name, reuse_path, row["n_buses"],
+                        row["dc_r_star"], row["ac_r_star"],
+                    )
+                    # Copy JSON into output_dir so it is self-contained.
+                    dest = output_dir / f"{name}.json"
+                    if dest.resolve() != reuse_path.resolve():
+                        shutil.copy2(str(reuse_path), str(dest))
+                    _update_summary_and_plot(summary_rows, output_dir)
+                    continue
+                except Exception:
+                    logger.warning(
+                        "%s: could not reuse %s, will recompute",
+                        name, reuse_path, exc_info=True,
+                    )
 
         # ---- Per-case OPFConfig override (headroom_factor) ----
         case_headroom = case.get("headroom_factor")
@@ -593,8 +722,8 @@ def run(config_path: Path) -> None:
                 "dc_consistency_max_diff_mw": float("nan"),
             }
             summary_rows.append(row)
+            _update_summary_and_plot(summary_rows, output_dir)
             continue
-
         # Remove non-serialisable h-vectors before saving.
         combined.pop("_h_vectors", None)
 
@@ -604,58 +733,21 @@ def run(config_path: Path) -> None:
         logger.info("Results written: %s", case_output)
 
         # ---- Extract metrics ----
+        row = _extract_summary_row(name, combined, time_total)
+
+        # Log notable conditions.
         meta = combined.get("__meta__", {})
-        bp_dc = meta.get("base_point_dc") or {}
-        bp_ac = meta.get("base_point_ac") or {}
-        n_buses = len(bp_dc.get("bus_ids", bp_ac.get("bus_ids", [])))
-        n_lines = sum(1 for k in combined if k.startswith("line_"))
-
-        # DC global radius (min over all lines).
-        dc_radii = []
-        for key, val in combined.items():
-            if key.startswith("line_") and isinstance(val, dict):
-                r = val.get("radius_l2")
-                if r is not None and np.isfinite(r):
-                    dc_radii.append(float(r))
-        dc_r_star = float(min(dc_radii)) if dc_radii else float("nan")
-
-        # AC global radius (min over all lines).
-        ac_radii = []
-        for key, val in combined.items():
-            if key.startswith("line_") and isinstance(val, dict):
-                r = val.get("radius_ac_l2")
-                if r is not None and np.isfinite(r):
-                    ac_radii.append(float(r))
-        ac_r_star = float(min(ac_radii)) if ac_radii else float("nan")
-
-        # AC/DC ratio.
-        if np.isfinite(dc_r_star) and dc_r_star > 0 and np.isfinite(ac_r_star):
-            ac_dc_ratio = ac_r_star / dc_r_star
-        else:
-            ac_dc_ratio = float("nan")
-
-        # Bottleneck line.
-        bn_line, bn_margin, _ = _find_bottleneck(combined)
-
-        # AC feasibility info.
         ac_meta = meta.get("ac", {})
         ac_feas = ac_meta.get("feasibility")
-        ac_feasible: bool | str = "n/a"
-        ac_n_violated = 0
-        if isinstance(ac_feas, dict):
-            ac_feasible = bool(ac_feas.get("is_feasible", True))
-            ac_n_violated = int(ac_feas.get("n_constrained_violated", 0))
-            if not ac_feasible:
-                logger.warning(
-                    "%s: AC base point INFEASIBLE: %d constrained lines violated "
-                    "(worst_margin=%.4f MVA on line %d)",
-                    name,
-                    ac_n_violated,
-                    float(ac_feas.get("worst_margin_mva", float("nan"))),
-                    int(ac_feas.get("worst_line_id", -1)),
-                )
-
-        # Headroom factor actually used (may differ from configured due to adaptive schedule).
+        if isinstance(ac_feas, dict) and not ac_feas.get("is_feasible", True):
+            logger.warning(
+                "%s: AC base point INFEASIBLE: %d constrained lines violated "
+                "(worst_margin=%.4f MVA on line %d)",
+                name,
+                int(ac_feas.get("n_constrained_violated", 0)),
+                float(ac_feas.get("worst_margin_mva", float("nan"))),
+                int(ac_feas.get("worst_line_id", -1)),
+            )
         opf_meta = meta.get("opf", {})
         hf_used = opf_meta.get("headroom_factor_used", float("nan"))
         hf_configured = opf_meta.get("headroom_factor_configured", float("nan"))
@@ -666,52 +758,16 @@ def run(config_path: Path) -> None:
         ):
             logger.info(
                 "%s: Adaptive headroom: configured=%.4f, used=%.4f",
-                name,
-                hf_configured,
-                hf_used,
+                name, hf_configured, hf_used,
             )
-
-        # Log consistency check info from meta.
         consistency_max_diff = meta.get("opf_dc_flow_max_abs_diff_mw", float("nan"))
         if np.isfinite(consistency_max_diff):
             logger.info(
                 "%s: OPF->DC consistency max|Δf|=%.4f MW", name, consistency_max_diff
             )
 
-        # AC PF repair metadata from __meta__.
-        ac_pf_attempt = ac_meta.get("pf_attempt", "n/a")
-        ac_pf_repairs = list(ac_meta.get("pf_repairs", []))
-
-        # DC consistency metadata from __meta__.
-        dc_consistency_passed = meta.get("opf_dc_consistency_passed")
-        dc_consistency_max_diff = meta.get("opf_dc_flow_max_abs_diff_mw", float("nan"))
-
-        # Ext_grid absorption metadata from __meta__.
-        ext_absorb_mw = float(opf_meta.get("ext_grid_absorption_mw", 0.0))
-
-        row = {
-            "case": name,
-            "n_buses": n_buses,
-            "n_lines": n_lines,
-            "dc_r_star": dc_r_star,
-            "ac_r_star": ac_r_star,
-            "ac_dc_ratio": ac_dc_ratio,
-            "ac_feasible": ac_feasible,
-            "ac_n_violated": ac_n_violated,
-            "headroom_factor_used": float(hf_used) if np.isfinite(hf_used) else None,
-            "time_total": time_total,
-            "bottleneck_line": bn_line,
-            "bottleneck_margin": bn_margin,
-            "status": "ok",
-            "ac_pf_attempt": ac_pf_attempt,
-            "ac_pf_repairs": ac_pf_repairs,
-            "dc_consistency_passed": dc_consistency_passed,
-            "dc_consistency_max_diff_mw": float(dc_consistency_max_diff)
-            if np.isfinite(dc_consistency_max_diff)
-            else None,
-            "ext_grid_absorption_mw": ext_absorb_mw if ext_absorb_mw > 1e-3 else 0.0,
-        }
         summary_rows.append(row)
+        _update_summary_and_plot(summary_rows, output_dir)
 
     if not summary_rows:
         logger.error("No cases completed successfully.")
@@ -719,17 +775,15 @@ def run(config_path: Path) -> None:
         file_handler.close()
         return
 
-    # ---- Write summary JSON ----
-    summary_path = output_dir / "summary.json"
-    with summary_path.open("w", encoding="utf-8") as fh:
-        json.dump(summary_rows, fh, indent=2, default=_numpy_serialiser)
-    logger.info("Summary written: %s", summary_path)
+    # ---- Final summary (sorted by n_buses) ----
+    sorted_rows = sorted(summary_rows, key=lambda r: (r["n_buses"], r["case"]))
+    _update_summary_and_plot(sorted_rows, output_dir)
+    logger.info("Summary written: %s", output_dir / "summary.json")
 
     # ---- Print Table 1 ----
-    _print_table(summary_rows)
+    _print_table(sorted_rows)
 
-    # ---- Generate Fig. 1 ----
-    plot_path = _plot_bar_chart(summary_rows, output_dir)
+    plot_path = output_dir / "fig1_dc_vs_ac_radius.png"
     logger.info("Plot saved: %s", plot_path)
     print(f"Figure saved: {plot_path}")
 
@@ -752,8 +806,15 @@ def main() -> None:
         default=_DEFAULT_CONFIG,
         help="Path to pglib_sweep.yaml config.",
     )
+    parser.add_argument(
+        "--reuse-dir",
+        type=Path,
+        default=None,
+        help="Reuse existing per-case JSON results from this directory; "
+        "only solve cases without a result file.",
+    )
     args = parser.parse_args()
-    run(args.config)
+    run(args.config, reuse_dir=args.reuse_dir)
 
 
 if __name__ == "__main__":
