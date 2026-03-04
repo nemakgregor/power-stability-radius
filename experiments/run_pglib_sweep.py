@@ -144,7 +144,7 @@ def _case_worker(
         force=True,  # override if already configured (e.g. Linux fork)
     )
 
-    # Add file handler so subprocess logs (including third-party) go to debug.log.
+    # Add file handler so subprocess logs go to debug.log.
     if log_path:
         fh = logging.FileHandler(log_path, mode="a", encoding="utf-8")
         fh.setLevel(logging.DEBUG)
@@ -153,16 +153,11 @@ def _case_worker(
                 "%(asctime)s %(levelname)-8s [subprocess] %(name)s: %(message)s"
             )
         )
-        root = logging.getLogger()
-        root.addHandler(fh)
-        # Lower root level to DEBUG so messages reach the file handler;
-        # keep the console StreamHandler at INFO to avoid flooding stdout.
-        root.setLevel(logging.DEBUG)
-        for h in root.handlers:
-            if isinstance(h, logging.StreamHandler) and not isinstance(
-                h, logging.FileHandler
-            ):
-                h.setLevel(log_level)
+        logging.getLogger().addHandler(fh)
+        # Enable DEBUG for project loggers only; third-party libs stay at INFO
+        # (inherited from root) so numba/scipy/etc. DEBUG spam is excluded.
+        logging.getLogger("stability_radius").setLevel(logging.DEBUG)
+        logging.getLogger("__main__").setLevel(logging.DEBUG)
     child_logger = logging.getLogger(__name__)
     case_name = kwargs.get("input_path", "unknown")
     child_logger.info(
@@ -407,16 +402,11 @@ def _setup_logging(output_dir: Path) -> logging.FileHandler:
     fh.setFormatter(
         logging.Formatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s")
     )
-    root = logging.getLogger()
-    root.addHandler(fh)
-    # Lower root level to DEBUG so third-party messages reach the file handler;
-    # keep existing console handlers at INFO to avoid flooding stdout.
-    root.setLevel(logging.DEBUG)
-    for h in root.handlers:
-        if isinstance(h, logging.StreamHandler) and not isinstance(
-            h, logging.FileHandler
-        ):
-            h.setLevel(logging.INFO)
+    logging.getLogger().addHandler(fh)
+    # Enable DEBUG for project loggers only; third-party libs stay at INFO
+    # (inherited from root) so numba/scipy/etc. DEBUG spam is excluded.
+    logging.getLogger("stability_radius").setLevel(logging.DEBUG)
+    logging.getLogger("__main__").setLevel(logging.DEBUG)
     logger.info("Debug log: %s", log_path)
     return fh
 
@@ -445,7 +435,7 @@ def run(config_path: Path) -> None:
         headroom_factor=float(opf_yaml.get("headroom_factor", 0.9)),
     )
 
-    output_dir.mkdir(parents=True, exist_ok=True)
+    os.makedirs(str(output_dir), exist_ok=True)
 
     # ---- File logging (debug.log) ----
     file_handler = _setup_logging(output_dir)
