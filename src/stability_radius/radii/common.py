@@ -81,6 +81,9 @@ class LineBaseQuantities:
     # Optional: per-generator dispatch (PyPSA generator names -> P(MW)).
     opf_gen_dispatch_mw_by_name: tuple[tuple[str, float], ...] | None = None
 
+    # Optional: ext_grid absorption used by OPF (MW).
+    opf_ext_grid_absorption_mw: float = 0.0
+
 
 def _line_row_id(line_row: object) -> str:
     """Best-effort human-readable line id for error messages."""
@@ -470,6 +473,9 @@ def get_line_base_quantities(
         bus_injections_mw=bus_inj,
         opf_limits_mw=opf_limits,
         opf_gen_dispatch_mw_by_name=getattr(opf_res, "gen_dispatch_mw_by_name", None),
+        opf_ext_grid_absorption_mw=float(
+            getattr(opf_res, "ext_grid_absorption_mw", 0.0)
+        ),
     )
 
 

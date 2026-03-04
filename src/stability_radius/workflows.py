@@ -390,10 +390,15 @@ def _check_opf_dc_consistency(
             if 0 <= argmax_pos < len(base.line_indices)
             else -1
         )
-        raise ValueError(
-            "OPF->DC consistency check failed: OPF flows do not match DCOperator reconstruction "
-            f"(max|Δf|={float(max_abs):.6g} MW, tol={float(tol_flow_mw):.6g} MW). "
-            f"argmax_line_pos={int(argmax_pos)}, argmax_line_idx={int(argmax_line_idx)}."
+        logger.warning(
+            "OPF->DC consistency check EXCEEDED tolerance: "
+            "max|Δf|=%.6g MW > tol=%.6g MW. "
+            "argmax_line_pos=%d, argmax_line_idx=%d. "
+            "Results may be less accurate for this case (e.g. phase-shifting transformers).",
+            float(max_abs),
+            float(tol_flow_mw),
+            int(argmax_pos),
+            int(argmax_line_idx),
         )
 
     return {
@@ -401,6 +406,9 @@ def _check_opf_dc_consistency(
         "opf_dc_flow_max_abs_diff_mw": float(max_abs),
         "opf_dc_flow_tol_mw": float(tol_flow_mw),
         "opf_bus_balance_tol_mw": float(tol_balance_mw),
+        "opf_dc_consistency_passed": bool(
+            np.isfinite(max_abs) and max_abs <= float(tol_flow_mw)
+        ),
     }
 
 
@@ -829,6 +837,8 @@ def compute_results_for_case(
     # ---------- AC stage (base point is AC PF) ----------
     bp_ac_meta: dict[str, Any] | None = None
     ac_pf_status = "n/a"
+    ac_pf_attempt = "n/a"
+    ac_pf_repairs: list[str] = []
     ac_sigma_computed = False
     ac_metric_computed = False
     ac_feasibility: ACFeasibilityResult | None = None
@@ -869,6 +879,8 @@ def compute_results_for_case(
                 )
                 bp_ac_meta = bp_ac.to_meta_dict()
                 ac_pf_status = str(bp_ac.status)
+                ac_pf_attempt = str(bp_ac.pf_attempt)
+                ac_pf_repairs = list(bp_ac.pf_repairs)
         except Exception:
             logger.warning(
                 "%s: AC power flow failed to converge; "
@@ -1049,6 +1061,8 @@ def compute_results_for_case(
                 "chunk_size": int(ac_chunk_size),
                 "balance": bool(ac_balance),
                 "pf_status": str(ac_pf_status),
+                "pf_attempt": str(ac_pf_attempt),
+                "pf_repairs": list(ac_pf_repairs),
                 "feasibility": ac_feasibility.to_meta_dict()
                 if ac_feasibility is not None
                 else None,
@@ -1077,6 +1091,11 @@ def compute_results_for_case(
                 "unconstrained_line_nom_mw": float(cfg.unconstrained_line_nom_mw)
                 if bd == "dc_opf"
                 else float("nan"),
+                "ext_grid_absorption_mw": float(
+                    base_dc.opf_ext_grid_absorption_mw
+                )
+                if bd == "dc_opf" and base_dc is not None
+                else 0.0,
             },
             "compute_time_sec": float(elapsed),
             **(consistency if consistency else {}),

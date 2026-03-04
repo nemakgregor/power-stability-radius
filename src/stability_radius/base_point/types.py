@@ -100,6 +100,10 @@ class BasePointAC:
     # For reproducibility: DC OPF dispatch used to form this PF regime (if any).
     gen_dispatch_mw_by_name: tuple[tuple[str, float], ...] = ()
 
+    # AC PF repair metadata: which solver attempt succeeded and what was changed.
+    pf_attempt: str = "primary"  # "primary" | "alt_init" | "relaxed"
+    pf_repairs: tuple[str, ...] = ()  # list of repair actions applied
+
     def to_meta_dict(self) -> dict[str, Any]:
         """Convert to a JSON-serializable dict (arrays -> lists)."""
         return {
@@ -115,6 +119,8 @@ class BasePointAC:
                 float(x) for x in np.asarray(self.s_limit_mva, dtype=float).tolist()
             ],
             "status": str(self.status),
+            "pf_attempt": str(self.pf_attempt),
+            "pf_repairs": list(self.pf_repairs),
             "gen_dispatch_mw_by_name": [
                 (str(k), float(v)) for k, v in self.gen_dispatch_mw_by_name
             ],

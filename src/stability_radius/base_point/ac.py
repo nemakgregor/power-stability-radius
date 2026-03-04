@@ -106,6 +106,8 @@ def solve_ac_pf_base_point(
         )
         if isinstance(gen_dispatch_mw_by_name, Mapping)
         else (),
+        pf_attempt=str(getattr(base_pf, "pf_attempt", "primary")),
+        pf_repairs=tuple(getattr(base_pf, "pf_repairs", None) or ()),
     )
 
     return bp, base_pf

@@ -91,6 +91,8 @@ class PyPSAAPFResult:
     line_q1_mvar: np.ndarray  # (m_line,)
 
     status: str
+    pf_attempt: str = "primary"  # "primary" | "alt_init" | "relaxed"
+    pf_repairs: list[str] | None = None  # list of repair actions applied
 
 
 def _is_in_service(row: Any) -> bool:
@@ -340,6 +342,10 @@ def _solve_ac_pf_with_pandapower(
     if bool(distributed_slack):
         runpp_kwargs["distributed_slack"] = True
 
+    # Track which solver attempt succeeded for repair metadata.
+    pf_attempt: str = "primary"  # "primary" | "alt_init" | "relaxed"
+    pf_repairs: list[str] = []
+
     try:
         pp.runpp(nn, **runpp_kwargs)
     except Exception as e_first:
@@ -354,6 +360,8 @@ def _solve_ac_pf_with_pandapower(
         runpp_kwargs["init"] = alt_init
         try:
             pp.runpp(nn, **runpp_kwargs)
+            pf_attempt = "alt_init"
+            pf_repairs.append(f"init_changed_to_{alt_init}")
         except Exception:
             # Final fallback: relax settings (no Q limits, no distributed slack).
             logger.warning(
@@ -371,6 +379,12 @@ def _solve_ac_pf_with_pandapower(
             )
             try:
                 pp.runpp(nn, **relaxed_kwargs)
+                pf_attempt = "relaxed"
+                pf_repairs.extend([
+                    "enforce_q_lims_disabled",
+                    "distributed_slack_disabled",
+                    "init_flat",
+                ])
             except Exception as e_relaxed:
                 logger.exception(
                     "pandapower.runpp failed even with relaxed settings: %s",
@@ -438,6 +452,8 @@ def _solve_ac_pf_with_pandapower(
         line_p1_mw=p1,
         line_q1_mvar=q1,
         status=status,
+        pf_attempt=pf_attempt,
+        pf_repairs=list(pf_repairs),
     )
 
 

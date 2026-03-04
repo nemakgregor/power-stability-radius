@@ -70,6 +70,9 @@ cases:
     ac:
       distributed_slack: false  # pandapower crashes (realloc corruption) with distributed_slack on this case
       pf_init: flat             # flat init avoids dc-init interaction with 129 trafos
+    # NOTE: DC OPF may be infeasible at any headroom due to tight thermal limits
+    # and generator min-output constraints in the RTE network topology.
+    # When infeasible, the case is tracked in summary.json with status=dc_opf_infeasible.
 
   - name: pglib_opf_case6515_rte
     file: pglib_opf_case6515_rte.m
@@ -77,6 +80,9 @@ cases:
     ac:
       distributed_slack: false  # pandapower crashes (realloc corruption) with distributed_slack on this case
       pf_init: flat             # flat init avoids dc-init interaction with 129 trafos
+    # NOTE: DC OPF may be infeasible at any headroom due to tight thermal limits
+    # and generator min-output constraints in the RTE network topology.
+    # When infeasible, the case is tracked in summary.json with status=dc_opf_infeasible.
 
   # ── Polish cases (original thermal limits) ──────────────────────────
   - name: pglib_opf_case2383wp_k

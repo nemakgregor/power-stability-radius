@@ -29,10 +29,11 @@ import time
 from pathlib import Path
 
 import matplotlib
-matplotlib.use("Agg")          # non-interactive backend (no display needed)
+
+matplotlib.use("Agg")  # non-interactive backend (no display needed)
 import matplotlib.pyplot as plt  # noqa: E402
-import numpy as np               # noqa: E402
-import yaml                      # noqa: E402
+import numpy as np  # noqa: E402
+import yaml  # noqa: E402
 
 from stability_radius.config import OPFConfig
 from stability_radius.parsers.matpower import load_network
@@ -161,7 +162,8 @@ def _print_table(rows: list[dict]) -> None:
         f"{'r*_DC (MW)':>12s} {'r*_AC (MW)':>12s} {'AC/DC':>7s} "
         f"{'AC feas':>7s} "
         f"{'T_tot (s)':>10s} "
-        f"{'Bottleneck':>11s} {'Margin':>10s}"
+        f"{'Bottleneck':>11s} {'Margin':>10s} "
+        f"{'Status':>12s} {'PF attempt':>12s}"
     )
     sep = "-" * len(header)
     print()
@@ -172,19 +174,44 @@ def _print_table(rows: list[dict]) -> None:
     print(sep)
 
     for r in rows:
-        ratio_str = f"{r['ac_dc_ratio']:.3f}" if np.isfinite(r["ac_dc_ratio"]) else "n/a"
+        ratio_str = (
+            f"{r['ac_dc_ratio']:.3f}" if np.isfinite(r["ac_dc_ratio"]) else "n/a"
+        )
         bn_str = f"L{r['bottleneck_line']}" if r["bottleneck_line"] >= 0 else "n/a"
-        margin_str = f"{r['bottleneck_margin']:.2f}" if np.isfinite(r["bottleneck_margin"]) else "n/a"
+        margin_str = (
+            f"{r['bottleneck_margin']:.2f}"
+            if np.isfinite(r["bottleneck_margin"])
+            else "n/a"
+        )
         feas_str = r.get("ac_feasible", "n/a")
         if isinstance(feas_str, bool):
             feas_str = "YES" if feas_str else "NO"
-        print(
-            f"{r['case']:<28s} {r['n_buses']:>5d} {r['n_lines']:>5d} "
-            f"{r['dc_r_star']:>12.4f} {r['ac_r_star']:>12.4f} {ratio_str:>7s} "
-            f"{feas_str:>7s} "
-            f"{r['time_total']:>10.2f} "
-            f"{bn_str:>11s} {margin_str:>10s}"
-        )
+        status_str = str(r.get("status", "ok"))
+        pf_attempt_str = str(r.get("ac_pf_attempt", "n/a"))
+
+        # Handle failed cases (n_buses/n_lines may be 0, radii may be NaN).
+        if status_str != "ok":
+            dc_str = "n/a"
+            ac_str = "n/a"
+            buses_str = f"{'---':>5s}"
+            lines_str = f"{'---':>5s}"
+            print(
+                f"{r['case']:<28s} {buses_str} {lines_str} "
+                f"{dc_str:>12s} {ac_str:>12s} {'n/a':>7s} "
+                f"{'n/a':>7s} "
+                f"{r['time_total']:>10.2f} "
+                f"{'n/a':>11s} {'n/a':>10s} "
+                f"{status_str:>12s} {pf_attempt_str:>12s}"
+            )
+        else:
+            print(
+                f"{r['case']:<28s} {r['n_buses']:>5d} {r['n_lines']:>5d} "
+                f"{r['dc_r_star']:>12.4f} {r['ac_r_star']:>12.4f} {ratio_str:>7s} "
+                f"{feas_str:>7s} "
+                f"{r['time_total']:>10.2f} "
+                f"{bn_str:>11s} {margin_str:>10s} "
+                f"{status_str:>12s} {pf_attempt_str:>12s}"
+            )
 
     print(sep)
     print()
@@ -192,16 +219,33 @@ def _print_table(rows: list[dict]) -> None:
 
 def _plot_bar_chart(rows: list[dict], output_dir: Path) -> Path:
     """Generate Fig. 1: bar chart comparing r*_DC and r*_AC across cases."""
-    labels = [r["case"].replace("pglib_opf_", "") for r in rows]
-    dc_vals = [r["dc_r_star"] for r in rows]
-    ac_vals = [r["ac_r_star"] for r in rows]
+    # Only plot cases that completed successfully (have finite radii).
+    ok_rows = [r for r in rows if r.get("status", "ok") == "ok"]
+    if not ok_rows:
+        ok_rows = rows  # fallback: plot everything even if all failed
+
+    labels = [r["case"].replace("pglib_opf_", "") for r in ok_rows]
+    dc_vals = [r["dc_r_star"] if np.isfinite(r["dc_r_star"]) else 0.0 for r in ok_rows]
+    ac_vals = [r["ac_r_star"] if np.isfinite(r["ac_r_star"]) else 0.0 for r in ok_rows]
 
     x = np.arange(len(labels))
     width = 0.35
 
     fig, ax = plt.subplots(figsize=(max(10, len(labels) * 1.5), 6))
-    ax.bar(x - width / 2, dc_vals, width, label=r"$r^*_{\mathrm{DC}}$ (L2)", color="#4C72B0")
-    ax.bar(x + width / 2, ac_vals, width, label=r"$r^*_{\mathrm{AC}}$ (L2)", color="#DD8452")
+    ax.bar(
+        x - width / 2,
+        dc_vals,
+        width,
+        label=r"$r^*_{\mathrm{DC}}$ (L2)",
+        color="#4C72B0",
+    )
+    ax.bar(
+        x + width / 2,
+        ac_vals,
+        width,
+        label=r"$r^*_{\mathrm{AC}}$ (L2)",
+        color="#DD8452",
+    )
 
     ax.set_xlabel("PGLib-OPF Case")
     ax.set_ylabel("Stability Radius (MW)")
@@ -283,7 +327,9 @@ def run(config_path: Path) -> None:
             )
             logger.info(
                 "%s: per-case headroom_factor=%.4f (overrides global %.4f)",
-                name, float(case_headroom), opf_cfg.headroom_factor,
+                name,
+                float(case_headroom),
+                opf_cfg.headroom_factor,
             )
         else:
             case_opf_cfg = opf_cfg
@@ -309,6 +355,8 @@ def run(config_path: Path) -> None:
             continue
 
         # ---- Single combined run: DC+AC share the same base point ----
+        case_status = "ok"  # "ok" | "dc_opf_infeasible" | "dc_consistency_warning" | "ac_pf_failed" | "error"
+        case_error_msg = ""
         try:
             t_start = time.perf_counter()
             combined = _compute_case(
@@ -322,8 +370,42 @@ def run(config_path: Path) -> None:
                 opf_dc_flow_consistency_tol_mw=consistency_tol,
             )
             time_total = time.perf_counter() - t_start
-        except Exception:
+        except Exception as exc:
             logger.exception("Failed computation for %s", name)
+            time_total = time.perf_counter() - t_start if "t_start" in dir() else 0.0
+            case_error_msg = str(exc)
+            # Classify the failure.
+            exc_str = str(exc).lower()
+            if "infeasible" in exc_str and "opf" in exc_str:
+                case_status = "dc_opf_infeasible"
+            elif "consistency" in exc_str:
+                case_status = "dc_consistency_failed"
+            elif "pandapower" in exc_str or "pf" in exc_str or "converge" in exc_str:
+                case_status = "ac_pf_failed"
+            else:
+                case_status = "error"
+            # Write a failed summary row so the case is tracked.
+            row = {
+                "case": name,
+                "n_buses": 0,
+                "n_lines": 0,
+                "dc_r_star": float("nan"),
+                "ac_r_star": float("nan"),
+                "ac_dc_ratio": float("nan"),
+                "ac_feasible": "n/a",
+                "ac_n_violated": 0,
+                "headroom_factor_used": None,
+                "time_total": time_total,
+                "bottleneck_line": -1,
+                "bottleneck_margin": float("nan"),
+                "status": case_status,
+                "error": case_error_msg[:200],
+                "ac_pf_attempt": "n/a",
+                "ac_pf_repairs": [],
+                "dc_consistency_passed": None,
+                "dc_consistency_max_diff_mw": float("nan"),
+            }
+            summary_rows.append(row)
             continue
 
         # Remove non-serialisable h-vectors before saving.
@@ -390,10 +472,16 @@ def run(config_path: Path) -> None:
         opf_meta = meta.get("opf", {})
         hf_used = opf_meta.get("headroom_factor_used", float("nan"))
         hf_configured = opf_meta.get("headroom_factor_configured", float("nan"))
-        if np.isfinite(hf_used) and np.isfinite(hf_configured) and hf_used != hf_configured:
+        if (
+            np.isfinite(hf_used)
+            and np.isfinite(hf_configured)
+            and hf_used != hf_configured
+        ):
             logger.info(
                 "%s: Adaptive headroom: configured=%.4f, used=%.4f",
-                name, hf_configured, hf_used,
+                name,
+                hf_configured,
+                hf_used,
             )
 
         # Log consistency check info from meta.
@@ -402,6 +490,17 @@ def run(config_path: Path) -> None:
             logger.info(
                 "%s: OPF->DC consistency max|Δf|=%.4f MW", name, consistency_max_diff
             )
+
+        # AC PF repair metadata from __meta__.
+        ac_pf_attempt = ac_meta.get("pf_attempt", "n/a")
+        ac_pf_repairs = list(ac_meta.get("pf_repairs", []))
+
+        # DC consistency metadata from __meta__.
+        dc_consistency_passed = meta.get("opf_dc_consistency_passed")
+        dc_consistency_max_diff = meta.get("opf_dc_flow_max_abs_diff_mw", float("nan"))
+
+        # Ext_grid absorption metadata from __meta__.
+        ext_absorb_mw = float(opf_meta.get("ext_grid_absorption_mw", 0.0))
 
         row = {
             "case": name,
@@ -416,6 +515,16 @@ def run(config_path: Path) -> None:
             "time_total": time_total,
             "bottleneck_line": bn_line,
             "bottleneck_margin": bn_margin,
+            "status": "ok",
+            "ac_pf_attempt": ac_pf_attempt,
+            "ac_pf_repairs": ac_pf_repairs,
+            "dc_consistency_passed": dc_consistency_passed,
+            "dc_consistency_max_diff_mw": float(dc_consistency_max_diff)
+            if np.isfinite(dc_consistency_max_diff)
+            else None,
+            "ext_grid_absorption_mw": ext_absorb_mw
+            if ext_absorb_mw > 1e-3
+            else 0.0,
         }
         summary_rows.append(row)
 
