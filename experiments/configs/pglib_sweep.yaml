@@ -53,6 +53,8 @@ cases:
 
   - name: pglib_opf_case10000_goc
     file: pglib_opf_case10000_goc.m
+    base_dispatch: dc_opf          # ac_fpf hangs on 10k-bus network; use DC OPF instead
+    timeout: 900                   # 15 min for 10k-bus network (global default is 600s)
     ac:
       distributed_slack: false  # pandapower crashes (realloc corruption) with distributed_slack on this case
       pf_init: flat
@@ -156,5 +158,5 @@ compute:
 
 allow_download: true
 data_dir: data/input
-output_dir: experiments/output/test_run_1
+output_dir: experiments/output/test_run_2
 case_timeout_sec: 600    # per-case subprocess timeout (seconds); 0 = no timeout

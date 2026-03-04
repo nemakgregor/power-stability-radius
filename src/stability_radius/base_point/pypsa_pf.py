@@ -624,6 +624,8 @@ def solve_ac_pf_base_point_from_pandapower(
             f"slack_bus must be a valid bus id or position. Got {slack_bus!r}."
         )
 
+    ensure_ext_grid_at_slack(net, int(slack_bus_id))
+
     n = pypsa.Network()
     n.set_snapshots(pd.Index([0]))
     _ensure_carrier_table(n, _AC_CARRIER)

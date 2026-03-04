@@ -483,6 +483,32 @@ def run(config_path: Path) -> None:
         else:
             case_ac_cfg = ac_cfg
 
+        # ---- Per-case base_dispatch override ----
+        case_base_dispatch_override = case.get("base_dispatch")
+        if case_base_dispatch_override is not None:
+            case_base_dispatch = str(case_base_dispatch_override)
+            logger.info(
+                "%s: per-case base_dispatch='%s' (overrides global '%s')",
+                name,
+                case_base_dispatch,
+                base_dispatch,
+            )
+        else:
+            case_base_dispatch = base_dispatch
+
+        # ---- Per-case timeout override ----
+        case_timeout_override = case.get("timeout")
+        if case_timeout_override is not None:
+            case_timeout_eff = int(case_timeout_override)
+            logger.info(
+                "%s: per-case timeout=%d sec (overrides global %d sec)",
+                name,
+                case_timeout_eff,
+                case_timeout,
+            )
+        else:
+            case_timeout_eff = case_timeout
+
         # ---- Ensure file exists & auto-detect slack bus ----
         try:
             input_path_abs = ensure_case_file(input_path)
@@ -501,11 +527,11 @@ def run(config_path: Path) -> None:
         try:
             t_start = time.perf_counter()
             combined = _run_case_isolated(
-                timeout=case_timeout,
+                timeout=case_timeout_eff,
                 log_path=log_path,
                 input_path=input_path_abs,
                 slack_bus=slack_bus,
-                base_dispatch=base_dispatch,
+                base_dispatch=case_base_dispatch,
                 dc_cfg=dc_cfg,
                 ac_cfg=case_ac_cfg,
                 ac_fpf_cfg=ac_fpf_cfg,

@@ -75,24 +75,27 @@ def resolve_slack_bus_id(net: Any, slack_bus: int) -> int:
 
 
 def ensure_ext_grid_at_slack(net: Any, slack_bus_id: int) -> None:
+    """Ensure pandapower net has an in-service ext_grid at the requested slack bus.
+
+    Auto-creates one if missing (e.g. RTE MATPOWER files without a type-3 bus).
     """
-    Ensure pandapower net has an in-service ext_grid at the requested slack bus.
-    """
-    if not (
+    import pandapower as pp
+
+    has_ext_grid = (
         hasattr(net, "ext_grid") and net.ext_grid is not None and len(net.ext_grid)
-    ):
-        raise RuntimeError("pandapower net has no ext_grid; AC PF/MC cannot run.")
-    ok = False
-    for _, row in net.ext_grid.iterrows():
-        if not bool(row.get("in_service", True)):
-            continue
-        if int(row.get("bus", -1)) == int(slack_bus_id):
-            ok = True
-            break
-    if not ok:
-        raise RuntimeError(
-            "Requires an in-service ext_grid at the requested slack bus."
-        )
+    )
+    if has_ext_grid:
+        for _, row in net.ext_grid.iterrows():
+            if not bool(row.get("in_service", True)):
+                continue
+            if int(row.get("bus", -1)) == int(slack_bus_id):
+                return  # already present
+
+    logger.warning(
+        "No in-service ext_grid at slack bus %d; creating one automatically.",
+        int(slack_bus_id),
+    )
+    pp.create_ext_grid(net, bus=int(slack_bus_id), vm_pu=1.0, va_degree=0.0)
 
 
 def apply_gen_dispatch_to_pandapower_net(
