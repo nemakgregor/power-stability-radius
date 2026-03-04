@@ -279,7 +279,7 @@ def build_parser(cfg: Any) -> argparse.ArgumentParser:
         "--base-dispatch",
         type=str,
         default=str(_cfg_get(cfg, "compute.base_dispatch", "case")),
-        choices=("case", "dc_opf"),
+        choices=("case", "dc_opf", "acpf"),
     )
 
     # DC

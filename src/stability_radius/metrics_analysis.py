@@ -348,11 +348,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--input", type=str, required=True, help="Path to MATPOWER/PGLib case file"
     )
     parser.add_argument(
-        "--slack-bus", type=int, default=None,
+        "--slack-bus",
+        type=int,
+        default=None,
         help="Slack bus ID or position (auto-detected from ext_grid if omitted)",
     )
     parser.add_argument(
-        "--base-dispatch", type=str, default="case", choices=("case", "dc_opf")
+        "--base-dispatch", type=str, default="case", choices=("case", "dc_opf", "acpf")
     )
     parser.add_argument(
         "--sigma-p", type=float, default=1.0, help="Per-bus sigma_p_mw (uniform)"

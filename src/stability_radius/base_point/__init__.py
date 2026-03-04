@@ -20,7 +20,11 @@ Public dataclasses
 """
 
 from .ac import solve_ac_pf_base_point
-from .dc import build_dc_base_point_case, build_dc_base_point_dc_opf
+from .dc import (
+    build_dc_base_point_case,
+    build_dc_base_point_dc_opf,
+    build_dc_base_point_from_acpf,
+)
 from .types import BasePointAC, BasePointDC
 
 __all__ = [
@@ -28,5 +32,6 @@ __all__ = [
     "BasePointAC",
     "build_dc_base_point_case",
     "build_dc_base_point_dc_opf",
+    "build_dc_base_point_from_acpf",
     "solve_ac_pf_base_point",
 ]

@@ -119,7 +119,7 @@ cases:
 
 # Shared compute parameters (applied to every case).
 compute:
-  base_dispatch: dc_opf     # "case" | "dc_opf"  —  DC OPF with headroom → AC PF base point
+  base_dispatch: acpf     # "case" | "dc_opf" | "acpf"  —  DC OPF with headroom → AC PF base point
 
   # OPF→DC consistency tolerance (MW).
   # IEEE cases match to machine precision (~1e-13 MW) with the tap-absorbed

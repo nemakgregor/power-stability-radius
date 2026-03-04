@@ -93,6 +93,7 @@ class PyPSAAPFResult:
     status: str
     pf_attempt: str = "primary"  # "primary" | "alt_init" | "relaxed"
     pf_repairs: list[str] | None = None  # list of repair actions applied
+    bus_p_mw: np.ndarray | None = None  # (n_bus,) net P injection per bus from AC PF
 
 
 def _is_in_service(row: Any) -> bool:
@@ -407,6 +408,13 @@ def _solve_ac_pf_with_pandapower(
     )
     v_ang = (va_deg * math.pi / 180.0).astype(float, copy=False)
 
+    # Extract net active power injection per bus (gen - load, MW) for ACPF mode.
+    bus_p_mw_arr: np.ndarray | None = None
+    if "p_mw" in nn.res_bus.columns:
+        bus_p_mw_arr = np.asarray(
+            [float(nn.res_bus.loc[bid, "p_mw"]) for bid in bus_ids], dtype=float
+        )
+
     if not hasattr(nn, "res_line") or nn.res_line is None or len(nn.res_line) == 0:
         raise RuntimeError("pandapower did not produce res_line results.")
 
@@ -454,6 +462,7 @@ def _solve_ac_pf_with_pandapower(
         status=status,
         pf_attempt=pf_attempt,
         pf_repairs=list(pf_repairs),
+        bus_p_mw=bus_p_mw_arr,
     )
 
 

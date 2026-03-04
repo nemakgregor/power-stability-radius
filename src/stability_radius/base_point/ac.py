@@ -108,6 +108,9 @@ def solve_ac_pf_base_point(
         else (),
         pf_attempt=str(getattr(base_pf, "pf_attempt", "primary")),
         pf_repairs=tuple(getattr(base_pf, "pf_repairs", None) or ()),
+        bus_p_mw=np.asarray(base_pf.bus_p_mw, dtype=float)
+        if base_pf.bus_p_mw is not None
+        else None,
     )
 
     return bp, base_pf

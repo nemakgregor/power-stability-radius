@@ -104,6 +104,10 @@ class BasePointAC:
     pf_attempt: str = "primary"  # "primary" | "alt_init" | "relaxed"
     pf_repairs: tuple[str, ...] = ()  # list of repair actions applied
 
+    # Optional: net active power injection per bus (MW), aligned with bus_ids.
+    # From AC PF solution (includes losses at slack). Used by acpf dispatch mode.
+    bus_p_mw: np.ndarray | None = None
+
     def to_meta_dict(self) -> dict[str, Any]:
         """Convert to a JSON-serializable dict (arrays -> lists)."""
         return {
@@ -124,4 +128,7 @@ class BasePointAC:
             "gen_dispatch_mw_by_name": [
                 (str(k), float(v)) for k, v in self.gen_dispatch_mw_by_name
             ],
+            "bus_p_mw": [float(x) for x in np.asarray(self.bus_p_mw, dtype=float).tolist()]
+            if self.bus_p_mw is not None
+            else None,
         }
