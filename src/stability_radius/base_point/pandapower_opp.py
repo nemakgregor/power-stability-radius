@@ -69,12 +69,16 @@ class ACFPFConfig:
         Maximum bus voltage magnitude (p.u.) for OPF constraint.
     max_iteration : int
         Maximum interior-point iterations for pandapower.runopp().
+    max_loading_percent : float
+        Line loading limit (%) for OPF.  Set below 100 to compensate for
+        PIPS solver tolerance so the solution satisfies the true 100% limit.
     """
 
     pg0_source: str = "case"
     vm_min_pu: float = 0.9
     vm_max_pu: float = 1.1
     max_iteration: int = 100
+    max_loading_percent: float = 99.0
 
 
 def _determine_pg0(
@@ -360,6 +364,14 @@ def solve_ac_fpf(
     _set_voltage_limits(nn, vm_min_pu=cfg.vm_min_pu, vm_max_pu=cfg.vm_max_pu)
     _set_line_thermal_limits(nn)
 
+    # Tighten line loading to compensate for PIPS solver tolerance.
+    # Without this, the solver may overshoot the true limit by ~0.5-1%.
+    if cfg.max_loading_percent < 100.0:
+        if hasattr(nn, "line") and nn.line is not None and len(nn.line):
+            nn.line["max_loading_percent"] = cfg.max_loading_percent
+        if hasattr(nn, "trafo") and nn.trafo is not None and len(nn.trafo):
+            nn.trafo["max_loading_percent"] = cfg.max_loading_percent
+
     # ---- Setup generators with costs ----
     pg0_map = _setup_gen_for_opp(nn, pg0_source=pg0_source)
     logger.info(
@@ -374,7 +386,7 @@ def solve_ac_fpf(
     runopp_kwargs: dict[str, Any] = dict(
         calculate_voltage_angles=True,
         init="dc",
-        OPF_FLOW_LIM=2,  # use apparent power (MVA) for line limits
+        OPF_FLOW_LIM=0,  # apparent power (MVA) limit on line flows
         RETURN_RAW_DER=0,
     )
     if cfg.max_iteration > 0:
