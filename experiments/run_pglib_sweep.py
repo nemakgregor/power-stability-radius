@@ -25,6 +25,8 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import multiprocessing as mp
+import os
 import time
 from pathlib import Path
 
@@ -86,6 +88,7 @@ def _compute_case(
     base_dispatch: str,
     dc_cfg: dict,
     ac_cfg: dict,
+    ac_fpf_cfg: dict,
     opf_cfg: OPFConfig,
     allow_download: bool,
     opf_dc_flow_consistency_tol_mw: float,
@@ -111,12 +114,105 @@ def _compute_case(
         ac_lossless=bool(ac_cfg.get("lossless", True)),
         ac_distributed_slack=bool(ac_cfg.get("distributed_slack", False)),
         ac_trafo_model=str(ac_cfg.get("trafo_model", "pi")),
+        # AC FPF
+        ac_fpf_pg0_source=str(ac_fpf_cfg.get("pg0_source", "case")),
         # OPF
         opf_cfg=opf_cfg,
         opf_dc_flow_consistency_tol_mw=float(opf_dc_flow_consistency_tol_mw),
         # shared
         allow_download=allow_download,
     )
+
+
+def _case_worker(
+    result_queue: mp.Queue, kwargs: dict, log_level: int = logging.INFO
+) -> None:
+    """Run ``_compute_case`` in a child process.
+
+    With ``fork`` context (Linux default) the parent's logging config is
+    inherited so solver messages still appear in debug.log.
+    On Windows (``spawn`` context) the child must configure logging itself.
+    """
+    # Ensure logging is configured in the child process (critical for Windows
+    # where ``spawn`` gives us a fresh interpreter with no handlers).
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s %(levelname)-8s [subprocess] %(name)s: %(message)s",
+        force=True,  # override if already configured (e.g. Linux fork)
+    )
+    child_logger = logging.getLogger(__name__)
+    case_name = kwargs.get("input_path", "unknown")
+    child_logger.info(
+        "Subprocess started for case: %s (PID=%d)", case_name, os.getpid()
+    )
+    try:
+        result = _compute_case(**kwargs)
+        result.pop("_h_vectors", None)
+        child_logger.info("Subprocess finished OK for case: %s", case_name)
+        result_queue.put(("ok", result))
+    except Exception:
+        import traceback
+
+        tb = traceback.format_exc()
+        child_logger.error("Subprocess FAILED for case %s:\n%s", case_name, tb)
+        result_queue.put(("error", tb))
+
+
+def _run_case_isolated(timeout: int = 900, **kwargs) -> dict:
+    """Run ``_compute_case`` in a subprocess for crash isolation.
+
+    pandapower can trigger C-level memory corruption
+    (``realloc: invalid next size`` / ``Aborted``) on certain networks,
+    which kills the entire process.  Running each case in a child process
+    ensures the sweep runner survives and continues with the next case.
+    """
+    case_name = kwargs.get("input_path", "unknown")
+    logger.info("Launching subprocess for case: %s (timeout=%ds)", case_name, timeout)
+    result_queue: mp.Queue = mp.Queue(maxsize=1)
+
+    proc = mp.Process(target=_case_worker, args=(result_queue, kwargs))
+    proc.start()
+    logger.info("Subprocess started: PID=%s, waiting up to %ds...", proc.pid, timeout)
+    proc.join(timeout=timeout)
+
+    if proc.exitcode is None:
+        logger.error(
+            "Subprocess PID=%s TIMED OUT after %ds for case: %s. Terminating.",
+            proc.pid,
+            timeout,
+            case_name,
+        )
+        proc.terminate()
+        proc.join(timeout=10)
+        raise RuntimeError(
+            f"Case computation timed out after {timeout}s (PID {proc.pid} terminated)."
+        )
+
+    if proc.exitcode != 0:
+        logger.error(
+            "Subprocess PID=%s CRASHED with exit code %d for case: %s",
+            proc.pid,
+            proc.exitcode,
+            case_name,
+        )
+        raise RuntimeError(
+            f"Subprocess crashed with exit code {proc.exitcode}. "
+            "Likely a C-level crash (segfault/abort) in the power flow solver."
+        )
+
+    logger.info(
+        "Subprocess PID=%s exited OK (code=0) for case: %s", proc.pid, case_name
+    )
+
+    try:
+        status, payload = result_queue.get_nowait()
+    except Exception:
+        raise RuntimeError("Subprocess completed but produced no result.")
+
+    if status == "error":
+        raise RuntimeError(f"Case computation failed in subprocess:\n{payload}")
+
+    return payload
 
 
 def _find_bottleneck(results: dict) -> tuple[int, float, str]:
@@ -282,9 +378,11 @@ def run(config_path: Path) -> None:
     data_dir = Path(cfg.get("data_dir", "data/input"))
     output_dir = Path(cfg.get("output_dir", "experiments/output/pglib_sweep"))
     allow_download = bool(cfg.get("allow_download", False))
+    case_timeout = int(cfg.get("case_timeout_sec", 900))
 
     dc_cfg = compute_cfg.get("dc", {})
     ac_cfg = compute_cfg.get("ac", {})
+    ac_fpf_cfg = compute_cfg.get("ac_fpf", {})
     opf_yaml = compute_cfg.get("opf", {})
     base_dispatch = str(compute_cfg.get("base_dispatch", "dc_opf"))
 
@@ -306,17 +404,19 @@ def run(config_path: Path) -> None:
     logger.info("OPFConfig: headroom_factor=%.4f", opf_cfg.headroom_factor)
     logger.info("Consistency tolerance: %.2f MW", consistency_tol)
     logger.info("Base dispatch: %s", base_dispatch)
+    logger.info("Case timeout: %d sec", case_timeout)
     logger.info("Cases: %d", len(cases))
 
     summary_rows: list[dict] = []
+    n_cases = len(cases)
 
-    for case in cases:
+    for case_idx, case in enumerate(cases, 1):
         name = case["name"]
         filename = case["file"]
         input_path = str(data_dir / filename)
 
         logger.info("=" * 60)
-        logger.info("Processing %s", name)
+        logger.info("Processing [%d/%d] %s", case_idx, n_cases, name)
         logger.info("=" * 60)
 
         # ---- Per-case OPFConfig override (headroom_factor) ----
@@ -355,16 +455,18 @@ def run(config_path: Path) -> None:
             continue
 
         # ---- Single combined run: DC+AC share the same base point ----
-        case_status = "ok"  # "ok" | "dc_opf_infeasible" | "dc_consistency_warning" | "ac_pf_failed" | "error"
+        case_status = "ok"  # "ok" | "dc_opf_infeasible" | "dc_consistency_warning" | "ac_pf_failed" | "crashed" | "error"
         case_error_msg = ""
         try:
             t_start = time.perf_counter()
-            combined = _compute_case(
+            combined = _run_case_isolated(
+                timeout=case_timeout,
                 input_path=input_path_abs,
                 slack_bus=slack_bus,
                 base_dispatch=base_dispatch,
                 dc_cfg=dc_cfg,
                 ac_cfg=case_ac_cfg,
+                ac_fpf_cfg=ac_fpf_cfg,
                 opf_cfg=case_opf_cfg,
                 allow_download=False,
                 opf_dc_flow_consistency_tol_mw=consistency_tol,
@@ -376,7 +478,11 @@ def run(config_path: Path) -> None:
             case_error_msg = str(exc)
             # Classify the failure.
             exc_str = str(exc).lower()
-            if "infeasible" in exc_str and "opf" in exc_str:
+            if "subprocess crashed" in exc_str or "exit code" in exc_str:
+                case_status = "crashed"
+            elif "timed out" in exc_str:
+                case_status = "timeout"
+            elif "infeasible" in exc_str and "opf" in exc_str:
                 case_status = "dc_opf_infeasible"
             elif "consistency" in exc_str:
                 case_status = "dc_consistency_failed"
@@ -522,9 +628,7 @@ def run(config_path: Path) -> None:
             "dc_consistency_max_diff_mw": float(dc_consistency_max_diff)
             if np.isfinite(dc_consistency_max_diff)
             else None,
-            "ext_grid_absorption_mw": ext_absorb_mw
-            if ext_absorb_mw > 1e-3
-            else 0.0,
+            "ext_grid_absorption_mw": ext_absorb_mw if ext_absorb_mw > 1e-3 else 0.0,
         }
         summary_rows.append(row)
 

@@ -34,6 +34,7 @@ from stability_radius.base_point import (
     build_dc_base_point_case,
     build_dc_base_point_dc_opf,
     build_dc_base_point_from_acpf,
+    solve_ac_fpf_base_point,
     solve_ac_pf_base_point,
 )
 from stability_radius.base_point.pandapower_tools import resolve_slack_bus_id
@@ -637,6 +638,8 @@ def compute_results_for_case(
     ac_distributed_slack: bool = False,
     ac_trafo_model: str = "pi",
     ac_extensions: ACExtensionsConfig | None = None,
+    # AC FPF
+    ac_fpf_pg0_source: str = "case",
     # shared
     opf_cfg: OPFConfig | None = None,
     opf_dc_flow_consistency_tol_mw: float = _DEFAULT_OPF_DC_FLOW_CONSISTENCY_TOL_MW,
@@ -664,8 +667,8 @@ def compute_results_for_case(
     ac_ext = ac_extensions if ac_extensions is not None else ACExtensionsConfig()
 
     bd = str(base_dispatch).strip().lower()
-    if bd not in {"case", "dc_opf", "acpf"}:
-        raise ValueError("base_dispatch must be case|dc_opf|acpf")
+    if bd not in {"case", "dc_opf", "acpf", "ac_fpf"}:
+        raise ValueError("base_dispatch must be case|dc_opf|acpf|ac_fpf")
 
     # Determinism visibility / fail-fast validation (logged at compute start).
     _assert_and_log_effective_unconstrained_line_nom_mw(
@@ -725,6 +728,11 @@ def compute_results_for_case(
             "%s: base_dispatch=acpf: AC PF first, then DC from AC injections.",
             case_tag,
         )
+    elif bd == "ac_fpf":
+        logger.info(
+            "%s: base_dispatch=ac_fpf: AC FPF (runopp) first, then DC from AC injections.",
+            case_tag,
+        )
     else:
         logger.info("%s: base_dispatch=case: using case dispatch (NO OPF).", case_tag)
 
@@ -738,9 +746,29 @@ def compute_results_for_case(
 
     if bd == "acpf" and (bool(compute_dc) or bool(compute_ac)):
         try:
-            with log_stage(
-                logger, f"{case_tag}: Early AC PF for ACPF base dispatch"
-            ):
+            with log_stage(logger, f"{case_tag}: Early AC PF for ACPF base dispatch"):
+                n_buses_net = (
+                    int(len(net.bus))
+                    if hasattr(net, "bus") and net.bus is not None
+                    else 0
+                )
+                n_lines_net = (
+                    int(len(net.line))
+                    if hasattr(net, "line") and net.line is not None
+                    else 0
+                )
+                logger.info(
+                    "%s: ACPF: starting AC PF solve (buses=%d, lines=%d, "
+                    "solver=%s, init=%s, lossless=%s, distributed_slack=%s, trafo_model=%s)",
+                    case_tag,
+                    n_buses_net,
+                    n_lines_net,
+                    ac_pf_solver,
+                    ac_pf_init,
+                    ac_lossless,
+                    ac_distributed_slack,
+                    ac_trafo_model,
+                )
                 acpf_bp_ac, acpf_base_pf = solve_ac_pf_base_point(
                     net=net,
                     slack_bus=int(slack_bus),
@@ -751,6 +779,13 @@ def compute_results_for_case(
                     line_indices=[int(x) for x in sorted(net.line.index)],
                     distributed_slack=bool(ac_distributed_slack),
                     trafo_model=str(ac_trafo_model),
+                )
+                logger.info(
+                    "%s: ACPF: AC PF solve completed (status=%s, attempt=%s, repairs=%s)",
+                    case_tag,
+                    acpf_base_pf.status if acpf_base_pf else "n/a",
+                    acpf_base_pf.pf_attempt if acpf_base_pf else "n/a",
+                    acpf_base_pf.pf_repairs if acpf_base_pf else [],
                 )
                 if acpf_base_pf.bus_p_mw is None:
                     raise RuntimeError(
@@ -766,7 +801,66 @@ def compute_results_for_case(
                 )
         except Exception:
             logger.exception(
-                "%s: ACPF early AC PF failed; cannot build DC base point from AC PF.",
+                "%s: ACPF early AC PF FAILED; cannot build DC base point from AC PF.",
+                case_tag,
+            )
+            raise
+
+    # ---------- AC FPF: Solve AC OPF feasibility to extract bus injections ----------
+    if bd == "ac_fpf" and (bool(compute_dc) or bool(compute_ac)):
+        from stability_radius.base_point.pandapower_opp import ACFPFConfig as _ACFPFConfig
+
+        try:
+            with log_stage(logger, f"{case_tag}: Early AC FPF (runopp) for ac_fpf base dispatch"):
+                n_buses_net = (
+                    int(len(net.bus))
+                    if hasattr(net, "bus") and net.bus is not None
+                    else 0
+                )
+                n_lines_net = (
+                    int(len(net.line))
+                    if hasattr(net, "line") and net.line is not None
+                    else 0
+                )
+                fpf_cfg = _ACFPFConfig(pg0_source=str(ac_fpf_pg0_source))
+                logger.info(
+                    "%s: AC FPF: starting runopp solve (buses=%d, lines=%d, "
+                    "lossless=%s, pg0_source=%s)",
+                    case_tag,
+                    n_buses_net,
+                    n_lines_net,
+                    ac_lossless,
+                    fpf_cfg.pg0_source,
+                )
+                acpf_bp_ac, acpf_base_pf = solve_ac_fpf_base_point(
+                    net=net,
+                    slack_bus=int(slack_bus),
+                    lossless=bool(ac_lossless),
+                    fpf_cfg=fpf_cfg,
+                    opf_cfg=cfg,
+                    line_indices=[int(x) for x in sorted(net.line.index)],
+                )
+                logger.info(
+                    "%s: AC FPF: runopp solve completed (status=%s, attempt=%s, repairs=%s)",
+                    case_tag,
+                    acpf_base_pf.status if acpf_base_pf else "n/a",
+                    acpf_base_pf.pf_attempt if acpf_base_pf else "n/a",
+                    acpf_base_pf.pf_repairs if acpf_base_pf else [],
+                )
+                if acpf_base_pf.bus_p_mw is None:
+                    raise RuntimeError(
+                        "AC FPF mode requires bus_p_mw from runopp solver."
+                    )
+                acpf_loss_correction_mw = float(np.sum(acpf_base_pf.bus_p_mw))
+                logger.info(
+                    "%s: AC FPF solved; AC loss imbalance=%.6g MW "
+                    "(will be absorbed by slack for DC model).",
+                    case_tag,
+                    acpf_loss_correction_mw,
+                )
+        except Exception:
+            logger.exception(
+                "%s: AC FPF FAILED; cannot build base point from runopp.",
                 case_tag,
             )
             raise
@@ -801,7 +895,7 @@ def compute_results_for_case(
 
         if base_dc is None:
             if (
-                bd == "acpf"
+                bd in {"acpf", "ac_fpf"}
                 and acpf_base_pf is not None
                 and acpf_base_pf.bus_p_mw is not None
             ):
@@ -931,11 +1025,9 @@ def compute_results_for_case(
             raise ValueError("ac.pf_init must be flat|dc|pp")
 
         try:
-            if bd == "acpf" and acpf_bp_ac is not None and acpf_base_pf is not None:
-                # Reuse early AC PF solved for ACPF base dispatch.
-                logger.info(
-                    "%s: Reusing early AC PF result for ACPF mode.", case_tag
-                )
+            if bd in {"acpf", "ac_fpf"} and acpf_bp_ac is not None and acpf_base_pf is not None:
+                # Reuse early AC PF/FPF solved for ACPF/AC_FPF base dispatch.
+                logger.info("%s: Reusing early AC result for %s mode.", case_tag, bd)
                 bp_ac = acpf_bp_ac
                 base_pf = acpf_base_pf
                 bp_ac_meta = bp_ac.to_meta_dict()
@@ -1174,15 +1266,14 @@ def compute_results_for_case(
                 "unconstrained_line_nom_mw": float(cfg.unconstrained_line_nom_mw)
                 if bd == "dc_opf"
                 else float("nan"),
-                "ext_grid_absorption_mw": float(
-                    base_dc.opf_ext_grid_absorption_mw
-                )
+                "ext_grid_absorption_mw": float(base_dc.opf_ext_grid_absorption_mw)
                 if bd == "dc_opf" and base_dc is not None
                 else 0.0,
             },
             "acpf_slack_loss_correction_mw": float(acpf_loss_correction_mw)
-            if bd == "acpf"
+            if bd in {"acpf", "ac_fpf"}
             else None,
+            "ac_fpf_pg0_source": str(ac_fpf_pg0_source) if bd == "ac_fpf" else None,
             "compute_time_sec": float(elapsed),
             **(consistency if consistency else {}),
         }

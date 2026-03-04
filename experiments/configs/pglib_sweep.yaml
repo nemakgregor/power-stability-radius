@@ -14,9 +14,9 @@
 #   Polish    — Polish power system snapshots (original thermal limits)
 #   PEGASE    — pan-European network models (TL-UB thermal limits, problematic)
 #
-# Note: GOC (Grid Optimization Competition) cases are excluded because they
-# are designed for ACOPF solvers and are structurally infeasible under DC OPF
-# (e.g. case500_goc is infeasible even at headroom_factor=1.0).
+# Note: GOC (Grid Optimization Competition) cases are included but may exhibit
+# DC OPF infeasibility due to tight structural constraints.  pandapower's
+# distributed_slack mode is disabled for these cases (realloc corruption bug).
 
 cases:
   # ── IEEE PF cases (TL-Stat thermal limits) ──────────────────────────
@@ -47,9 +47,15 @@ cases:
 
   - name: pglib_opf_case2000_goc
     file: pglib_opf_case2000_goc.m
+    ac:
+      distributed_slack: false  # pandapower crashes (realloc corruption) with distributed_slack on this case
+      pf_init: flat
 
   - name: pglib_opf_case10000_goc
     file: pglib_opf_case10000_goc.m
+    ac:
+      distributed_slack: false  # pandapower crashes (realloc corruption) with distributed_slack on this case
+      pf_init: flat
 
   # ── SDET / RTE cases (medium to large scale) ───────────────────────
   - name: pglib_opf_case588_sdet
@@ -141,9 +147,14 @@ compute:
     lossless: false            # lossy AC PF (r ≠ 0) for realistic base point
     distributed_slack: true    # distribute losses ∝ headroom (Pmax − Pset)
     trafo_model: pi            # π-model for transformers (convergence)
+  ac_fpf:
+    pg0_source: case           # initial dispatch guess: "case" | "midpoint"
+    vm_min_pu: 0.9
+    vm_max_pu: 1.1
   opf:
     headroom_factor: 0.90    # 90% headroom → ≥10% margin on every constrained line
 
 allow_download: true
 data_dir: data/input
 output_dir: experiments/output/pglib_sweep
+case_timeout_sec: 600    # per-case subprocess timeout (seconds); 0 = no timeout

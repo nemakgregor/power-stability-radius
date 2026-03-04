@@ -19,7 +19,7 @@ Public dataclasses
 - BasePointAC
 """
 
-from .ac import solve_ac_pf_base_point
+from .ac import solve_ac_fpf_base_point, solve_ac_pf_base_point
 from .dc import (
     build_dc_base_point_case,
     build_dc_base_point_dc_opf,
@@ -33,5 +33,6 @@ __all__ = [
     "build_dc_base_point_case",
     "build_dc_base_point_dc_opf",
     "build_dc_base_point_from_acpf",
+    "solve_ac_fpf_base_point",
     "solve_ac_pf_base_point",
 ]

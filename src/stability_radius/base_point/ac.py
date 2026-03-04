@@ -5,6 +5,10 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
+from stability_radius.base_point.pandapower_opp import (
+    ACFPFConfig,
+    solve_ac_fpf,
+)
 from stability_radius.base_point.pypsa_pf import (
     PyPSAAPFResult,
     solve_ac_pf_base_point_from_pandapower,
@@ -106,6 +110,85 @@ def solve_ac_pf_base_point(
         )
         if isinstance(gen_dispatch_mw_by_name, Mapping)
         else (),
+        pf_attempt=str(getattr(base_pf, "pf_attempt", "primary")),
+        pf_repairs=tuple(getattr(base_pf, "pf_repairs", None) or ()),
+        bus_p_mw=np.asarray(base_pf.bus_p_mw, dtype=float)
+        if base_pf.bus_p_mw is not None
+        else None,
+    )
+
+    return bp, base_pf
+
+
+def solve_ac_fpf_base_point(
+    *,
+    net: Any,
+    slack_bus: int,
+    lossless: bool,
+    fpf_cfg: ACFPFConfig | None = None,
+    opf_cfg: "OPFConfig | None" = None,
+    line_indices: Sequence[int] | None = None,
+) -> tuple[BasePointAC, PyPSAAPFResult]:
+    """Solve AC Feasible Power Flow and return BasePointAC + PyPSAAPFResult.
+
+    This wraps ``solve_ac_fpf()`` (pandapower.runopp) and packages
+    the result into the same ``BasePointAC`` type used by the AC PF path,
+    so downstream code (AC certificate, AC feasibility check) works
+    without modification.
+
+    Parameters
+    ----------
+    net : pandapower network
+    slack_bus : slack bus id or position
+    lossless : if True, apply lossless policy (r=0)
+    fpf_cfg : AC FPF solver configuration (optional)
+    opf_cfg : OPF config for unconstrained_line_nom_mw (optional)
+    line_indices : list of line indices to monitor (optional, default=all)
+    """
+    line_ids = (
+        [int(x) for x in sorted(net.line.index)]
+        if line_indices is None
+        else [int(x) for x in line_indices]
+    )
+    if not line_ids:
+        raise ValueError("Network has no lines (net.line empty).")
+
+    logger.info(
+        "AC FPF base point: solve OPP (lossless=%s, lines=%d)",
+        bool(lossless),
+        int(len(line_ids)),
+    )
+
+    base_pf = solve_ac_fpf(
+        net=net,
+        slack_bus=int(slack_bus),
+        line_indices=line_ids,
+        lossless=bool(lossless),
+        fpf_cfg=fpf_cfg,
+        opf_cfg=opf_cfg,
+    )
+
+    # Limits per line (MVA) for reproducibility / verification checks.
+    s_limit_mva = np.empty(len(line_ids), dtype=float)
+    for pos, lid in enumerate(line_ids):
+        s_limit_mva[pos] = float(estimate_line_limit_mva(net, net.line.loc[lid]))
+
+    bp = BasePointAC(
+        pf_solver="pandapower_opp",
+        pf_init="n/a",
+        lossless=bool(lossless),
+        slack_bus=int(slack_bus),
+        bus_ids=tuple(int(x) for x in base_pf.bus_ids),
+        vm_pu=np.asarray(base_pf.v_mag_pu, dtype=float),
+        va_rad=np.asarray(base_pf.v_ang_rad, dtype=float),
+        line_ids=tuple(int(x) for x in base_pf.line_ids),
+        p_from_mw=np.asarray(base_pf.line_p0_mw, dtype=float),
+        q_from_mvar=np.asarray(base_pf.line_q0_mvar, dtype=float),
+        p_to_mw=np.asarray(base_pf.line_p1_mw, dtype=float),
+        q_to_mvar=np.asarray(base_pf.line_q1_mvar, dtype=float),
+        s_limit_mva=s_limit_mva,
+        status=str(base_pf.status),
+        gen_dispatch_mw_by_name=(),
         pf_attempt=str(getattr(base_pf, "pf_attempt", "primary")),
         pf_repairs=tuple(getattr(base_pf, "pf_repairs", None) or ()),
         bus_p_mw=np.asarray(base_pf.bus_p_mw, dtype=float)
