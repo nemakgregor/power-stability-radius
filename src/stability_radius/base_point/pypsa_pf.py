@@ -668,6 +668,63 @@ def solve_ac_pf_base_point_from_pandapower(
                 skipped[:20],
             )
 
+    # ---- sgen entries (additional generators at same bus from MATPOWER) ----
+    if hasattr(net, "sgen") and net.sgen is not None and len(net.sgen):
+        skipped_sgen: list[int] = []
+        for sid in [int(x) for x in sorted(net.sgen.index)]:
+            row = net.sgen.loc[sid]
+            if not _is_in_service(row):
+                continue
+            bus = int(row.get("bus", -1))
+            if bus not in bus_id_set:
+                raise ValueError(f"pandapower sgen {sid} refers to missing bus {bus}")
+
+            p_max = float(row.get("max_p_mw", np.nan))
+            if not math.isfinite(p_max) or p_max <= 0.0:
+                skipped_sgen.append(int(sid))
+                continue
+
+            name = f"sgen_{sid}"
+            p_nom = float(p_max)
+
+            if gen_dispatch_mw_by_name and name in gen_dispatch_mw_by_name:
+                p_set = float(gen_dispatch_mw_by_name[name])
+            else:
+                p_set = float(row.get("p_mw", 0.0))
+            if not math.isfinite(p_set):
+                p_set = 0.0
+
+            v_set = float(row.get("vm_pu", 1.0)) if "vm_pu" in row else 1.0
+
+            sgen_kwargs: dict[str, Any] = dict(
+                bus=str(bus),
+                p_nom=float(p_nom),
+                p_set=float(p_set),
+                q_set=0.0,
+                control="PV",
+                v_set=float(v_set),
+            )
+
+            if "min_q_mvar" in row and "max_q_mvar" in row:
+                try:
+                    qmin = float(row.get("min_q_mvar", float("nan")))
+                    qmax = float(row.get("max_q_mvar", float("nan")))
+                except (TypeError, ValueError):
+                    qmin, qmax = float("nan"), float("nan")
+                if math.isfinite(qmin):
+                    sgen_kwargs["q_min"] = float(qmin)
+                if math.isfinite(qmax):
+                    sgen_kwargs["q_max"] = float(qmax)
+
+            n.add("Generator", name, **sgen_kwargs)
+
+        if skipped_sgen:
+            logger.warning(
+                "AC PF: skipped %d pandapower sgen(s) with non-positive/invalid max_p_mw. First: %s",
+                int(len(skipped_sgen)),
+                skipped_sgen[:20],
+            )
+
     if slack_gen_name is None:
         logger.error(
             "AC PF requires an ext_grid at the requested slack_bus=%s. "

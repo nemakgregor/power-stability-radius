@@ -263,6 +263,54 @@ def solve_dc_opf_base_flows_from_pandapower(
             skipped_nonpositive_pmax[:20],
         )
 
+    # ---- sgen entries (additional generators at same bus from MATPOWER) ----
+    # pandapower's from_ppc creates one gen/ext_grid per bus and puts
+    # additional generators at the same bus into net.sgen with proper
+    # min_p_mw / max_p_mw bounds.  These must be included as dispatchable
+    # generators so the OPF sees the full generation capacity.
+    skipped_sgen_nonpositive: list[int] = []
+    if hasattr(net, "sgen") and net.sgen is not None and len(net.sgen):
+        bus_id_set = set(bus_ids)
+        for sid in [int(x) for x in sorted(net.sgen.index)]:
+            row = net.sgen.loc[sid]
+            if not _is_in_service(row):
+                continue
+            bus = int(row.get("bus", -1))
+            if bus not in bus_id_set:
+                raise ValueError(f"pandapower sgen {sid} refers to missing bus {bus}")
+
+            p_min = float(row.get("min_p_mw", 0.0))
+            p_max = float(row.get("max_p_mw", np.nan))
+            if not math.isfinite(p_min):
+                p_min = 0.0
+            if not math.isfinite(p_max):
+                # sgen without bounds: skip (not dispatchable)
+                continue
+
+            bounds = _pp_gen_p_bounds_to_pypsa(gid=sid, p_min_mw=p_min, p_max_mw=p_max)
+            if bounds is None:
+                skipped_sgen_nonpositive.append(int(sid))
+                continue
+
+            p_nom, p_min_pu = bounds
+            gen_rank += 1
+            n.add(
+                "Generator",
+                f"sgen_{sid}",
+                bus=str(bus),
+                p_nom=float(p_nom),
+                p_min_pu=float(p_min_pu),
+                p_max_pu=1.0,
+                marginal_cost=float(gen_rank),
+            )
+
+    if skipped_sgen_nonpositive:
+        logger.warning(
+            "Skipped %d in-service pandapower sgen(s) with non-positive max_p_mw. First ids: %s",
+            int(len(skipped_sgen_nonpositive)),
+            skipped_sgen_nonpositive[:20],
+        )
+
     if hasattr(net, "ext_grid") and net.ext_grid is not None and len(net.ext_grid):
         # ext_grid represents the slack bus (generator of last resort).
         # Capacity is set to unconstrained_nom to ensure feasibility even
@@ -295,7 +343,7 @@ def solve_dc_opf_base_flows_from_pandapower(
 
     if len(n.generators.index) == 0:
         raise RuntimeError(
-            "No generators found in pandapower net (gen/ext_grid). Cannot solve OPF."
+            "No generators found in pandapower net (gen/sgen/ext_grid). Cannot solve OPF."
         )
 
     in_service_flags: dict[int, bool] = {}
@@ -408,7 +456,11 @@ def solve_dc_opf_base_flows_from_pandapower(
 
     # Handle infeasible / failed optimization before accessing results.
     obj_raw = getattr(n, "objective", None)
-    if obj_raw is None or status not in {"ok", "optimal"} or termination == "infeasible":
+    if (
+        obj_raw is None
+        or status not in {"ok", "optimal"}
+        or termination == "infeasible"
+    ):
         raise RuntimeError(
             f"DC OPF failed: status={status!r}, termination={termination!r}, "
             f"objective={obj_raw!r}. "

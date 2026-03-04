@@ -105,6 +105,7 @@ def apply_gen_dispatch_to_pandapower_net(
     Supported keys (project convention)
     -----------------------------------
     - "gen_<pp_gen_idx>" -> net.gen.at[idx, "p_mw"]
+    - "sgen_<pp_sgen_idx>" -> net.sgen.at[idx, "p_mw"]
 
     Notes
     -----
@@ -137,25 +138,41 @@ def apply_gen_dispatch_to_pandapower_net(
     if not mapping:
         return
 
-    if not (hasattr(net, "gen") and net.gen is not None and len(net.gen)):
-        # Nothing to apply.
-        return
-
     applied = 0
-    for name, p in mapping.items():
-        if not name.startswith("gen_"):
-            continue
-        try:
-            gid = int(name.split("_", 1)[1])
-        except Exception:  # noqa: BLE001
-            continue
-        if gid not in net.gen.index:
-            continue
-        if not np.isfinite(p):
-            continue
-        net.gen.at[gid, "p_mw"] = float(p)
-        applied += 1
+
+    # Apply dispatch to net.gen entries.
+    if hasattr(net, "gen") and net.gen is not None and len(net.gen):
+        for name, p in mapping.items():
+            if not name.startswith("gen_"):
+                continue
+            try:
+                gid = int(name.split("_", 1)[1])
+            except Exception:  # noqa: BLE001
+                continue
+            if gid not in net.gen.index:
+                continue
+            if not np.isfinite(p):
+                continue
+            net.gen.at[gid, "p_mw"] = float(p)
+            applied += 1
+
+    # Apply dispatch to net.sgen entries (additional generators from MATPOWER).
+    if hasattr(net, "sgen") and net.sgen is not None and len(net.sgen):
+        for name, p in mapping.items():
+            if not name.startswith("sgen_"):
+                continue
+            try:
+                sid = int(name.split("_", 1)[1])
+            except Exception:  # noqa: BLE001
+                continue
+            if sid not in net.sgen.index:
+                continue
+            if not np.isfinite(p):
+                continue
+            net.sgen.at[sid, "p_mw"] = float(p)
+            applied += 1
 
     logger.debug(
-        "Applied generator dispatch to pandapower net.gen: applied=%d", int(applied)
+        "Applied generator dispatch to pandapower net: applied=%d (gen+sgen)",
+        int(applied),
     )

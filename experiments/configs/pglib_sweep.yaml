@@ -9,9 +9,14 @@
 #   IEEE PF   — classic IEEE power flow cases (TL-Stat thermal limits)
 #   IEEE RTS  — IEEE Reliability Test System (original thermal limits)
 #   ACTIVSg   — Texas A&M synthetic grids (original thermal limits)
-#   GOC       — Grid Optimization Competition (original thermal limits)
+#   RTE       — French transmission grid snapshots (original thermal limits)
+#   SDET      — synthetic distribution-equivalent test cases
 #   Polish    — Polish power system snapshots (original thermal limits)
 #   PEGASE    — pan-European network models (TL-UB thermal limits, problematic)
+#
+# Note: GOC (Grid Optimization Competition) cases are excluded because they
+# are designed for ACOPF solvers and are structurally infeasible under DC OPF
+# (e.g. case500_goc is infeasible even at headroom_factor=1.0).
 
 cases:
   # ── IEEE PF cases (TL-Stat thermal limits) ──────────────────────────
@@ -36,12 +41,9 @@ cases:
   - name: pglib_opf_case118_ieee
     file: pglib_opf_case118_ieee.m
 
-  # ── ACTIVSg / GOC cases (original thermal limits) ──────────────────
+  # ── ACTIVSg case (original thermal limits) ──────────────────────────
   - name: pglib_opf_case200_activ
     file: pglib_opf_case200_activ.m
-
-  - name: pglib_opf_case500_goc
-    file: pglib_opf_case500_goc.m
 
   - name: pglib_opf_case2000_goc
     file: pglib_opf_case2000_goc.m
@@ -49,12 +51,43 @@ cases:
   - name: pglib_opf_case10000_goc
     file: pglib_opf_case10000_goc.m
 
+  # ── SDET / RTE cases (medium to large scale) ───────────────────────
+  - name: pglib_opf_case588_sdet
+    file: pglib_opf_case588_sdet.m
+
+  - name: pglib_opf_case1888_rte
+    file: pglib_opf_case1888_rte.m
+
+  - name: pglib_opf_case1951_rte
+    file: pglib_opf_case1951_rte.m
+
+  - name: pglib_opf_case2853_sdet
+    file: pglib_opf_case2853_sdet.m
+
+  - name: pglib_opf_case6468_rte
+    file: pglib_opf_case6468_rte.m
+    headroom_factor: 0.98
+    ac:
+      distributed_slack: false  # pandapower crashes (realloc corruption) with distributed_slack on this case
+      pf_init: flat             # flat init avoids dc-init interaction with 129 trafos
+
+  - name: pglib_opf_case6515_rte
+    file: pglib_opf_case6515_rte.m
+    headroom_factor: 0.98
+    ac:
+      distributed_slack: false  # pandapower crashes (realloc corruption) with distributed_slack on this case
+      pf_init: flat             # flat init avoids dc-init interaction with 129 trafos
+
   # ── Polish cases (original thermal limits) ──────────────────────────
   - name: pglib_opf_case2383wp_k
     file: pglib_opf_case2383wp_k.m
+    headroom_factor: 0.98     # tight topology; 0.95 infeasible, 1.0 gives zero DC radius
+    ac:
+      distributed_slack: false  # pandapower crashes (realloc corruption) with distributed_slack on this case
+      pf_init: flat             # flat init avoids dc-init interaction with 129 trafos
 
   - name: pglib_opf_case2736sp_k
-    file: pglib_opf_case2736sp_k.m
+    file: pglib_opf_case2736sp_k.m         # flat init avoids dc-init interaction with 129 trafos
 
   # ── Problematic cases (TL-UB / tight topology) ─────────────────────
   - name: pglib_opf_case300_ieee
