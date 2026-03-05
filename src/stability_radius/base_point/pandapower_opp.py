@@ -36,6 +36,8 @@ import copy
 import logging
 import math
 import time as _time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as _FuturesTimeoutError
 from dataclasses import dataclass
 from typing import Any, Sequence
 
@@ -86,8 +88,9 @@ class ACFPFConfig:
     init : str
         Power flow initialization for runopp: "dc" or "flat".
     max_attempts : int
-        Maximum number of runopp attempts before giving up.
-        Attempt 1 uses configured bounds; attempt 2 widens voltage bounds.
+        Maximum number of runopp attempts before giving up (clamped to [1, 3]).
+        Attempt 1 uses configured bounds; attempt 2 widens voltage bounds to
+        [0.85, 1.15]; attempt 3 widens further to [0.80, 1.20].
     """
 
     pg0_source: str = "case"
@@ -102,6 +105,14 @@ class ACFPFConfig:
     opf_violation: float = 1e-4
     init: str = "dc"
     max_attempts: int = 1
+    per_attempt_timeout: float = 0
+    """Per-attempt timeout in seconds for each pp.runopp() call.
+
+    ``0`` means no per-attempt timeout (unlimited; backward compatible).
+    A positive value (e.g. 180) caps each runopp attempt so that a single
+    slow attempt cannot exhaust the entire subprocess timeout, leaving room
+    for the fallback chain (runpp → DC OPF).
+    """
 
 
 def _determine_pg0(
@@ -421,9 +432,9 @@ def solve_ac_fpf(
     )
     runopp_kwargs["numba"] = True
 
-    max_attempts = max(1, min(cfg.max_attempts, 2))
+    max_attempts = max(1, min(cfg.max_attempts, 3))
 
-    # Define attempt configurations (at most 2).
+    # Define attempt configurations (at most 3).
     attempts_config: list[dict[str, Any]] = [
         {
             "label": "primary",
@@ -439,9 +450,17 @@ def solve_ac_fpf(
             "init": "flat",
             "repairs": [],  # filled dynamically below
         },
+        {
+            "label": "relaxed_all",
+            "vm_min": min(cfg.vm_min_pu, 0.80),
+            "vm_max": max(cfg.vm_max_pu, 1.20),
+            "init": "flat",
+            "repairs": [],  # filled dynamically below
+        },
     ]
 
     last_error: Exception | None = None
+    attempt_timeout = float(cfg.per_attempt_timeout) if cfg.per_attempt_timeout > 0 else 0.0
     for attempt_idx, attempt in enumerate(attempts_config[:max_attempts], 1):
         _set_voltage_limits(
             nn, vm_min_pu=attempt["vm_min"], vm_max_pu=attempt["vm_max"]
@@ -451,7 +470,7 @@ def solve_ac_fpf(
         try:
             logger.info(
                 "AC FPF attempt %d/%d (%s): vm=[%.2f,%.2f], init=%s, "
-                "max_iter=%d, feastol=%.1e",
+                "max_iter=%d, feastol=%.1e, timeout=%.0fs",
                 attempt_idx,
                 max_attempts,
                 attempt["label"],
@@ -460,9 +479,22 @@ def solve_ac_fpf(
                 attempt["init"],
                 cfg.max_iteration,
                 cfg.pdipm_feastol,
+                attempt_timeout if attempt_timeout > 0 else float("inf"),
             )
             t_start = _time.perf_counter()
-            pp.runopp(nn, **current_kwargs)
+            if attempt_timeout > 0:
+                # Run runopp in a thread with a timeout so a single slow
+                # attempt cannot consume the entire subprocess budget.
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    future = pool.submit(pp.runopp, nn, **current_kwargs)
+                    try:
+                        future.result(timeout=attempt_timeout)
+                    except _FuturesTimeoutError:
+                        raise RuntimeError(
+                            f"pp.runopp timed out after {attempt_timeout:.0f}s"
+                        ) from None
+            else:
+                pp.runopp(nn, **current_kwargs)
             elapsed = _time.perf_counter() - t_start
             logger.info(
                 "AC FPF attempt %d/%d (%s) completed in %.2f sec",

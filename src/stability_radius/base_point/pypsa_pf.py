@@ -331,8 +331,7 @@ def _solve_ac_pf_with_pandapower(
         trafo_model_eff,
     )
 
-    n_buses = int(len(nn.bus)) if hasattr(nn, "bus") and nn.bus is not None else 0
-    max_iter = 100 if n_buses > 1000 else 30
+    max_iter = 300
 
     # Track which solver attempt succeeded for repair metadata.
     pf_attempt: str = "primary"  # "primary" | "alt_init" | "relaxed"

@@ -646,6 +646,7 @@ def compute_results_for_case(
     ac_fpf_max_loading_percent: float = 99.0,
     ac_fpf_init: str = "dc",
     ac_fpf_max_attempts: int = 1,
+    ac_fpf_per_attempt_timeout: float = 0,
     # shared
     opf_cfg: OPFConfig | None = None,
     opf_dc_flow_consistency_tol_mw: float = _DEFAULT_OPF_DC_FLOW_CONSISTENCY_TOL_MW,
@@ -730,15 +731,11 @@ def compute_results_for_case(
             )
             bp_dc_meta = bp_dc.to_meta_dict()
             gen_dispatch_for_ac = dict(bp_dc.gen_dispatch_mw_by_name)
-    elif bd == "acpf":
+    elif bd in {"acpf", "ac_fpf"}:
         logger.info(
-            "%s: base_dispatch=acpf: AC PF first, then DC from AC injections.",
+            "%s: base_dispatch=%s: AC FPF (runopp) → acpf (runpp) → dc_opf fallback chain.",
             case_tag,
-        )
-    elif bd == "ac_fpf":
-        logger.info(
-            "%s: base_dispatch=ac_fpf: AC FPF (runopp) first, then DC from AC injections.",
-            case_tag,
+            bd,
         )
     else:
         logger.info("%s: base_dispatch=case: using case dispatch (NO OPF).", case_tag)
@@ -751,77 +748,20 @@ def compute_results_for_case(
     acpf_base_pf: _PyPSAAPFResult | None = None
     acpf_loss_correction_mw: float = 0.0
 
-    if bd == "acpf" and (bool(compute_dc) or bool(compute_ac)):
-        try:
-            with log_stage(logger, f"{case_tag}: Early AC PF for ACPF base dispatch"):
-                n_buses_net = (
-                    int(len(net.bus))
-                    if hasattr(net, "bus") and net.bus is not None
-                    else 0
-                )
-                n_lines_net = (
-                    int(len(net.line))
-                    if hasattr(net, "line") and net.line is not None
-                    else 0
-                )
-                logger.info(
-                    "%s: ACPF: starting AC PF solve (buses=%d, lines=%d, "
-                    "solver=%s, init=%s, lossless=%s, distributed_slack=%s, trafo_model=%s)",
-                    case_tag,
-                    n_buses_net,
-                    n_lines_net,
-                    ac_pf_solver,
-                    ac_pf_init,
-                    ac_lossless,
-                    ac_distributed_slack,
-                    ac_trafo_model,
-                )
-                acpf_bp_ac, acpf_base_pf = solve_ac_pf_base_point(
-                    net=net,
-                    slack_bus=int(slack_bus),
-                    pf_solver=str(ac_pf_solver),
-                    pf_init=str(ac_pf_init),
-                    lossless=bool(ac_lossless),
-                    gen_dispatch_mw_by_name={},
-                    line_indices=[int(x) for x in sorted(net.line.index)],
-                    distributed_slack=bool(ac_distributed_slack),
-                    trafo_model=str(ac_trafo_model),
-                )
-                logger.info(
-                    "%s: ACPF: AC PF solve completed (status=%s, attempt=%s, repairs=%s)",
-                    case_tag,
-                    acpf_base_pf.status if acpf_base_pf else "n/a",
-                    acpf_base_pf.pf_attempt if acpf_base_pf else "n/a",
-                    acpf_base_pf.pf_repairs if acpf_base_pf else [],
-                )
-                if acpf_base_pf.bus_p_mw is None:
-                    raise RuntimeError(
-                        "ACPF mode requires bus_p_mw from AC PF solver. "
-                        "Ensure pf_solver=pandapower."
-                    )
-                acpf_loss_correction_mw = float(np.sum(acpf_base_pf.bus_p_mw))
-                logger.info(
-                    "%s: ACPF early AC PF solved; AC loss imbalance=%.6g MW "
-                    "(will be absorbed by slack for DC model).",
-                    case_tag,
-                    acpf_loss_correction_mw,
-                )
-        except Exception:
-            logger.exception(
-                "%s: ACPF early AC PF FAILED; cannot build DC base point from AC PF.",
-                case_tag,
-            )
-            raise
-
-    # ---------- AC FPF: Solve AC OPF feasibility to extract bus injections ----------
-    if bd == "ac_fpf" and (bool(compute_dc) or bool(compute_ac)):
+    # ---------- Unified AC base point resolution (ac_fpf / acpf) ----------
+    # Fallback chain: AC FPF (runopp) → acpf (runpp) → DC OPF + runpp
+    # Both "acpf" and "ac_fpf" dispatch modes use the same chain.
+    if bd in {"acpf", "ac_fpf"} and (bool(compute_dc) or bool(compute_ac)):
         from stability_radius.base_point.pandapower_opp import (
             ACFPFConfig as _ACFPFConfig,
         )
 
+        _ac_unified_ok = False
+
+        # --- Step 1: Try AC FPF (runopp = ACOPF) ---
         try:
             with log_stage(
-                logger, f"{case_tag}: Early AC FPF (runopp) for ac_fpf base dispatch"
+                logger, f"{case_tag}: AC FPF (runopp) for {bd} base dispatch"
             ):
                 n_buses_net = (
                     int(len(net.bus))
@@ -841,15 +781,17 @@ def compute_results_for_case(
                     max_loading_percent=float(ac_fpf_max_loading_percent),
                     init=str(ac_fpf_init),
                     max_attempts=int(ac_fpf_max_attempts),
+                    per_attempt_timeout=float(ac_fpf_per_attempt_timeout),
                 )
                 logger.info(
                     "%s: AC FPF: starting runopp solve (buses=%d, lines=%d, "
-                    "lossless=%s, pg0_source=%s)",
+                    "lossless=%s, pg0_source=%s, max_attempts=%d)",
                     case_tag,
                     n_buses_net,
                     n_lines_net,
                     ac_lossless,
                     fpf_cfg.pg0_source,
+                    fpf_cfg.max_attempts,
                 )
                 acpf_bp_ac, acpf_base_pf = solve_ac_fpf_base_point(
                     net=net,
@@ -871,6 +813,8 @@ def compute_results_for_case(
                         "AC FPF mode requires bus_p_mw from runopp solver."
                     )
                 acpf_loss_correction_mw = float(np.sum(acpf_base_pf.bus_p_mw))
+                bd = "ac_fpf"
+                _ac_unified_ok = True
                 logger.info(
                     "%s: AC FPF solved; AC loss imbalance=%.6g MW "
                     "(will be absorbed by slack for DC model).",
@@ -879,12 +823,13 @@ def compute_results_for_case(
                 )
         except Exception:
             logger.warning(
-                "%s: AC FPF FAILED; falling back to acpf (runpp with case dispatch).",
+                "%s: AC FPF (runopp) FAILED; falling back to acpf (runpp with case dispatch).",
                 case_tag,
                 exc_info=True,
             )
-            # --- Fallback 1: try acpf (simple AC power flow, very fast) ---
-            acpf_fallback_ok = False
+
+        # --- Step 2: Fallback to acpf (runpp with case dispatch) ---
+        if not _ac_unified_ok:
             try:
                 with log_stage(
                     logger,
@@ -905,7 +850,7 @@ def compute_results_for_case(
                         raise RuntimeError("acpf fallback: bus_p_mw is None")
                     acpf_loss_correction_mw = float(np.sum(acpf_base_pf.bus_p_mw))
                     bd = "acpf"
-                    acpf_fallback_ok = True
+                    _ac_unified_ok = True
                     logger.info(
                         "%s: acpf fallback succeeded (AC loss=%.6g MW).",
                         case_tag,
@@ -917,27 +862,28 @@ def compute_results_for_case(
                     case_tag,
                     exc_info=True,
                 )
-            if not acpf_fallback_ok:
-                # --- Fallback 2: DC OPF (last resort, always works) ---
-                bd = "dc_opf"
-                acpf_bp_ac = None
-                acpf_base_pf = None
-                acpf_loss_correction_mw = 0.0
-                with log_stage(
-                    logger,
-                    f"{case_tag}: Fallback DC OPF (PyPSA+HiGHS) after AC FPF+acpf failure",
-                ):
-                    bp_dc, base_dc, used_headroom_factor = (
-                        _solve_dc_opf_with_adaptive_headroom(
-                            net=net,
-                            slack_bus=int(slack_bus),
-                            opf_cfg=cfg,
-                            limit_factor=1.0,
-                            case_tag=case_tag,
-                        )
+
+        # --- Step 3: Fallback to DC OPF (last resort) ---
+        if not _ac_unified_ok:
+            bd = "dc_opf"
+            acpf_bp_ac = None
+            acpf_base_pf = None
+            acpf_loss_correction_mw = 0.0
+            with log_stage(
+                logger,
+                f"{case_tag}: Fallback DC OPF (PyPSA+HiGHS) after AC FPF+acpf failure",
+            ):
+                bp_dc, base_dc, used_headroom_factor = (
+                    _solve_dc_opf_with_adaptive_headroom(
+                        net=net,
+                        slack_bus=int(slack_bus),
+                        opf_cfg=cfg,
+                        limit_factor=1.0,
+                        case_tag=case_tag,
                     )
-                    bp_dc_meta = bp_dc.to_meta_dict()
-                    gen_dispatch_for_ac = dict(bp_dc.gen_dispatch_mw_by_name)
+                )
+                bp_dc_meta = bp_dc.to_meta_dict()
+                gen_dispatch_for_ac = dict(bp_dc.gen_dispatch_mw_by_name)
 
     # ---------- DC model stage ----------
     results_lines: dict[str, dict[str, Any]] = {}

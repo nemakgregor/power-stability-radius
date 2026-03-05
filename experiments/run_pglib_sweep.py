@@ -124,6 +124,7 @@ def _compute_case(
         ac_fpf_max_loading_percent=float(ac_fpf_cfg.get("max_loading_percent", 99.0)),
         ac_fpf_init=str(ac_fpf_cfg.get("init", "dc")),
         ac_fpf_max_attempts=int(ac_fpf_cfg.get("max_attempts", 1)),
+        ac_fpf_per_attempt_timeout=float(ac_fpf_cfg.get("per_attempt_timeout", 0)),
         # OPF
         opf_cfg=opf_cfg,
         opf_dc_flow_consistency_tol_mw=float(opf_dc_flow_consistency_tol_mw),

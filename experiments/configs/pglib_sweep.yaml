@@ -54,7 +54,7 @@ cases:
   - name: pglib_opf_case10000_goc
     file: pglib_opf_case10000_goc.m
     base_dispatch: dc_opf          # ac_fpf hangs on 10k-bus network; use DC OPF instead
-    timeout: 900                   # 15 min for 10k-bus network (global default is 600s)
+    timeout: 2000                   # 15 min for 10k-bus network (global default is 600s)
     ac:
       distributed_slack: false  # pandapower crashes (realloc corruption) with distributed_slack on this case
       pf_init: flat
@@ -62,79 +62,71 @@ cases:
   # ── SDET / RTE cases (medium to large scale) ───────────────────────
   - name: pglib_opf_case588_sdet
     file: pglib_opf_case588_sdet.m
+    headroom_factor: 0.98
 
   - name: pglib_opf_case1888_rte
     file: pglib_opf_case1888_rte.m
-    timeout: 900
-    ac:
-      distributed_slack: false
-      pf_init: flat
-    ac_fpf:
-      init: flat
-      vm_min_pu: 0.85
-      vm_max_pu: 1.15
-      max_iteration: 500
-
-  - name: pglib_opf_case1951_rte
-    file: pglib_opf_case1951_rte.m
-    timeout: 900
-    ac:
-      distributed_slack: false
-      pf_init: flat
-    ac_fpf:
-      init: flat
-      vm_min_pu: 0.85
-      vm_max_pu: 1.15
-      max_iteration: 500
-
-  - name: pglib_opf_case2853_sdet
-    file: pglib_opf_case2853_sdet.m
+    headroom_factor: 0.98
     timeout: 1200
     ac:
       distributed_slack: false
       pf_init: flat
     ac_fpf:
       init: flat
-      vm_min_pu: 0.85
-      vm_max_pu: 1.15
-      max_iteration: 500
+
+  - name: pglib_opf_case1951_rte
+    file: pglib_opf_case1951_rte.m
+    headroom_factor: 0.98
+    timeout: 1200
+    ac:
+      distributed_slack: false
+      pf_init: flat
+    ac_fpf:
+      init: flat
+
+  - name: pglib_opf_case2853_sdet
+    file: pglib_opf_case2853_sdet.m
+    headroom_factor: 0.98
+    timeout: 1800
+    ac:
+      distributed_slack: false
+      pf_init: flat
+    ac_fpf:
+      init: flat
 
   - name: pglib_opf_case6468_rte
     file: pglib_opf_case6468_rte.m
     headroom_factor: 0.98
-    timeout: 1800
+    timeout: 2400
     ac:
       distributed_slack: false
       pf_init: flat
     ac_fpf:
       init: flat
-      vm_min_pu: 0.85
-      vm_max_pu: 1.15
-      max_iteration: 500
 
   - name: pglib_opf_case6515_rte
     file: pglib_opf_case6515_rte.m
     headroom_factor: 0.98
-    timeout: 1800
+    timeout: 2600
     ac:
       distributed_slack: false
       pf_init: flat
     ac_fpf:
       init: flat
-      vm_min_pu: 0.85
-      vm_max_pu: 1.15
-      max_iteration: 500
 
   # ── Polish cases (original thermal limits) ──────────────────────────
   - name: pglib_opf_case2383wp_k
     file: pglib_opf_case2383wp_k.m
     headroom_factor: 0.98     # tight topology; 0.95 infeasible, 1.0 gives zero DC radius
+    timeout: 2600
     ac:
       distributed_slack: false  # pandapower crashes (realloc corruption) with distributed_slack on this case
       pf_init: flat             # flat init avoids dc-init interaction with 129 trafos
 
   - name: pglib_opf_case2736sp_k
     file: pglib_opf_case2736sp_k.m         # flat init avoids dc-init interaction with 129 trafos
+    headroom_factor: 0.98
+    timeout: 2600
 
   # ── Problematic cases (TL-UB / tight topology) ─────────────────────
   - name: pglib_opf_case300_ieee
@@ -183,16 +175,18 @@ compute:
     distributed_slack: true    # distribute losses ∝ headroom (Pmax − Pset)
     trafo_model: pi            # π-model for transformers (convergence)
   ac_fpf:
-    pg0_source: case           # initial dispatch guess: "case" | "midpoint"
-    vm_min_pu: 0.9
+    pg0_source: midpoint           # initial dispatch guess: "case" | "midpoint"
+    vm_min_pu: 0.8
     vm_max_pu: 1.1
     max_iteration: 300         # PDIPM iterations (default was 100, now 300)
     max_loading_percent: 99.0  # 1% margin for PIPS tolerance
     init: dc                   # "dc" or "flat" initialization
+    max_attempts: 3            # try primary → relaxed_v → relaxed_all before falling back to runpp
+    per_attempt_timeout: 240   # seconds per runopp attempt; prevents one slow attempt from starving the fallback chain
   opf:
-    headroom_factor: 0.90    # 90% headroom → ≥10% margin on every constrained line
+    headroom_factor: 0.95    # 90% headroom → ≥10% margin on every constrained line
 
 allow_download: true
 data_dir: data/input
-output_dir: experiments/output/test_run_2
-case_timeout_sec: 600    # per-case subprocess timeout (seconds); 0 = no timeout
+output_dir: experiments/output/test_run_6
+case_timeout_sec: 1200    # per-case subprocess timeout (seconds); 0 = no timeout
