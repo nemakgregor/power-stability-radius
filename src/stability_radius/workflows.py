@@ -645,12 +645,14 @@ def compute_results_for_case(
     ac_fpf_max_iteration: int = 300,
     ac_fpf_max_loading_percent: float = 99.0,
     ac_fpf_init: str = "dc",
+    ac_fpf_max_attempts: int = 1,
     # shared
     opf_cfg: OPFConfig | None = None,
     opf_dc_flow_consistency_tol_mw: float = _DEFAULT_OPF_DC_FLOW_CONSISTENCY_TOL_MW,
     opf_bus_balance_tol_mw: float = _DEFAULT_OPF_BUS_BALANCE_TOL_MW,
     path_base_dir: str | os.PathLike[str] | None = None,
     allow_download: bool = False,
+    dc_checkpoint_path: str | None = None,
 ) -> dict[str, Any]:
     """
     Compute per-line radii and return a single results dict (including '__meta__').
@@ -838,6 +840,7 @@ def compute_results_for_case(
                     max_iteration=int(ac_fpf_max_iteration),
                     max_loading_percent=float(ac_fpf_max_loading_percent),
                     init=str(ac_fpf_init),
+                    max_attempts=int(ac_fpf_max_attempts),
                 )
                 logger.info(
                     "%s: AC FPF: starting runopp solve (buses=%d, lines=%d, "
@@ -875,11 +878,66 @@ def compute_results_for_case(
                     acpf_loss_correction_mw,
                 )
         except Exception:
-            logger.exception(
-                "%s: AC FPF FAILED; cannot build base point from runopp.",
+            logger.warning(
+                "%s: AC FPF FAILED; falling back to acpf (runpp with case dispatch).",
                 case_tag,
+                exc_info=True,
             )
-            raise
+            # --- Fallback 1: try acpf (simple AC power flow, very fast) ---
+            acpf_fallback_ok = False
+            try:
+                with log_stage(
+                    logger,
+                    f"{case_tag}: Fallback acpf (runpp) after AC FPF failure",
+                ):
+                    acpf_bp_ac, acpf_base_pf = solve_ac_pf_base_point(
+                        net=net,
+                        slack_bus=int(slack_bus),
+                        pf_solver=str(ac_pf_solver),
+                        pf_init="flat",
+                        lossless=bool(ac_lossless),
+                        gen_dispatch_mw_by_name={},
+                        line_indices=[int(x) for x in sorted(net.line.index)],
+                        distributed_slack=bool(ac_distributed_slack),
+                        trafo_model=str(ac_trafo_model),
+                    )
+                    if acpf_base_pf.bus_p_mw is None:
+                        raise RuntimeError("acpf fallback: bus_p_mw is None")
+                    acpf_loss_correction_mw = float(np.sum(acpf_base_pf.bus_p_mw))
+                    bd = "acpf"
+                    acpf_fallback_ok = True
+                    logger.info(
+                        "%s: acpf fallback succeeded (AC loss=%.6g MW).",
+                        case_tag,
+                        acpf_loss_correction_mw,
+                    )
+            except Exception:
+                logger.warning(
+                    "%s: acpf fallback also FAILED; falling back to dc_opf.",
+                    case_tag,
+                    exc_info=True,
+                )
+            if not acpf_fallback_ok:
+                # --- Fallback 2: DC OPF (last resort, always works) ---
+                bd = "dc_opf"
+                acpf_bp_ac = None
+                acpf_base_pf = None
+                acpf_loss_correction_mw = 0.0
+                with log_stage(
+                    logger,
+                    f"{case_tag}: Fallback DC OPF (PyPSA+HiGHS) after AC FPF+acpf failure",
+                ):
+                    bp_dc, base_dc, used_headroom_factor = (
+                        _solve_dc_opf_with_adaptive_headroom(
+                            net=net,
+                            slack_bus=int(slack_bus),
+                            opf_cfg=cfg,
+                            limit_factor=1.0,
+                            case_tag=case_tag,
+                        )
+                    )
+                    bp_dc_meta = bp_dc.to_meta_dict()
+                    gen_dispatch_for_ac = dict(bp_dc.gen_dispatch_mw_by_name)
 
     # ---------- DC model stage ----------
     results_lines: dict[str, dict[str, Any]] = {}
@@ -1013,6 +1071,57 @@ def compute_results_for_case(
                     probabilistic_computed = True
 
                 nminus1_computed = False
+
+        # ---- Write DC checkpoint (partial results) for timeout recovery ----
+        if dc_checkpoint_path and results_lines:
+            import json as _json
+            import tempfile as _tempfile
+
+            dc_checkpoint = {
+                "__meta__": {
+                    "dc_checkpoint": True,
+                    "base_dispatch": str(bd),
+                    "base_dispatch_requested": str(base_dispatch),
+                    "base_point_dc": bp_dc_meta if bp_dc_meta is not None else {},
+                },
+                **results_lines,
+            }
+            try:
+                cp_dir = os.path.dirname(dc_checkpoint_path)
+                fd, tmp_path = _tempfile.mkstemp(
+                    dir=cp_dir, suffix=".tmp", prefix=".dc_cp_"
+                )
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                        _json.dump(
+                            dc_checkpoint,
+                            fh,
+                            indent=2,
+                            default=lambda o: (
+                                float(o)
+                                if isinstance(o, (np.floating, np.integer))
+                                else (
+                                    o.tolist() if isinstance(o, np.ndarray) else str(o)
+                                )
+                            ),
+                        )
+                    os.replace(tmp_path, dc_checkpoint_path)
+                    logger.debug(
+                        "%s: DC checkpoint written to %s",
+                        case_tag,
+                        dc_checkpoint_path,
+                    )
+                except Exception:
+                    # Clean up temp file on error.
+                    if os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
+                    raise
+            except Exception:
+                logger.warning(
+                    "%s: Failed to write DC checkpoint (non-fatal).",
+                    case_tag,
+                    exc_info=True,
+                )
 
     # ---------- AC stage (base point is AC PF) ----------
     bp_ac_meta: dict[str, Any] | None = None
@@ -1232,6 +1341,7 @@ def compute_results_for_case(
             "input_path": str(input_path_abs),
             "slack_bus": int(slack_bus),
             "base_dispatch": str(bd),
+            "base_dispatch_requested": str(base_dispatch),
             "allow_download": bool(allow_download),
             "compute_dc": bool(compute_dc),
             "compute_ac": bool(compute_ac),

@@ -93,6 +93,7 @@ def _compute_case(
     opf_cfg: OPFConfig,
     allow_download: bool,
     opf_dc_flow_consistency_tol_mw: float,
+    dc_checkpoint_path: str | None = None,
 ) -> dict:
     """Run compute_results_for_case with DC+AC both enabled (shared base point)."""
     return compute_results_for_case(
@@ -122,11 +123,13 @@ def _compute_case(
         ac_fpf_max_iteration=int(ac_fpf_cfg.get("max_iteration", 300)),
         ac_fpf_max_loading_percent=float(ac_fpf_cfg.get("max_loading_percent", 99.0)),
         ac_fpf_init=str(ac_fpf_cfg.get("init", "dc")),
+        ac_fpf_max_attempts=int(ac_fpf_cfg.get("max_attempts", 1)),
         # OPF
         opf_cfg=opf_cfg,
         opf_dc_flow_consistency_tol_mw=float(opf_dc_flow_consistency_tol_mw),
         # shared
         allow_download=allow_download,
+        dc_checkpoint_path=dc_checkpoint_path,
     )
 
 
@@ -135,6 +138,7 @@ def _case_worker(
     kwargs: dict,
     log_level: int = logging.INFO,
     log_path: str | None = None,
+    checkpoint_path: str | None = None,
 ) -> None:
     """Run ``_compute_case`` in a child process.
 
@@ -170,7 +174,10 @@ def _case_worker(
         "Subprocess started for case: %s (PID=%d)", case_name, os.getpid()
     )
     try:
-        result = _compute_case(**kwargs)
+        compute_kwargs = dict(kwargs)
+        if checkpoint_path:
+            compute_kwargs["dc_checkpoint_path"] = checkpoint_path
+        result = _compute_case(**compute_kwargs)
         result.pop("_h_vectors", None)
         child_logger.info("Subprocess finished OK for case: %s", case_name)
         result_queue.put(("ok", result))
@@ -183,7 +190,10 @@ def _case_worker(
 
 
 def _run_case_isolated(
-    timeout: int = 900, log_path: str | None = None, **kwargs
+    timeout: int = 900,
+    log_path: str | None = None,
+    checkpoint_dir: str | None = None,
+    **kwargs,
 ) -> dict:
     """Run ``_compute_case`` in a subprocess for crash isolation.
 
@@ -191,15 +201,30 @@ def _run_case_isolated(
     (``realloc: invalid next size`` / ``Aborted``) on certain networks,
     which kills the entire process.  Running each case in a child process
     ensures the sweep runner survives and continues with the next case.
+
+    If *checkpoint_dir* is provided, DC-only intermediate results are written
+    there by the child process.  On timeout, the parent attempts to recover
+    the checkpoint so at least DC radii are available.
     """
     case_name = kwargs.get("input_path", "unknown")
     logger.info("Launching subprocess for case: %s (timeout=%ds)", case_name, timeout)
     result_queue: mp.Queue = mp.Queue(maxsize=1)
 
+    # Build checkpoint path for the child process.
+    checkpoint_path: str | None = None
+    if checkpoint_dir:
+        case_stem = Path(case_name).stem
+        checkpoint_path = str(
+            Path(checkpoint_dir) / f".{case_stem}.dc_checkpoint.json"
+        )
+
     proc = mp.Process(
         target=_case_worker,
         args=(result_queue, kwargs),
-        kwargs={"log_path": log_path},
+        kwargs={
+            "log_path": log_path,
+            "checkpoint_path": checkpoint_path,
+        },
     )
     proc.start()
     logger.info("Subprocess started: PID=%s, waiting up to %ds...", proc.pid, timeout)
@@ -226,6 +251,22 @@ def _run_case_isolated(
         )
         proc.terminate()
         proc.join(timeout=10)
+        # Try to recover DC checkpoint written by the child before timeout.
+        if checkpoint_path and Path(checkpoint_path).is_file():
+            try:
+                with open(checkpoint_path, "r", encoding="utf-8") as fh:
+                    dc_result = json.load(fh)
+                dc_result.setdefault("__meta__", {})["ac_timeout"] = True
+                logger.info(
+                    "Recovered DC checkpoint for %s after timeout.", case_name
+                )
+                return dc_result
+            except Exception:
+                logger.warning(
+                    "DC checkpoint exists but could not be loaded for %s.",
+                    case_name,
+                    exc_info=True,
+                )
         raise RuntimeError(
             f"Case computation timed out after {timeout}s (PID {proc.pid} terminated)."
         )
@@ -253,6 +294,13 @@ def _run_case_isolated(
 
     if status == "error":
         raise RuntimeError(f"Case computation failed in subprocess:\n{payload}")
+
+    # Clean up DC checkpoint on success (no longer needed).
+    if checkpoint_path and Path(checkpoint_path).is_file():
+        try:
+            Path(checkpoint_path).unlink()
+        except OSError:
+            pass
 
     return payload
 
@@ -355,6 +403,26 @@ def _extract_summary_row(name: str, combined: dict, time_total: float) -> dict:
     # Ext_grid absorption.
     ext_absorb_mw = float(opf_meta.get("ext_grid_absorption_mw", 0.0))
 
+    # Dispatch method tracking.
+    dispatch_method = meta.get("base_dispatch", "")
+    dispatch_requested = meta.get("base_dispatch_requested", dispatch_method)
+    dispatch_fallback = str(dispatch_method) != str(dispatch_requested)
+
+    # Determine status based on result content.
+    ac_available = np.isfinite(ac_r_star)
+    dc_available = np.isfinite(dc_r_star)
+
+    if meta.get("dc_checkpoint") or meta.get("ac_timeout"):
+        status = "dc_only_timeout"
+    elif not ac_available and dc_available:
+        status = "dc_only"
+    elif ac_available and ac_r_star < 0:
+        status = "ac_infeasible"
+    elif dc_available and dc_r_star < 0:
+        status = "dc_negative"
+    else:
+        status = "ok"
+
     return {
         "case": name,
         "n_buses": n_buses,
@@ -368,7 +436,7 @@ def _extract_summary_row(name: str, combined: dict, time_total: float) -> dict:
         "time_total": time_total,
         "bottleneck_line": bn_line,
         "bottleneck_margin": bn_margin,
-        "status": "ok",
+        "status": status,
         "ac_pf_attempt": ac_pf_attempt,
         "ac_pf_repairs": ac_pf_repairs,
         "dc_consistency_passed": dc_consistency_passed,
@@ -376,6 +444,8 @@ def _extract_summary_row(name: str, combined: dict, time_total: float) -> dict:
         if np.isfinite(dc_consistency_max_diff)
         else None,
         "ext_grid_absorption_mw": ext_absorb_mw if ext_absorb_mw > 1e-3 else 0.0,
+        "dispatch_method": dispatch_method,
+        "dispatch_fallback": dispatch_fallback,
     }
 
 
@@ -428,7 +498,12 @@ def _print_table(rows: list[dict]) -> None:
         pf_attempt_str = str(r.get("ac_pf_attempt", "n/a"))
 
         # Handle failed cases (n_buses/n_lines may be 0, radii may be NaN).
-        if status_str != "ok":
+        # Statuses with data: ok, ac_infeasible, dc_negative, dc_only, dc_only_timeout
+        # Statuses without data: timeout, crashed, dc_opf_infeasible, error
+        has_data = status_str in (
+            "ok", "ac_infeasible", "dc_negative", "dc_only", "dc_only_timeout"
+        ) and r.get("n_buses", 0) > 0
+        if not has_data:
             dc_str = "n/a"
             ac_str = "n/a"
             buses_str = f"{'---':>5s}"
@@ -442,9 +517,19 @@ def _print_table(rows: list[dict]) -> None:
                 f"{status_str:>12s} {pf_attempt_str:>12s}"
             )
         else:
+            dc_str = (
+                f"{r['dc_r_star']:>12.4f}"
+                if np.isfinite(r["dc_r_star"])
+                else f"{'n/a':>12s}"
+            )
+            ac_str = (
+                f"{r['ac_r_star']:>12.4f}"
+                if np.isfinite(r["ac_r_star"])
+                else f"{'n/a':>12s}"
+            )
             print(
                 f"{r['case']:<28s} {r['n_buses']:>5d} {r['n_lines']:>5d} "
-                f"{r['dc_r_star']:>12.4f} {r['ac_r_star']:>12.4f} {ratio_str:>7s} "
+                f"{dc_str} {ac_str} {ratio_str:>7s} "
                 f"{feas_str:>7s} "
                 f"{r['time_total']:>10.2f} "
                 f"{bn_str:>11s} {margin_str:>10s} "
@@ -456,46 +541,138 @@ def _print_table(rows: list[dict]) -> None:
 
 
 def _plot_bar_chart(rows: list[dict], output_dir: Path) -> Path:
-    """Generate Fig. 1: bar chart comparing r*_DC and r*_AC across cases."""
-    # Only plot cases that completed successfully (have finite radii).
-    ok_rows = [r for r in rows if r.get("status", "ok") == "ok"]
-    if not ok_rows:
-        ok_rows = rows  # fallback: plot everything even if all failed
+    """Generate Fig. 1: bar chart comparing r*_DC and r*_AC across cases.
 
-    labels = [r["case"].replace("pglib_opf_", "") for r in ok_rows]
-    dc_vals = [r["dc_r_star"] if np.isfinite(r["dc_r_star"]) else 0.0 for r in ok_rows]
-    ac_vals = [r["ac_r_star"] if np.isfinite(r["ac_r_star"]) else 0.0 for r in ok_rows]
+    Visual encoding:
+    - Solid bars: normal positive radii
+    - Red bars with hatching: negative radii (infeasible base point)
+    - x marker: AC unavailable (dc_only / timeout)
+    """
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
+
+    # Plot ALL cases that have at least some data (DC or AC radii).
+    plot_rows = [
+        r for r in rows
+        if (np.isfinite(r.get("dc_r_star", float("nan")))
+            or np.isfinite(r.get("ac_r_star", float("nan"))))
+    ]
+    if not plot_rows:
+        plot_rows = rows  # fallback: plot everything
+
+    # Sort by n_buses for readability.
+    plot_rows = sorted(plot_rows, key=lambda r: (r.get("n_buses", 0), r.get("case", "")))
+
+    labels = [r["case"].replace("pglib_opf_", "") for r in plot_rows]
+
+    COLOR_DC = "#4C72B0"
+    COLOR_AC = "#DD8452"
+    COLOR_NEGATIVE = "#C44E52"
+    COLOR_MISSING = "#999999"
+
+    dc_vals = []
+    ac_vals = []
+    dc_colors = []
+    ac_colors = []
+    dc_hatches = []
+    ac_hatches = []
+    ac_missing_indices = []
+
+    for i, r in enumerate(plot_rows):
+        status = r.get("status", "ok")
+        dc_r = r.get("dc_r_star", float("nan"))
+        ac_r = r.get("ac_r_star", float("nan"))
+
+        # DC bar
+        if np.isfinite(dc_r):
+            dc_vals.append(abs(dc_r))
+            dc_colors.append(COLOR_NEGATIVE if dc_r < 0 else COLOR_DC)
+            dc_hatches.append("//" if dc_r < 0 else "")
+        else:
+            dc_vals.append(0.0)
+            dc_colors.append(COLOR_DC)
+            dc_hatches.append("")
+
+        # AC bar
+        if status in ("dc_only", "dc_only_timeout", "timeout", "crashed", "error"):
+            ac_vals.append(0.0)
+            ac_colors.append(COLOR_AC)
+            ac_hatches.append("")
+            ac_missing_indices.append(i)
+        elif np.isfinite(ac_r):
+            ac_vals.append(abs(ac_r))
+            ac_colors.append(COLOR_NEGATIVE if ac_r < 0 else COLOR_AC)
+            ac_hatches.append("//" if ac_r < 0 else "")
+        else:
+            ac_vals.append(0.0)
+            ac_colors.append(COLOR_AC)
+            ac_hatches.append("")
+            ac_missing_indices.append(i)
 
     x = np.arange(len(labels))
     width = 0.35
 
-    fig, ax = plt.subplots(figsize=(max(10, len(labels) * 1.5), 6))
-    ax.bar(
-        x - width / 2,
-        dc_vals,
-        width,
-        label=r"$r^*_{\mathrm{DC}}$ (L2)",
-        color="#4C72B0",
-    )
-    ax.bar(
-        x + width / 2,
-        ac_vals,
-        width,
-        label=r"$r^*_{\mathrm{AC}}$ (L2)",
-        color="#DD8452",
-    )
+    fig, ax = plt.subplots(figsize=(max(10, len(labels) * 1.2), 6))
+
+    # Draw bars one at a time to support per-bar colors and hatching.
+    for i in range(len(labels)):
+        ax.bar(
+            x[i] - width / 2, dc_vals[i], width,
+            color=dc_colors[i], edgecolor="black", linewidth=0.5,
+            hatch=dc_hatches[i],
+        )
+        ax.bar(
+            x[i] + width / 2, ac_vals[i], width,
+            color=ac_colors[i], edgecolor="black", linewidth=0.5,
+            hatch=ac_hatches[i],
+        )
+
+    # Mark AC-unavailable cases.
+    if ac_missing_indices:
+        y_offset = max(dc_vals) * 0.02 if dc_vals else 0.5
+        ax.scatter(
+            [x[i] + width / 2 for i in ac_missing_indices],
+            [y_offset] * len(ac_missing_indices),
+            marker="x", color=COLOR_MISSING, s=40, zorder=5,
+        )
+
+    # Legend with proxy artists.
+    legend_elements = [
+        Patch(facecolor=COLOR_DC, edgecolor="black", label=r"$r^*_{\mathrm{DC}}$ (L2)"),
+        Patch(facecolor=COLOR_AC, edgecolor="black", label=r"$r^*_{\mathrm{AC}}$ (L2)"),
+    ]
+    # Only add negative/missing legend items if they exist.
+    has_negative = any(h == "//" for h in dc_hatches + ac_hatches)
+    if has_negative:
+        legend_elements.append(
+            Patch(
+                facecolor=COLOR_NEGATIVE, edgecolor="black", hatch="//",
+                label="Negative (infeasible)",
+            )
+        )
+    if ac_missing_indices:
+        legend_elements.append(
+            Line2D(
+                [0], [0], marker="x", color="w",
+                markeredgecolor=COLOR_MISSING, markersize=8,
+                label="AC unavailable",
+            )
+        )
 
     ax.set_xlabel("PGLib-OPF Case")
-    ax.set_ylabel("Stability Radius (MW)")
-    ax.set_title("Fig. 1: DC vs AC L2 Stability Radius")
+    ax.set_ylabel(r"$|r^*|$ Stability Radius (MW)")
+    ax.set_title("DC vs AC L2 Stability Radius")
     ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=30, ha="right", fontsize=9)
-    ax.legend()
+    ax.set_xticklabels(labels, rotation=35, ha="right", fontsize=8)
+    ax.legend(handles=legend_elements, loc="upper right", fontsize=9)
     ax.grid(axis="y", alpha=0.3)
 
     fig.tight_layout()
     plot_path = output_dir / "fig1_dc_vs_ac_radius.png"
-    fig.savefig(str(plot_path), dpi=150)
+    fig.savefig(str(plot_path), dpi=300)
+    # Also save PDF for LaTeX.
+    pdf_path = output_dir / "fig1_dc_vs_ac_radius.pdf"
+    fig.savefig(str(pdf_path))
     plt.close(fig)
     return plot_path
 
@@ -671,6 +848,7 @@ def run(config_path: Path, reuse_dir: Path | None = None) -> None:
             combined = _run_case_isolated(
                 timeout=case_timeout_eff,
                 log_path=log_path,
+                checkpoint_dir=str(output_dir),
                 input_path=input_path_abs,
                 slack_bus=slack_bus,
                 base_dispatch=case_base_dispatch,
@@ -734,6 +912,12 @@ def run(config_path: Path, reuse_dir: Path | None = None) -> None:
 
         # ---- Extract metrics ----
         row = _extract_summary_row(name, combined, time_total)
+
+        # If this result was recovered from a DC checkpoint (timeout with
+        # partial DC results), mark the status accordingly.
+        meta = combined.get("__meta__", {})
+        if meta.get("dc_checkpoint") or meta.get("ac_timeout"):
+            row["status"] = "dc_only_timeout"
 
         # Log notable conditions.
         meta = combined.get("__meta__", {})

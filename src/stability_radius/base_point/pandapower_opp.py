@@ -85,6 +85,9 @@ class ACFPFConfig:
         Constraint violation tolerance (also used as PDIPM_FEASTOL default).
     init : str
         Power flow initialization for runopp: "dc" or "flat".
+    max_attempts : int
+        Maximum number of runopp attempts before giving up.
+        Attempt 1 uses configured bounds; attempt 2 widens voltage bounds.
     """
 
     pg0_source: str = "case"
@@ -98,6 +101,7 @@ class ACFPFConfig:
     pdipm_costtol: float = 1e-4
     opf_violation: float = 1e-4
     init: str = "dc"
+    max_attempts: int = 1
 
 
 def _determine_pg0(
@@ -398,7 +402,7 @@ def solve_ac_fpf(
         len(pg0_map),
     )
 
-    # ---- Solve with retry cascade ----
+    # ---- Solve with retry loop ----
     pf_attempt: str = "primary"
     pf_repairs: list[str] = []
 
@@ -417,169 +421,81 @@ def solve_ac_fpf(
     )
     runopp_kwargs["numba"] = True
 
-    n_attempts = 5
-    # Attempt 1: primary (configured bounds)
-    try:
-        logger.info(
-            "AC FPF attempt 1/%d (primary): vm=[%.2f,%.2f], init=%s, "
-            "max_iter=%d, feastol=%.1e",
-            n_attempts,
-            cfg.vm_min_pu,
-            cfg.vm_max_pu,
-            init_method,
-            cfg.max_iteration,
-            cfg.pdipm_feastol,
-        )
-        t0 = _time.perf_counter()
-        pp.runopp(nn, **runopp_kwargs)
-        logger.info(
-            "AC FPF attempt 1/%d (primary) completed in %.2f sec",
-            n_attempts,
-            _time.perf_counter() - t0,
-        )
-    except Exception as e1:
-        elapsed1 = _time.perf_counter() - t0
-        logger.warning(
-            "AC FPF attempt 1/%d (primary) FAILED after %.2f sec: %s",
-            n_attempts,
-            elapsed1,
-            e1,
-        )
+    max_attempts = max(1, min(cfg.max_attempts, 2))
 
-        # Attempt 2: wider voltage bounds
-        wider_min = min(cfg.vm_min_pu, 0.85)
-        wider_max = max(cfg.vm_max_pu, 1.15)
-        _set_voltage_limits(nn, vm_min_pu=wider_min, vm_max_pu=wider_max)
-        pf_repairs.append(f"vm_bounds_relaxed_to_{wider_min:.2f}_{wider_max:.2f}")
+    # Define attempt configurations (at most 2).
+    attempts_config: list[dict[str, Any]] = [
+        {
+            "label": "primary",
+            "vm_min": cfg.vm_min_pu,
+            "vm_max": cfg.vm_max_pu,
+            "init": init_method,
+            "repairs": [],
+        },
+        {
+            "label": "relaxed_v",
+            "vm_min": min(cfg.vm_min_pu, 0.85),
+            "vm_max": max(cfg.vm_max_pu, 1.15),
+            "init": "flat",
+            "repairs": [],  # filled dynamically below
+        },
+    ]
+
+    last_error: Exception | None = None
+    for attempt_idx, attempt in enumerate(attempts_config[:max_attempts], 1):
+        _set_voltage_limits(
+            nn, vm_min_pu=attempt["vm_min"], vm_max_pu=attempt["vm_max"]
+        )
+        current_kwargs = {**runopp_kwargs, "init": attempt["init"]}
 
         try:
             logger.info(
-                "AC FPF attempt 2/%d (wider V): vm=[%.2f,%.2f]",
-                n_attempts,
-                wider_min,
-                wider_max,
+                "AC FPF attempt %d/%d (%s): vm=[%.2f,%.2f], init=%s, "
+                "max_iter=%d, feastol=%.1e",
+                attempt_idx,
+                max_attempts,
+                attempt["label"],
+                attempt["vm_min"],
+                attempt["vm_max"],
+                attempt["init"],
+                cfg.max_iteration,
+                cfg.pdipm_feastol,
             )
-            t1 = _time.perf_counter()
-            pp.runopp(nn, **runopp_kwargs)
+            t_start = _time.perf_counter()
+            pp.runopp(nn, **current_kwargs)
+            elapsed = _time.perf_counter() - t_start
             logger.info(
-                "AC FPF attempt 2/%d (wider V) completed in %.2f sec",
-                n_attempts,
-                _time.perf_counter() - t1,
+                "AC FPF attempt %d/%d (%s) completed in %.2f sec",
+                attempt_idx,
+                max_attempts,
+                attempt["label"],
+                elapsed,
             )
-            pf_attempt = "relaxed_v"
-        except Exception as e2:
-            elapsed2 = _time.perf_counter() - t1
+            pf_attempt = attempt["label"]
+            if attempt_idx > 1:
+                vm_min_used = attempt["vm_min"]
+                vm_max_used = attempt["vm_max"]
+                pf_repairs.append(
+                    f"vm_bounds_relaxed_to_{vm_min_used:.2f}_{vm_max_used:.2f}"
+                )
+            last_error = None
+            break
+        except Exception as exc:
+            elapsed = _time.perf_counter() - t_start
             logger.warning(
-                "AC FPF attempt 2/%d (wider V) FAILED after %.2f sec: %s",
-                n_attempts,
-                elapsed2,
-                e2,
+                "AC FPF attempt %d/%d (%s) FAILED after %.2f sec: %s",
+                attempt_idx,
+                max_attempts,
+                attempt["label"],
+                elapsed,
+                exc,
             )
+            last_error = exc
 
-            # Attempt 3: very wide bounds + relaxed Q limits + flat init
-            _set_voltage_limits(nn, vm_min_pu=0.80, vm_max_pu=1.20)
-            if hasattr(nn, "gen") and nn.gen is not None and len(nn.gen):
-                nn.gen["min_q_mvar"] = nn.gen["min_q_mvar"].clip(upper=-1e6)
-                nn.gen["max_q_mvar"] = nn.gen["max_q_mvar"].clip(lower=1e6)
-            pf_repairs.extend(["vm_bounds_relaxed_to_0.80_1.20", "q_limits_relaxed"])
-
-            runopp_kwargs_flat = {**runopp_kwargs, "init": "flat"}
-            try:
-                logger.info(
-                    "AC FPF attempt 3/%d (relaxed V+Q, flat): vm=[0.80,1.20]",
-                    n_attempts,
-                )
-                t2 = _time.perf_counter()
-                pp.runopp(nn, **runopp_kwargs_flat)
-                logger.info(
-                    "AC FPF attempt 3/%d (relaxed V+Q, flat) completed in %.2f sec",
-                    n_attempts,
-                    _time.perf_counter() - t2,
-                )
-                pf_attempt = "relaxed_all"
-            except Exception as e3:
-                elapsed3 = _time.perf_counter() - t2
-                logger.warning(
-                    "AC FPF attempt 3/%d (relaxed V+Q, flat) FAILED after %.2f sec: %s",
-                    n_attempts,
-                    elapsed3,
-                    e3,
-                )
-
-                # Attempt 4: relax line loading to 100% + even wider tolerances
-                if hasattr(nn, "line") and nn.line is not None and len(nn.line):
-                    nn.line["max_loading_percent"] = 100.0
-                if hasattr(nn, "trafo") and nn.trafo is not None and len(nn.trafo):
-                    nn.trafo["max_loading_percent"] = 100.0
-                pf_repairs.append("max_loading_100pct")
-
-                runopp_kwargs_loose = {
-                    **runopp_kwargs_flat,
-                    "PDIPM_FEASTOL": 1e-2,
-                    "PDIPM_GRADTOL": 1e-2,
-                    "PDIPM_COMPTOL": 1e-2,
-                    "PDIPM_COSTTOL": 1e-2,
-                    "OPF_VIOLATION": 1e-2,
-                    "PDIPM_MAX_IT": max(cfg.max_iteration, 500),
-                }
-                try:
-                    logger.info(
-                        "AC FPF attempt 4/%d (loading=100%%, loose tol, flat): "
-                        "vm=[0.80,1.20]",
-                        n_attempts,
-                    )
-                    t3 = _time.perf_counter()
-                    pp.runopp(nn, **runopp_kwargs_loose)
-                    logger.info(
-                        "AC FPF attempt 4/%d (loading=100%%, loose tol) "
-                        "completed in %.2f sec",
-                        n_attempts,
-                        _time.perf_counter() - t3,
-                    )
-                    pf_attempt = "relaxed_loading"
-                    pf_repairs.append("loose_tolerances")
-                except Exception as e4:
-                    elapsed4 = _time.perf_counter() - t3
-                    logger.warning(
-                        "AC FPF attempt 4/%d (loading=100%%, loose tol) "
-                        "FAILED after %.2f sec: %s",
-                        n_attempts,
-                        elapsed4,
-                        e4,
-                    )
-
-                    # Attempt 5: MW flow limits instead of MVA
-                    runopp_kwargs_mw = {
-                        **runopp_kwargs_loose,
-                        "OPF_FLOW_LIM": 1,
-                    }
-                    try:
-                        logger.info(
-                            "AC FPF attempt 5/%d (MW limits, loose tol, flat): "
-                            "vm=[0.80,1.20]",
-                            n_attempts,
-                        )
-                        t4 = _time.perf_counter()
-                        pp.runopp(nn, **runopp_kwargs_mw)
-                        logger.info(
-                            "AC FPF attempt 5/%d (MW limits) completed in %.2f sec",
-                            n_attempts,
-                            _time.perf_counter() - t4,
-                        )
-                        pf_attempt = "relaxed_mw_limits"
-                        pf_repairs.append("mw_flow_limits")
-                    except Exception as e5:
-                        elapsed5 = _time.perf_counter() - t4
-                        logger.exception(
-                            "AC FPF attempt 5/%d (MW limits) FAILED after %.2f sec: %s",
-                            n_attempts,
-                            elapsed5,
-                            e5,
-                        )
-                        raise RuntimeError(
-                            "pandapower.runopp failed "
-                            f"(all {n_attempts} AC FPF attempts exhausted)."
-                        ) from e5
+    if last_error is not None:
+        raise RuntimeError(
+            f"pandapower.runopp failed (all {max_attempts} AC FPF attempts exhausted)."
+        ) from last_error
 
     # ---- Check convergence ----
     converged = bool(getattr(nn, "OPF_converged", True))
