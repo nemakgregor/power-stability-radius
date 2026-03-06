@@ -3,15 +3,18 @@ from __future__ import annotations
 """
 Tests for Experiment 2 (run_sigma_radius) helper functions.
 
-Covers the audit fixes:
-- Negative sigma-radius handling in aggregation
-- Base-infeasible line flagging in table rows
+Covers:
+- Injection sigma computation from hourly OPF results
+- Average-point result dict building
+- Table 2 row building from single-point results
 - Scatter plot filtering for log-log axes
 - Worst-case verification skipping for negative r_L2
 - Monte Carlo validation with tightest-feasible-line selection
 - Validation check feasibility summary
+- CSV export and h-vector NPZ save
 """
 
+import csv
 import math
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -25,7 +28,7 @@ import pytest
 # ---------------------------------------------------------------------------
 
 
-def _make_hourly_results(
+def _make_avg_result(
     *,
     n_lines: int = 5,
     n_bus: int = 3,
@@ -35,7 +38,7 @@ def _make_hourly_results(
     s0_values: list[float] | None = None,
     limit_values: list[float] | None = None,
 ) -> dict:
-    """Build a single-hour result dict matching _compute_hour() output."""
+    """Build a synthetic average-point result dict matching _compute_at_average_point() output."""
     if line_ids is None:
         line_ids = list(range(n_lines))
     if sigma_radii is None:
@@ -71,7 +74,6 @@ def _make_hourly_results(
             "ac_s_limit_mva": limit_values[i],
         }
 
-    # Mock feasibility result
     feasibility = MagicMock()
     feasibility.is_feasible = all(s < c for s, c in zip(s0_values, limit_values))
     feasibility.n_constrained_violated = sum(
@@ -96,95 +98,124 @@ def _make_hourly_results(
     }
 
 
+def _make_res(
+    sigma_radii: list[float],
+    l2_radii: list[float] | None = None,
+    s0_values: list[float] | None = None,
+    limit_values: list[float] | None = None,
+    n_bus: int = 3,
+) -> dict:
+    """Build a result dict via _build_result_dict from synthetic avg_result."""
+    from experiments.run_sigma_radius import _build_result_dict
+
+    if l2_radii is None:
+        l2_radii = [10.0] * len(sigma_radii)
+    n = len(sigma_radii)
+    avg = _make_avg_result(
+        n_lines=n,
+        n_bus=n_bus,
+        line_ids=list(range(n)),
+        sigma_radii=sigma_radii,
+        l2_radii=l2_radii,
+        s0_values=s0_values,
+        limit_values=limit_values,
+    )
+    return _build_result_dict(avg)
+
+
 # ---------------------------------------------------------------------------
-# Tests for _aggregate_across_hours
+# Tests for _compute_injection_sigma
 # ---------------------------------------------------------------------------
 
 
-class TestAggregateAcrossHours:
-    def test_negative_sigma_radius_is_kept(self) -> None:
-        """Negative r_sigma should be included in aggregation, not filtered."""
-        from experiments.run_sigma_radius import _aggregate_across_hours
+class TestComputeInjectionSigma:
+    def test_sigma_from_constant_injections_is_zero(self) -> None:
+        """Constant bus injections across hours should give zero sigma."""
+        from experiments.run_sigma_radius import _compute_injection_sigma
 
-        hr = _make_hourly_results(
-            n_lines=3,
-            line_ids=[0, 1, 2],
-            sigma_radii=[-2.0, 3.0, 5.0],
-        )
-        agg = _aggregate_across_hours({0: hr})
+        hourly = {
+            0: {"bus_p_mw": np.array([10.0, 20.0, 30.0]), "bus_q_mvar": np.array([1.0, 2.0, 3.0])},
+            1: {"bus_p_mw": np.array([10.0, 20.0, 30.0]), "bus_q_mvar": np.array([1.0, 2.0, 3.0])},
+            2: {"bus_p_mw": np.array([10.0, 20.0, 30.0]), "bus_q_mvar": np.array([1.0, 2.0, 3.0])},
+        }
+        sigma_p, sigma_q = _compute_injection_sigma(hourly, n_bus=3)
+        np.testing.assert_allclose(sigma_p, 0.0, atol=1e-12)
+        np.testing.assert_allclose(sigma_q, 0.0, atol=1e-12)
 
-        assert "line_0" in agg["min_sigma_radius"]
-        assert agg["min_sigma_radius"]["line_0"] == pytest.approx(-2.0)
+    def test_sigma_from_varying_injections(self) -> None:
+        """Variable bus injections should give nonzero sigma."""
+        from experiments.run_sigma_radius import _compute_injection_sigma
 
-    def test_base_infeasible_flag_set_for_negative_r_sigma(self) -> None:
-        """Lines with r_sigma < 0 should be flagged as base_infeasible."""
-        from experiments.run_sigma_radius import _aggregate_across_hours
+        hourly = {
+            0: {"bus_p_mw": np.array([10.0, 20.0]), "bus_q_mvar": np.array([1.0, 2.0])},
+            1: {"bus_p_mw": np.array([12.0, 22.0]), "bus_q_mvar": np.array([1.5, 2.5])},
+            2: {"bus_p_mw": np.array([8.0, 18.0]), "bus_q_mvar": np.array([0.5, 1.5])},
+        }
+        sigma_p, sigma_q = _compute_injection_sigma(hourly, n_bus=2)
+        assert sigma_p.shape == (2,)
+        assert sigma_q.shape == (2,)
+        assert np.all(sigma_p > 0)
+        assert np.all(sigma_q > 0)
 
-        hr = _make_hourly_results(
-            n_lines=3,
-            line_ids=[10, 11, 12],
-            sigma_radii=[-1.5, 4.0, 6.0],
-        )
-        agg = _aggregate_across_hours({0: hr})
+    def test_fallback_to_power_factor_when_no_q(self) -> None:
+        """When bus_q_mvar is None, sigma_q = sigma_p * tan(arccos(pf))."""
+        from experiments.run_sigma_radius import _compute_injection_sigma
 
-        assert agg["base_infeasible"]["line_10"] is True
-        assert agg["base_infeasible"]["line_11"] is False
-        assert agg["base_infeasible"]["line_12"] is False
+        hourly = {
+            0: {"bus_p_mw": np.array([10.0, 20.0]), "bus_q_mvar": None},
+            1: {"bus_p_mw": np.array([14.0, 24.0]), "bus_q_mvar": None},
+        }
+        pf = 0.9
+        sigma_p, sigma_q = _compute_injection_sigma(hourly, n_bus=2, power_factor=pf)
+        tan_phi = math.tan(math.acos(pf))
+        np.testing.assert_allclose(sigma_q, sigma_p * tan_phi, rtol=1e-10)
 
-    def test_negative_r_sigma_sorts_first(self) -> None:
-        """When sorted, negative r_sigma lines should appear before positive ones."""
-        from experiments.run_sigma_radius import _aggregate_across_hours
+    def test_empty_results_returns_zeros(self) -> None:
+        """When no bus_p_mw data is available, return zeros."""
+        from experiments.run_sigma_radius import _compute_injection_sigma
 
-        hr = _make_hourly_results(
-            n_lines=4,
-            line_ids=[0, 1, 2, 3],
-            sigma_radii=[10.0, -3.0, 2.0, -1.0],
-        )
-        agg = _aggregate_across_hours({0: hr})
-        sorted_lines = sorted(agg["min_sigma_radius"].items(), key=lambda kv: kv[1])
-        # Most negative first
-        assert sorted_lines[0][0] == "line_1"
-        assert sorted_lines[0][1] == pytest.approx(-3.0)
-        assert sorted_lines[1][0] == "line_3"
-        assert sorted_lines[1][1] == pytest.approx(-1.0)
+        hourly = {
+            0: {"bus_p_mw": None, "bus_q_mvar": None},
+        }
+        sigma_p, sigma_q = _compute_injection_sigma(hourly, n_bus=3)
+        np.testing.assert_allclose(sigma_p, 0.0)
+        np.testing.assert_allclose(sigma_q, 0.0)
 
-    def test_worst_hour_tracks_minimum_across_hours(self) -> None:
-        """When the same line has different r_sigma across hours, the minimum wins."""
-        from experiments.run_sigma_radius import _aggregate_across_hours
 
-        hr0 = _make_hourly_results(
-            n_lines=2,
-            line_ids=[0, 1],
-            sigma_radii=[5.0, 3.0],
-        )
-        hr1 = _make_hourly_results(
-            n_lines=2,
-            line_ids=[0, 1],
-            sigma_radii=[2.0, 4.0],
-        )
-        agg = _aggregate_across_hours({0: hr0, 5: hr1})
+# ---------------------------------------------------------------------------
+# Tests for _build_result_dict
+# ---------------------------------------------------------------------------
 
-        # line_0: min is 2.0 at hour 5
-        assert agg["min_sigma_radius"]["line_0"] == pytest.approx(2.0)
-        assert agg["worst_hour"]["line_0"] == 5
-        # line_1: min is 3.0 at hour 0
-        assert agg["min_sigma_radius"]["line_1"] == pytest.approx(3.0)
-        assert agg["worst_hour"]["line_1"] == 0
 
-    def test_nan_and_inf_sigma_radius_are_skipped(self) -> None:
-        """Non-finite r_sigma values should be excluded from aggregation."""
-        from experiments.run_sigma_radius import _aggregate_across_hours
+class TestBuildResultDict:
+    def test_extracts_sigma_radius_per_line(self) -> None:
+        from experiments.run_sigma_radius import _build_result_dict
 
-        hr = _make_hourly_results(
-            n_lines=3,
-            line_ids=[0, 1, 2],
-            sigma_radii=[float("nan"), float("inf"), 4.0],
-        )
-        agg = _aggregate_across_hours({0: hr})
+        avg = _make_avg_result(n_lines=3, sigma_radii=[2.0, -1.0, 5.0])
+        res = _build_result_dict(avg)
 
-        assert "line_0" not in agg["min_sigma_radius"]
-        assert "line_1" not in agg["min_sigma_radius"]
-        assert "line_2" in agg["min_sigma_radius"]
+        assert "line_0" in res["sigma_radius"]
+        assert res["sigma_radius"]["line_0"] == pytest.approx(2.0)
+        assert res["sigma_radius"]["line_1"] == pytest.approx(-1.0)
+        assert res["sigma_radius"]["line_2"] == pytest.approx(5.0)
+
+    def test_base_infeasible_flag_for_negative(self) -> None:
+        from experiments.run_sigma_radius import _build_result_dict
+
+        avg = _make_avg_result(n_lines=3, sigma_radii=[-2.0, 3.0, 5.0])
+        res = _build_result_dict(avg)
+
+        assert res["base_infeasible"]["line_0"] is True
+        assert res["base_infeasible"]["line_1"] is False
+
+    def test_nan_sigma_excluded(self) -> None:
+        from experiments.run_sigma_radius import _build_result_dict
+
+        avg = _make_avg_result(n_lines=3, sigma_radii=[float("nan"), 3.0, 5.0])
+        res = _build_result_dict(avg)
+
+        assert "line_0" not in res["sigma_radius"]
+        assert "line_1" in res["sigma_radius"]
 
 
 # ---------------------------------------------------------------------------
@@ -193,57 +224,36 @@ class TestAggregateAcrossHours:
 
 
 class TestBuildTable2Rows:
-    def _make_agg(
-        self,
-        sigma_radii: list[float],
-        l2_radii: list[float] | None = None,
-    ) -> dict:
-        """Build a minimal aggregated dict for _build_table2_rows."""
-        from experiments.run_sigma_radius import _aggregate_across_hours
-
-        if l2_radii is None:
-            l2_radii = [10.0] * len(sigma_radii)
-        n = len(sigma_radii)
-        hr = _make_hourly_results(
-            n_lines=n,
-            line_ids=list(range(n)),
-            sigma_radii=sigma_radii,
-            l2_radii=l2_radii,
-        )
-        return _aggregate_across_hours({0: hr})
-
     def test_top_k_limits_output(self) -> None:
         from experiments.run_sigma_radius import _build_table2_rows
 
-        agg = self._make_agg([1.0, 2.0, 3.0, 4.0, 5.0])
-        rows = _build_table2_rows(agg, top_k=3)
+        res = _make_res([1.0, 2.0, 3.0, 4.0, 5.0])
+        rows = _build_table2_rows(res, top_k=3)
         assert len(rows) == 3
 
     def test_rows_sorted_ascending_by_r_sigma(self) -> None:
         from experiments.run_sigma_radius import _build_table2_rows
 
-        agg = self._make_agg([5.0, 1.0, 3.0, 2.0, 4.0])
-        rows = _build_table2_rows(agg, top_k=5)
+        res = _make_res([5.0, 1.0, 3.0, 2.0, 4.0])
+        rows = _build_table2_rows(res, top_k=5)
         r_values = [r["r_sigma"] for r in rows]
         assert r_values == sorted(r_values)
 
     def test_negative_r_sigma_lines_flagged_infeasible(self) -> None:
         from experiments.run_sigma_radius import _build_table2_rows
 
-        agg = self._make_agg([-2.0, 1.0, 3.0])
-        rows = _build_table2_rows(agg, top_k=3)
-        # First row (most negative) should be infeasible
+        res = _make_res([-2.0, 1.0, 3.0])
+        rows = _build_table2_rows(res, top_k=3)
         assert rows[0]["base_infeasible"] is True
         assert rows[0]["r_sigma"] == pytest.approx(-2.0)
-        # Others should be feasible
         assert rows[1]["base_infeasible"] is False
         assert rows[2]["base_infeasible"] is False
 
     def test_mc_and_verified_fields_are_none_initially(self) -> None:
         from experiments.run_sigma_radius import _build_table2_rows
 
-        agg = self._make_agg([1.0, 2.0])
-        rows = _build_table2_rows(agg, top_k=2)
+        res = _make_res([1.0, 2.0])
+        rows = _build_table2_rows(res, top_k=2)
         for row in rows:
             assert row["mc_violation_rate"] is None
             assert row["verified"] is None
@@ -251,17 +261,8 @@ class TestBuildTable2Rows:
     def test_margin_computed_correctly(self) -> None:
         from experiments.run_sigma_radius import _build_table2_rows
 
-        hr = _make_hourly_results(
-            n_lines=1,
-            line_ids=[0],
-            sigma_radii=[5.0],
-            s0_values=[80.0],
-            limit_values=[100.0],
-        )
-        from experiments.run_sigma_radius import _aggregate_across_hours
-
-        agg = _aggregate_across_hours({0: hr})
-        rows = _build_table2_rows(agg, top_k=1)
+        res = _make_res([5.0], s0_values=[80.0], limit_values=[100.0])
+        rows = _build_table2_rows(res, top_k=1)
         assert rows[0]["margin_mva"] == pytest.approx(20.0)
 
 
@@ -274,23 +275,18 @@ class TestWorstCaseVerificationSkipsInfeasible:
     def test_negative_r_l2_lines_are_skipped(self) -> None:
         """Lines with r_L2 <= 0 should be skipped in verification."""
         from experiments.run_sigma_radius import (
-            _aggregate_across_hours,
             _build_table2_rows,
             _run_worst_case_verification,
         )
 
-        hr = _make_hourly_results(
-            n_lines=3,
-            line_ids=[0, 1, 2],
+        res = _make_res(
             sigma_radii=[-2.0, 3.0, 5.0],
             l2_radii=[-1.5, 8.0, 12.0],
             s0_values=[105.0, 50.0, 40.0],
             limit_values=[100.0, 100.0, 100.0],
         )
-        agg = _aggregate_across_hours({0: hr})
-        rows = _build_table2_rows(agg, top_k=3)
+        rows = _build_table2_rows(res, top_k=3)
 
-        # Mock the network-dependent parts
         mock_net = MagicMock()
         load_p = np.zeros((3, 1))
         load_q = np.zeros((3, 1))
@@ -304,7 +300,6 @@ class TestWorstCaseVerificationSkipsInfeasible:
         ):
             mock_copy.deepcopy.return_value = mock_net
 
-            # Set up mock verification result
             mock_result = MagicMock()
             mock_result.to_dict.return_value = {"mock": True}
             mock_result.pf_converged = True
@@ -315,7 +310,7 @@ class TestWorstCaseVerificationSkipsInfeasible:
 
             results = _run_worst_case_verification(
                 net=mock_net,
-                agg=agg,
+                res=res,
                 table_rows=rows,
                 bus_ids=[0, 1, 2],
                 load_p_mw=load_p,
@@ -333,8 +328,6 @@ class TestWorstCaseVerificationSkipsInfeasible:
         assert line0_result["status"] == "skipped_infeasible"
 
         # Lines 1 and 2 have positive r_L2, should be verified
-        # verify_worst_case should only be called for lines with positive r_L2
-        # That's 2 lines with 1 scale each = 2 calls
         assert mock_verify.call_count == 2
 
 
@@ -345,34 +338,14 @@ class TestWorstCaseVerificationSkipsInfeasible:
 
 class TestMonteCarloFeasibleLineSelection:
     def test_selects_tightest_positive_r_sigma(self) -> None:
-        """MC should select the tightest r_sigma > 0 line, not the most negative."""
+        """MC should select the tightest r_sigma > 0 line."""
         from experiments.run_sigma_radius import _run_monte_carlo_validation
 
         table_rows = [
-            {
-                "line_key": "line_0",
-                "r_sigma": -3.0,
-                "worst_hour": 0,
-                "base_infeasible": True,
-            },
-            {
-                "line_key": "line_1",
-                "r_sigma": -1.0,
-                "worst_hour": 0,
-                "base_infeasible": True,
-            },
-            {
-                "line_key": "line_2",
-                "r_sigma": 2.0,
-                "worst_hour": 5,
-                "base_infeasible": False,
-            },
-            {
-                "line_key": "line_3",
-                "r_sigma": 8.0,
-                "worst_hour": 3,
-                "base_infeasible": False,
-            },
+            {"line_key": "line_0", "r_sigma": -3.0, "base_infeasible": True},
+            {"line_key": "line_1", "r_sigma": -1.0, "base_infeasible": True},
+            {"line_key": "line_2", "r_sigma": 2.0, "base_infeasible": False},
+            {"line_key": "line_3", "r_sigma": 8.0, "base_infeasible": False},
         ]
 
         mock_net = MagicMock()
@@ -384,13 +357,12 @@ class TestMonteCarloFeasibleLineSelection:
         with (
             patch("experiments.run_sigma_radius.copy") as mock_copy,
             patch("experiments.run_sigma_radius.run_ac_monte_carlo_sigma") as mock_mc,
-            patch("experiments.run_sigma_radius._set_loads_for_hour"),
+            patch("experiments.run_sigma_radius._set_loads_to_average"),
             patch.object(Path, "open", create=True),
             patch("experiments.run_sigma_radius.json"),
         ):
             mock_copy.deepcopy.return_value = mock_net
 
-            # Mock MC result
             mock_mc_result = MagicMock()
             mock_mc_result.n_samples = 100
             mock_mc_result.n_violations = 5
@@ -404,7 +376,7 @@ class TestMonteCarloFeasibleLineSelection:
 
             result = _run_monte_carlo_validation(
                 net=mock_net,
-                agg={},
+                res={},
                 table_rows=table_rows,
                 bus_ids=[0, 1, 2],
                 load_p_mw=load_p,
@@ -419,9 +391,7 @@ class TestMonteCarloFeasibleLineSelection:
                 output_dir=output_dir,
             )
 
-            # Should use line_2 (r_sigma=2.0), not line_0 (r_sigma=-3.0)
             assert result is not None
-            # r_sigma_for_ball should be 2.0 (the tightest positive)
             mc_call_kwargs = mock_mc.call_args[1]
             assert mc_call_kwargs["r_sigma"] == pytest.approx(2.0)
 
@@ -430,18 +400,8 @@ class TestMonteCarloFeasibleLineSelection:
         from experiments.run_sigma_radius import _run_monte_carlo_validation
 
         table_rows = [
-            {
-                "line_key": "line_0",
-                "r_sigma": -3.0,
-                "worst_hour": 0,
-                "base_infeasible": True,
-            },
-            {
-                "line_key": "line_1",
-                "r_sigma": -1.0,
-                "worst_hour": 0,
-                "base_infeasible": True,
-            },
+            {"line_key": "line_0", "r_sigma": -3.0, "base_infeasible": True},
+            {"line_key": "line_1", "r_sigma": -1.0, "base_infeasible": True},
         ]
 
         mock_net = MagicMock()
@@ -453,7 +413,7 @@ class TestMonteCarloFeasibleLineSelection:
         with (
             patch("experiments.run_sigma_radius.copy") as mock_copy,
             patch("experiments.run_sigma_radius.run_ac_monte_carlo_sigma") as mock_mc,
-            patch("experiments.run_sigma_radius._set_loads_for_hour"),
+            patch("experiments.run_sigma_radius._set_loads_to_average"),
             patch.object(Path, "open", create=True),
             patch("experiments.run_sigma_radius.json"),
         ):
@@ -472,7 +432,7 @@ class TestMonteCarloFeasibleLineSelection:
 
             result = _run_monte_carlo_validation(
                 net=mock_net,
-                agg={},
+                res={},
                 table_rows=table_rows,
                 bus_ids=[0, 1, 2],
                 load_p_mw=load_p,
@@ -488,7 +448,6 @@ class TestMonteCarloFeasibleLineSelection:
             )
 
             assert result is not None
-            # With all infeasible, r_sigma_for_ball should be inf
             mc_call_kwargs = mock_mc.call_args[1]
             assert mc_call_kwargs["r_sigma"] == float("inf")
 
@@ -501,33 +460,22 @@ class TestMonteCarloFeasibleLineSelection:
 class TestScatterPlotFiltering:
     def test_negative_r_sigma_excluded_from_scatter(self) -> None:
         """Lines with r_sigma <= 0 or r_L2 <= 0 must not appear on log-log scatter."""
-        from experiments.run_sigma_radius import _aggregate_across_hours
-
-        hr = _make_hourly_results(
-            n_lines=5,
-            line_ids=[0, 1, 2, 3, 4],
+        res = _make_res(
             sigma_radii=[-2.0, 3.0, 5.0, -0.5, 7.0],
             l2_radii=[-1.0, 8.0, 12.0, 5.0, 15.0],
         )
-        agg = _aggregate_across_hours({0: hr})
 
-        # Collect what the scatter plot would include
-        line_keys = sorted(agg["min_sigma_radius"].keys())
+        line_keys = sorted(res["sigma_radius"].keys())
         included = []
         excluded = []
         for lk in line_keys:
-            r_sig = agg["min_sigma_radius"].get(lk, float("nan"))
-            r_l2 = agg["worst_hour_ac_l2_radius"].get(lk, float("nan"))
+            r_sig = res["sigma_radius"].get(lk, float("nan"))
+            r_l2 = res["ac_l2_radius"].get(lk, float("nan"))
             if np.isfinite(r_sig) and np.isfinite(r_l2) and r_sig > 0 and r_l2 > 0:
                 included.append(lk)
             else:
                 excluded.append(lk)
 
-        # line_0: r_sig=-2, r_l2=-1 -> excluded
-        # line_1: r_sig=3, r_l2=8 -> included
-        # line_2: r_sig=5, r_l2=12 -> included
-        # line_3: r_sig=-0.5, r_l2=5 -> excluded (negative r_sig)
-        # line_4: r_sig=7, r_l2=15 -> included
         assert "line_0" in excluded
         assert "line_3" in excluded
         assert "line_1" in included
@@ -544,22 +492,20 @@ class TestScatterPlotFiltering:
 
 class TestValidationChecks:
     def test_feasibility_summary_counts_negative_lines(self) -> None:
-        """Validation checks should report number of negative-sigma lines."""
         from experiments.run_sigma_radius import (
-            _aggregate_across_hours,
             _build_table2_rows,
             _run_validation_checks,
         )
 
-        hr = _make_hourly_results(
+        avg_result = _make_avg_result(
             n_lines=4,
-            line_ids=[0, 1, 2, 3],
             sigma_radii=[-2.0, -0.5, 3.0, 5.0],
             s0_values=[110.0, 105.0, 80.0, 60.0],
             limit_values=[100.0, 100.0, 100.0, 100.0],
         )
-        agg = _aggregate_across_hours({0: hr})
-        rows = _build_table2_rows(agg, top_k=4)
+        from experiments.run_sigma_radius import _build_result_dict
+        res = _build_result_dict(avg_result)
+        rows = _build_table2_rows(res, top_k=4)
 
         output_dir = Path("/tmp/test_validation")
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -569,8 +515,8 @@ class TestValidationChecks:
             patch("experiments.run_sigma_radius.json"),
         ):
             checks = _run_validation_checks(
-                agg=agg,
-                hourly_results={0: hr},
+                res=res,
+                avg_result=avg_result,
                 table_rows=rows,
                 mc_results=None,
                 sigma_p_mw_raw=np.ones(3),
@@ -583,16 +529,15 @@ class TestValidationChecks:
         assert checks["feasibility"]["n_top_k_infeasible"] == 2
 
     def test_balance_check_passes_for_zero_sum_dp(self) -> None:
-        """Balance check should pass when sum(dp) < 1e-6."""
         from experiments.run_sigma_radius import (
-            _aggregate_across_hours,
             _build_table2_rows,
             _run_validation_checks,
         )
 
-        hr = _make_hourly_results(n_lines=1, line_ids=[0], sigma_radii=[5.0])
-        agg = _aggregate_across_hours({0: hr})
-        rows = _build_table2_rows(agg, top_k=1)
+        avg_result = _make_avg_result(n_lines=1, line_ids=[0], sigma_radii=[5.0])
+        from experiments.run_sigma_radius import _build_result_dict
+        res = _build_result_dict(avg_result)
+        rows = _build_table2_rows(res, top_k=1)
 
         output_dir = Path("/tmp/test_balance")
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -602,8 +547,8 @@ class TestValidationChecks:
             patch("experiments.run_sigma_radius.json"),
         ):
             checks = _run_validation_checks(
-                agg=agg,
-                hourly_results={0: hr},
+                res=res,
+                avg_result=avg_result,
                 table_rows=rows,
                 mc_results=None,
                 sigma_p_mw_raw=np.ones(3),
@@ -621,26 +566,17 @@ class TestValidationChecks:
 
 class TestCSVExport:
     def test_csv_includes_base_infeasible_column(self, tmp_path: Path) -> None:
-        """CSV export should include base_infeasible in header."""
         from experiments.run_sigma_radius import (
-            _aggregate_across_hours,
             _build_table2_rows,
             _export_table2_csv,
         )
 
-        hr = _make_hourly_results(
-            n_lines=2,
-            line_ids=[0, 1],
-            sigma_radii=[-1.0, 3.0],
-        )
-        agg = _aggregate_across_hours({0: hr})
-        rows = _build_table2_rows(agg, top_k=2)
+        res = _make_res([-1.0, 3.0])
+        rows = _build_table2_rows(res, top_k=2)
         _export_table2_csv(rows, tmp_path)
 
         csv_path = tmp_path / "table2_sigma_radius.csv"
         assert csv_path.exists()
-
-        import csv
 
         with csv_path.open(encoding="utf-8") as f:
             reader = csv.DictReader(f)
@@ -649,9 +585,7 @@ class TestCSVExport:
             csv_rows = list(reader)
 
         assert len(csv_rows) == 2
-        # First row (r_sigma=-1.0) should be infeasible
         assert csv_rows[0]["base_infeasible"] == "True"
-        # Second row (r_sigma=3.0) should be feasible
         assert csv_rows[1]["base_infeasible"] == "False"
 
 
@@ -662,17 +596,10 @@ class TestCSVExport:
 
 class TestSaveHvectorsNPZ:
     def test_hvectors_saved_and_loadable(self, tmp_path: Path) -> None:
-        """Should save worst-hour h-vectors in NPZ format."""
-        from experiments.run_sigma_radius import (
-            _aggregate_across_hours,
-            _save_hvectors_npz,
-        )
+        from experiments.run_sigma_radius import _save_hvectors_npz
 
-        hr = _make_hourly_results(
-            n_lines=3, line_ids=[0, 1, 2], sigma_radii=[5.0, 3.0, 7.0]
-        )
-        agg = _aggregate_across_hours({0: hr})
-        _save_hvectors_npz(agg, output_dir=tmp_path)
+        res = _make_res([5.0, 3.0, 7.0])
+        _save_hvectors_npz(res, output_dir=tmp_path)
 
         npz_path = tmp_path / "hvectors.npz"
         assert npz_path.exists()
@@ -704,7 +631,6 @@ class TestACFeasibilityCheck:
         return pytest.importorskip("pypsa")
 
     def test_infeasible_base_point_detected(self, _pp, _scipy, _pypsa) -> None:
-        """Network with S0 > limit should be flagged infeasible."""
         pp = _pp
         from stability_radius.base_point.pypsa_pf import (
             solve_ac_pf_base_point_from_pandapower,
@@ -719,23 +645,15 @@ class TestACFeasibilityCheck:
         pp.create_ext_grid(net, b0, vm_pu=1.0)
         pp.create_load(net, b1, p_mw=50.0, q_mvar=10.0)
         pp.create_line_from_parameters(
-            net,
-            from_bus=b0,
-            to_bus=b1,
-            length_km=1.0,
-            r_ohm_per_km=0.01,
-            x_ohm_per_km=0.10,
-            c_nf_per_km=0.0,
-            max_i_ka=1.0,
+            net, from_bus=b0, to_bus=b1, length_km=1.0,
+            r_ohm_per_km=0.01, x_ohm_per_km=0.10, c_nf_per_km=0.0, max_i_ka=1.0,
         )
 
         base_pf = solve_ac_pf_base_point_from_pandapower(
             net=net, slack_bus=b0, solver="pandapower", init="flat", lossless=True
         )
 
-        # Set a very tight limit (below base flow)
-        net.line.loc[0, "rateA"] = 1.0  # 1 MVA << actual flow
-
+        net.line.loc[0, "rateA"] = 1.0
         result = check_ac_base_point_feasibility(net=net, base_pf=base_pf)
 
         assert not result.is_feasible
@@ -743,7 +661,6 @@ class TestACFeasibilityCheck:
         assert result.worst_margin_mva < 0
 
     def test_feasible_base_point_passes(self, _pp, _scipy, _pypsa) -> None:
-        """Network with generous limits should be flagged feasible."""
         pp = _pp
         from stability_radius.base_point.pypsa_pf import (
             solve_ac_pf_base_point_from_pandapower,
@@ -758,23 +675,15 @@ class TestACFeasibilityCheck:
         pp.create_ext_grid(net, b0, vm_pu=1.0)
         pp.create_load(net, b1, p_mw=30.0, q_mvar=5.0)
         pp.create_line_from_parameters(
-            net,
-            from_bus=b0,
-            to_bus=b1,
-            length_km=1.0,
-            r_ohm_per_km=0.01,
-            x_ohm_per_km=0.10,
-            c_nf_per_km=0.0,
-            max_i_ka=1.0,
+            net, from_bus=b0, to_bus=b1, length_km=1.0,
+            r_ohm_per_km=0.01, x_ohm_per_km=0.10, c_nf_per_km=0.0, max_i_ka=1.0,
         )
 
         base_pf = solve_ac_pf_base_point_from_pandapower(
             net=net, slack_bus=b0, solver="pandapower", init="flat", lossless=True
         )
 
-        # Set a generous limit
         net.line.loc[0, "rateA"] = 9999.0
-
         result = check_ac_base_point_feasibility(net=net, base_pf=base_pf)
 
         assert result.is_feasible
@@ -788,35 +697,23 @@ class TestACFeasibilityCheck:
 
 class TestNegativeSigmaRadius:
     def test_s0_exceeding_limit_gives_negative_r_sigma(self) -> None:
-        """When S0 > c, the sigma-radius should be negative."""
         from stability_radius.radii.ac_sigma_radius import compute_ac_sigma_radius
 
-        n_bus = 2
         h = np.array([[1.0, -1.0, 0.5, -0.5]], dtype=float)
         sigma_p = np.array([1.0, 1.0])
         sigma_q = np.array([1.0, 1.0])
-        s0 = np.array([110.0])  # exceeds limit
+        s0 = np.array([110.0])
         c = np.array([100.0])
 
         res = compute_ac_sigma_radius(
-            h_vectors=h,
-            s_limit_mva=c,
-            s0_mva=s0,
-            sigma_p_mw=sigma_p,
-            sigma_q_mvar=sigma_q,
-            balance=True,
+            h_vectors=h, s_limit_mva=c, s0_mva=s0,
+            sigma_p_mw=sigma_p, sigma_q_mvar=sigma_q, balance=True,
         )
-
-        row = res["line_0"]
-        assert row["radius_ac_sigma"] < 0, (
-            f"Expected negative sigma-radius, got {row['radius_ac_sigma']}"
-        )
+        assert res["line_0"]["radius_ac_sigma"] < 0
 
     def test_s0_below_limit_gives_positive_r_sigma(self) -> None:
-        """When S0 < c, the sigma-radius should be positive."""
         from stability_radius.radii.ac_sigma_radius import compute_ac_sigma_radius
 
-        n_bus = 2
         h = np.array([[1.0, -1.0, 0.5, -0.5]], dtype=float)
         sigma_p = np.array([1.0, 1.0])
         sigma_q = np.array([1.0, 1.0])
@@ -824,16 +721,10 @@ class TestNegativeSigmaRadius:
         c = np.array([100.0])
 
         res = compute_ac_sigma_radius(
-            h_vectors=h,
-            s_limit_mva=c,
-            s0_mva=s0,
-            sigma_p_mw=sigma_p,
-            sigma_q_mvar=sigma_q,
-            balance=True,
+            h_vectors=h, s_limit_mva=c, s0_mva=s0,
+            sigma_p_mw=sigma_p, sigma_q_mvar=sigma_q, balance=True,
         )
-
-        row = res["line_0"]
-        assert row["radius_ac_sigma"] > 0
+        assert res["line_0"]["radius_ac_sigma"] > 0
 
 
 # ---------------------------------------------------------------------------
@@ -843,23 +734,18 @@ class TestNegativeSigmaRadius:
 
 class TestMultiScaleVerification:
     def test_verification_produces_per_scale_results(self) -> None:
-        """Multi-scale verification should return per-scale sub-results."""
         from experiments.run_sigma_radius import (
-            _aggregate_across_hours,
             _build_table2_rows,
             _run_worst_case_verification,
         )
 
-        hr = _make_hourly_results(
-            n_lines=1,
-            line_ids=[0],
+        res = _make_res(
             sigma_radii=[5.0],
             l2_radii=[10.0],
             s0_values=[80.0],
             limit_values=[100.0],
         )
-        agg = _aggregate_across_hours({0: hr})
-        rows = _build_table2_rows(agg, top_k=1)
+        rows = _build_table2_rows(res, top_k=1)
 
         mock_net = MagicMock()
         load_p = np.zeros((3, 1))
@@ -875,12 +761,8 @@ class TestMultiScaleVerification:
 
             mock_result = MagicMock()
             mock_result.to_dict.return_value = {
-                "line_id": 0,
-                "actual_s_mva": 95.0,
-                "predicted_s_mva": 100.0,
-                "pf_converged": True,
-                "violated": False,
-                "relative_error": 0.05,
+                "line_id": 0, "actual_s_mva": 95.0, "predicted_s_mva": 100.0,
+                "pf_converged": True, "violated": False, "relative_error": 0.05,
             }
             mock_result.pf_converged = True
             mock_result.violated = False
@@ -891,7 +773,7 @@ class TestMultiScaleVerification:
 
             results = _run_worst_case_verification(
                 net=mock_net,
-                agg=agg,
+                res=res,
                 table_rows=rows,
                 bus_ids=[0, 1, 2],
                 load_p_mw=load_p,
@@ -903,9 +785,7 @@ class TestMultiScaleVerification:
                 output_dir=output_dir,
             )
 
-        # Should have 3 scale results for the one feasible line
         ok_results = [r for r in results if r.get("status") == "ok"]
         assert len(ok_results) == 1
         assert len(ok_results[0]["scale_results"]) == 3
-        # verify_worst_case called 3 times (3 scales)
         assert mock_verify.call_count == 3

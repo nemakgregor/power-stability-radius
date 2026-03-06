@@ -460,7 +460,9 @@ def solve_ac_fpf(
     ]
 
     last_error: Exception | None = None
-    attempt_timeout = float(cfg.per_attempt_timeout) if cfg.per_attempt_timeout > 0 else 0.0
+    attempt_timeout = (
+        float(cfg.per_attempt_timeout) if cfg.per_attempt_timeout > 0 else 0.0
+    )
     for attempt_idx, attempt in enumerate(attempts_config[:max_attempts], 1):
         _set_voltage_limits(
             nn, vm_min_pu=attempt["vm_min"], vm_max_pu=attempt["vm_max"]
@@ -555,6 +557,13 @@ def solve_ac_fpf(
             [float(nn.res_bus.loc[bid, "p_mw"]) for bid in bus_ids], dtype=float
         )
 
+    # Bus net reactive power injection.
+    bus_q_mvar_arr: np.ndarray | None = None
+    if "q_mvar" in nn.res_bus.columns:
+        bus_q_mvar_arr = np.asarray(
+            [float(nn.res_bus.loc[bid, "q_mvar"]) for bid in bus_ids], dtype=float
+        )
+
     # Line flows.
     idx = [int(x) for x in line_indices]
     p0 = np.zeros(len(idx), dtype=float)
@@ -604,4 +613,5 @@ def solve_ac_fpf(
         pf_attempt=pf_attempt,
         pf_repairs=list(pf_repairs),
         bus_p_mw=bus_p_mw_arr,
+        bus_q_mvar=bus_q_mvar_arr,
     )
