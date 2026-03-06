@@ -211,13 +211,22 @@ class TestBuildTable2Rows:
 
 
 class TestWorstCaseVerificationSkipsInfeasible:
-    def test_negative_r_l2_lines_are_skipped(self) -> None:
-        """Lines with r_L2 <= 0 should be skipped in verification."""
+    def test_negative_r_sigma_lines_are_skipped(self) -> None:
+        """Lines with r_sigma <= 0 should be skipped in verification."""
         from experiments.run_sigma_radius import (
             _build_table2_rows,
             _run_worst_case_verification,
         )
 
+        avg = _make_avg_result(
+            n_lines=3,
+            n_bus=3,
+            line_ids=[0, 1, 2],
+            sigma_radii=[-2.0, 3.0, 5.0],
+            l2_radii=[-1.5, 8.0, 12.0],
+            s0_values=[105.0, 50.0, 40.0],
+            limit_values=[100.0, 100.0, 100.0],
+        )
         res = _make_res(
             sigma_radii=[-2.0, 3.0, 5.0],
             l2_radii=[-1.5, 8.0, 12.0],
@@ -250,6 +259,7 @@ class TestWorstCaseVerificationSkipsInfeasible:
             results = _run_worst_case_verification(
                 net=mock_net,
                 res=res,
+                sigma_results=avg["sigma_results"],
                 table_rows=rows,
                 bus_ids=[0, 1, 2],
                 load_p_mw=load_p,
@@ -261,12 +271,12 @@ class TestWorstCaseVerificationSkipsInfeasible:
                 output_dir=output_dir,
             )
 
-        # Line 0 has r_L2 < 0, should be skipped
+        # Line 0 has r_sigma < 0, should be skipped
         assert rows[0]["verified"] is None
         line0_result = next(r for r in results if r.get("line_key") == "line_0")
         assert line0_result["status"] == "skipped_infeasible"
 
-        # Lines 1 and 2 have positive r_L2, should be verified
+        # Lines 1 and 2 have positive r_sigma, should be verified
         assert mock_verify.call_count == 2
 
 
@@ -678,6 +688,15 @@ class TestMultiScaleVerification:
             _run_worst_case_verification,
         )
 
+        avg = _make_avg_result(
+            n_lines=1,
+            n_bus=3,
+            line_ids=[0],
+            sigma_radii=[5.0],
+            l2_radii=[10.0],
+            s0_values=[80.0],
+            limit_values=[100.0],
+        )
         res = _make_res(
             sigma_radii=[5.0],
             l2_radii=[10.0],
@@ -713,6 +732,7 @@ class TestMultiScaleVerification:
             results = _run_worst_case_verification(
                 net=mock_net,
                 res=res,
+                sigma_results=avg["sigma_results"],
                 table_rows=rows,
                 bus_ids=[0, 1, 2],
                 load_p_mw=load_p,

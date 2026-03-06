@@ -444,6 +444,7 @@ def _run_worst_case_verification(
     *,
     net: Any,
     res: dict[str, Any],
+    sigma_results: dict[str, dict[str, Any]],
     table_rows: list[dict],
     bus_ids: list[int],
     load_p_mw: np.ndarray,
@@ -457,7 +458,12 @@ def _run_worst_case_verification(
     """Verify worst-case perturbation for each line in table_rows.
 
     Verification uses the average operating point (loads set to mean).
-    Lines with negative r_L2 (base infeasible) are skipped.
+    The perturbation vector is taken from the sigma-radius certificate
+    (pre-computed worst_case_dp_mw / worst_case_dq_mvar), NOT from the
+    L2 certificate.  This ensures that the verified direction matches
+    the sigma-weighted balance projection.
+
+    Lines with negative r_sigma (base infeasible) are skipped.
     """
     verification_results: list[dict] = []
 
@@ -470,21 +476,21 @@ def _run_worst_case_verification(
             row["verified"] = None
             continue
 
-        r_l2 = res["ac_l2_radius"].get(lk, float("nan"))
+        r_sigma = row["r_sigma"]
         s0 = row["s0_mva"]
         limit = row["limit_mva"]
 
-        if not np.isfinite(r_l2) or not np.isfinite(s0) or not np.isfinite(limit):
+        if not np.isfinite(r_sigma) or not np.isfinite(s0) or not np.isfinite(limit):
             logger.warning("Non-finite values for %s, skipping verification.", lk)
             row["verified"] = None
             continue
 
-        # Skip lines with negative r_L2 (base infeasible: s0 > limit already)
-        if r_l2 <= 0:
+        # Skip lines with negative r_sigma (base infeasible: s0 > limit already)
+        if r_sigma <= 0:
             logger.warning(
-                "Line %s has r_L2=%.4f <= 0 (base infeasible), skipping verification.",
+                "Line %s has r_sigma=%.4f <= 0 (base infeasible), skipping verification.",
                 lk,
-                r_l2,
+                r_sigma,
             )
             row["verified"] = None
             verification_results.append(
@@ -492,12 +498,33 @@ def _run_worst_case_verification(
                     "line_id": lid,
                     "line_key": lk,
                     "status": "skipped_infeasible",
-                    "r_l2": r_l2,
+                    "r_sigma": r_sigma,
                     "s0_mva": s0,
                     "limit_mva": limit,
                 }
             )
             continue
+
+        # Extract pre-computed sigma-radius worst-case perturbation
+        sigma_entry = sigma_results.get(lk)
+        if sigma_entry is None or not isinstance(sigma_entry, dict):
+            logger.warning("No sigma-radius entry for %s, skipping verification.", lk)
+            row["verified"] = None
+            continue
+
+        wc_dp = sigma_entry.get("worst_case_dp_mw")
+        wc_dq = sigma_entry.get("worst_case_dq_mvar")
+        if wc_dp is None or wc_dq is None:
+            logger.warning(
+                "No worst-case vectors in sigma-radius entry for %s, skipping.", lk
+            )
+            row["verified"] = None
+            continue
+
+        # Full worst-case perturbation vector [ΔP; ΔQ]
+        wc_delta_u = np.concatenate(
+            [np.asarray(wc_dp, dtype=float), np.asarray(wc_dq, dtype=float)]
+        )
 
         # Set up network at average loads
         net_avg = copy.deepcopy(net)
@@ -517,12 +544,13 @@ def _run_worst_case_verification(
                     net=net_avg,
                     line_id=lid,
                     h_vec=h_vec,
-                    radius=r_l2,
+                    radius=r_sigma,
                     s0_mva=s0,
                     limit_mva=limit,
                     scale=scale,
                     balance=True,
                     lossless=lossless,
+                    delta_u=wc_delta_u * float(scale),
                 )
                 sr = result.to_dict()
                 sr["scale"] = scale
@@ -545,7 +573,7 @@ def _run_worst_case_verification(
             {
                 "line_id": lid,
                 "line_key": lk,
-                "r_l2": r_l2,
+                "r_sigma": r_sigma,
                 "s0_mva": s0,
                 "limit_mva": limit,
                 "scale_results": scale_results,
@@ -1372,6 +1400,7 @@ def run(config_path: Path) -> None:
         _run_worst_case_verification(
             net=net,
             res=res,
+            sigma_results=avg_result["sigma_results"],
             table_rows=table_rows[:verify_top_k],
             bus_ids=bus_ids,
             load_p_mw=load_p_mw,
