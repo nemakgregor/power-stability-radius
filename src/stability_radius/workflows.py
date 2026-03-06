@@ -1241,7 +1241,8 @@ def compute_results_for_case(
             if bool(ac_ext.save_h_vectors) and h_vecs_raw is not None:
                 bus_ids = [int(x) for x in sorted(net.bus.index)]
                 n_bus = len(bus_ids)
-                slack_pos = bus_ids.index(int(slack_bus))
+                slack_bus_id = resolve_slack_bus_id(net, int(slack_bus))
+                slack_pos = bus_ids.index(slack_bus_id)
 
                 h_vectors_saved = {
                     "h_from": _expand_h_reduced_to_full(
