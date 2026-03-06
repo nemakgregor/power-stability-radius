@@ -4,7 +4,6 @@ from __future__ import annotations
 Tests for Experiment 2 (run_sigma_radius) helper functions.
 
 Covers:
-- Injection sigma computation from hourly OPF results
 - Average-point result dict building
 - Table 2 row building from single-point results
 - Scatter plot filtering for log-log axes
@@ -15,7 +14,6 @@ Covers:
 """
 
 import csv
-import math
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -121,65 +119,6 @@ def _make_res(
         limit_values=limit_values,
     )
     return _build_result_dict(avg)
-
-
-# ---------------------------------------------------------------------------
-# Tests for _compute_injection_sigma
-# ---------------------------------------------------------------------------
-
-
-class TestComputeInjectionSigma:
-    def test_sigma_from_constant_injections_is_zero(self) -> None:
-        """Constant bus injections across hours should give zero sigma."""
-        from experiments.run_sigma_radius import _compute_injection_sigma
-
-        hourly = {
-            0: {"bus_p_mw": np.array([10.0, 20.0, 30.0]), "bus_q_mvar": np.array([1.0, 2.0, 3.0])},
-            1: {"bus_p_mw": np.array([10.0, 20.0, 30.0]), "bus_q_mvar": np.array([1.0, 2.0, 3.0])},
-            2: {"bus_p_mw": np.array([10.0, 20.0, 30.0]), "bus_q_mvar": np.array([1.0, 2.0, 3.0])},
-        }
-        sigma_p, sigma_q = _compute_injection_sigma(hourly, n_bus=3)
-        np.testing.assert_allclose(sigma_p, 0.0, atol=1e-12)
-        np.testing.assert_allclose(sigma_q, 0.0, atol=1e-12)
-
-    def test_sigma_from_varying_injections(self) -> None:
-        """Variable bus injections should give nonzero sigma."""
-        from experiments.run_sigma_radius import _compute_injection_sigma
-
-        hourly = {
-            0: {"bus_p_mw": np.array([10.0, 20.0]), "bus_q_mvar": np.array([1.0, 2.0])},
-            1: {"bus_p_mw": np.array([12.0, 22.0]), "bus_q_mvar": np.array([1.5, 2.5])},
-            2: {"bus_p_mw": np.array([8.0, 18.0]), "bus_q_mvar": np.array([0.5, 1.5])},
-        }
-        sigma_p, sigma_q = _compute_injection_sigma(hourly, n_bus=2)
-        assert sigma_p.shape == (2,)
-        assert sigma_q.shape == (2,)
-        assert np.all(sigma_p > 0)
-        assert np.all(sigma_q > 0)
-
-    def test_fallback_to_power_factor_when_no_q(self) -> None:
-        """When bus_q_mvar is None, sigma_q = sigma_p * tan(arccos(pf))."""
-        from experiments.run_sigma_radius import _compute_injection_sigma
-
-        hourly = {
-            0: {"bus_p_mw": np.array([10.0, 20.0]), "bus_q_mvar": None},
-            1: {"bus_p_mw": np.array([14.0, 24.0]), "bus_q_mvar": None},
-        }
-        pf = 0.9
-        sigma_p, sigma_q = _compute_injection_sigma(hourly, n_bus=2, power_factor=pf)
-        tan_phi = math.tan(math.acos(pf))
-        np.testing.assert_allclose(sigma_q, sigma_p * tan_phi, rtol=1e-10)
-
-    def test_empty_results_returns_zeros(self) -> None:
-        """When no bus_p_mw data is available, return zeros."""
-        from experiments.run_sigma_radius import _compute_injection_sigma
-
-        hourly = {
-            0: {"bus_p_mw": None, "bus_q_mvar": None},
-        }
-        sigma_p, sigma_q = _compute_injection_sigma(hourly, n_bus=3)
-        np.testing.assert_allclose(sigma_p, 0.0)
-        np.testing.assert_allclose(sigma_q, 0.0)
 
 
 # ---------------------------------------------------------------------------

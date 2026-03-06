@@ -1,8 +1,8 @@
-"""Experiment 2: AC sigma-radius at average operating point with UC.jl data.
+"""Experiment 2: AC sigma-radius at average operating point.
 
-Runs AC OPF for each hourly timestep in a UC.jl instance to collect per-bus
-injection data, computes injection σ as std across hours, then computes
-sigma-radius once at the average operating point.
+Computes σ from UC.jl load time series (std of per-bus P and Q across hours),
+then runs a single AC OPF at the average operating point and computes
+sigma-radius once for each line.
 
 Produces:
 - Table 2: full sigma-radius results (top-k tightest lines)
@@ -27,7 +27,6 @@ import copy
 import csv
 import json
 import logging
-import math
 from pathlib import Path
 from typing import Any
 
@@ -90,30 +89,6 @@ def _clamp_sigma(sigma: np.ndarray, floor: float = _SIGMA_FLOOR) -> np.ndarray:
     return out
 
 
-# ---------------------------------------------------------------------------
-# Per-hour OPF (data collection only — no h-vectors or sigma-radius)
-# ---------------------------------------------------------------------------
-
-
-def _set_loads_for_hour(
-    net: Any,
-    *,
-    hour: int,
-    load_p_mw: np.ndarray,
-    load_q_mvar: np.ndarray,
-    bus_ids: list[int],
-) -> None:
-    """Set net.load P/Q from the UC.jl hourly profile (in-place)."""
-    bus_to_pos = {bid: pos for pos, bid in enumerate(bus_ids)}
-    for load_idx in net.load.index:
-        load_bus = int(net.load.at[load_idx, "bus"])
-        if load_bus not in bus_to_pos:
-            continue
-        pos = bus_to_pos[load_bus]
-        net.load.at[load_idx, "p_mw"] = float(load_p_mw[pos, hour])
-        net.load.at[load_idx, "q_mvar"] = float(load_q_mvar[pos, hour])
-
-
 def _set_loads_to_average(
     net: Any,
     *,
@@ -132,132 +107,6 @@ def _set_loads_to_average(
         pos = bus_to_pos[load_bus]
         net.load.at[load_idx, "p_mw"] = float(avg_p[pos])
         net.load.at[load_idx, "q_mvar"] = float(avg_q[pos])
-
-
-def _compute_hour(
-    *,
-    net_template: Any,
-    hour: int,
-    load_p_mw: np.ndarray,
-    load_q_mvar: np.ndarray,
-    bus_ids: list[int],
-    slack_bus: int,
-    lossless: bool,
-    fpf_cfg: ACFPFConfig | None,
-) -> dict | None:
-    """Run AC OPF for one hour to collect bus injections. Returns dict or None."""
-    net = copy.deepcopy(net_template)
-    _set_loads_for_hour(
-        net,
-        hour=hour,
-        load_p_mw=load_p_mw,
-        load_q_mvar=load_q_mvar,
-        bus_ids=bus_ids,
-    )
-
-    total_load = float(net.load.p_mw.sum())
-    logger.info("  Hour %d: total load = %.1f MW", hour, total_load)
-
-    # AC OPF
-    try:
-        _bp_ac, base_pf = solve_ac_fpf_base_point(
-            net=net,
-            slack_bus=slack_bus,
-            lossless=lossless,
-            fpf_cfg=fpf_cfg,
-        )
-    except Exception:
-        logger.warning("  Hour %d: AC OPF failed", hour, exc_info=True)
-        return None
-
-    # AC feasibility check
-    feasibility = check_ac_base_point_feasibility(net=net, base_pf=base_pf)
-    if not feasibility.is_feasible:
-        logger.warning(
-            "  Hour %d: AC base point infeasible (%d constrained lines violated, "
-            "worst margin=%.2f MVA on line %d).",
-            hour,
-            feasibility.n_constrained_violated,
-            feasibility.worst_margin_mva,
-            feasibility.worst_line_id,
-        )
-
-    # Extract per-bus injections from OPF results
-    bus_p_mw = (
-        np.asarray(base_pf.bus_p_mw, dtype=float).copy()
-        if base_pf.bus_p_mw is not None
-        else None
-    )
-    bus_q_mvar = (
-        np.asarray(base_pf.bus_q_mvar, dtype=float).copy()
-        if base_pf.bus_q_mvar is not None
-        else None
-    )
-
-    logger.info("  Hour %d: OK, total load = %.1f MW", hour, total_load)
-
-    return {
-        "total_load_mw": total_load,
-        "ac_feasibility": feasibility,
-        "bus_p_mw": bus_p_mw,
-        "bus_q_mvar": bus_q_mvar,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Compute injection σ from hourly OPF results
-# ---------------------------------------------------------------------------
-
-
-def _compute_injection_sigma(
-    hourly_results: dict[int, dict],
-    *,
-    n_bus: int,
-    power_factor: float = 0.9,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Compute per-bus injection σ from OPF solutions across hours.
-
-    Returns (sigma_p_mw, sigma_q_mvar), each (n_bus,).
-    """
-    hours = sorted(hourly_results.keys())
-
-    # Collect per-bus P injection from each hour
-    p_arrays = [
-        hourly_results[h]["bus_p_mw"]
-        for h in hours
-        if hourly_results[h]["bus_p_mw"] is not None
-    ]
-    if not p_arrays:
-        logger.warning("No bus_p_mw data available; returning zeros.")
-        return np.zeros(n_bus, dtype=float), np.zeros(n_bus, dtype=float)
-
-    p_matrix = np.stack(p_arrays)  # (n_hours_ok, n_bus)
-    sigma_p = np.std(p_matrix, axis=0, ddof=0)  # (n_bus,)
-
-    # Q injection: use bus_q_mvar if available, else derive from P via pf
-    q_arrays = [
-        hourly_results[h]["bus_q_mvar"]
-        for h in hours
-        if hourly_results[h].get("bus_q_mvar") is not None
-    ]
-    if q_arrays and len(q_arrays) == len(p_arrays):
-        q_matrix = np.stack(q_arrays)
-        sigma_q = np.std(q_matrix, axis=0, ddof=0)
-    else:
-        tan_phi = math.tan(math.acos(power_factor))
-        sigma_q = sigma_p * tan_phi
-
-    logger.info(
-        "Injection sigma computed: sigma_P range=[%.4g, %.4g] MW, "
-        "sigma_Q range=[%.4g, %.4g] MVAr (from %d hours)",
-        float(np.min(sigma_p)),
-        float(np.max(sigma_p)),
-        float(np.min(sigma_q)),
-        float(np.max(sigma_q)),
-        len(p_arrays),
-    )
-
-    return sigma_p, sigma_q
 
 
 # ---------------------------------------------------------------------------
@@ -1221,7 +1070,6 @@ def _plot_topology(
     res: dict[str, Any],
     bus_ids: list[int],
     top_k_critical: int,
-    n_hours_ok: int,
     output_dir: Path,
     figsize: tuple[float, float] = (16, 12),
     dpi: int = 200,
@@ -1350,7 +1198,7 @@ def _plot_topology(
     )
 
     ax.set_title(
-        "Case118: AC Sigma-Radius at Average Operating Point (%d hours)" % n_hours_ok,
+        "Case118: AC Sigma-Radius at Average Operating Point",
         fontsize=14,
     )
     ax.set_axis_off()
@@ -1405,7 +1253,7 @@ def run(config_path: Path) -> None:
     )
 
     # ------------------------------------------------------------------
-    # Step 1: Download UC.jl + load hourly profiles.
+    # Step 1: Download UC.jl data + compute σ from load time series.
     # ------------------------------------------------------------------
     uc_dest = Path(uc_cfg.get("dest_dir", "data/uc_jl"))
     uc_case_name = str(uc_cfg["case_name"])
@@ -1415,10 +1263,23 @@ def run(config_path: Path) -> None:
     logger.info("Downloading UC.jl instance: %s (date=%s)", uc_case_name, uc_date)
     uc_path = download_uc_jl_instance(uc_case_name, dest_dir=uc_dest, date=uc_date)
 
-    # Load-profile sigma for comparison (saved separately)
-    sigma_data_load = load_sigma(uc_path, power_factor=power_factor)
+    # σ from load time series (std of per-bus P_load(t) and Q_load(t))
+    sigma_data = load_sigma(uc_path, power_factor=power_factor)
+    sigma_p_mw_raw = sigma_data["sigma_p_mw"]
+    sigma_q_mvar_raw = sigma_data["sigma_q_mvar"]
+    sigma_p_mw = _clamp_sigma(sigma_p_mw_raw)
+    sigma_q_mvar = _clamp_sigma(sigma_q_mvar_raw)
+    n_clamped = int(np.sum(sigma_p_mw_raw < _SIGMA_FLOOR))
 
-    # Hourly profiles
+    logger.info(
+        "Load-profile sigma: n_bus=%d, sigma_P range=[%.4g, %.4g] MW (%d buses clamped)",
+        len(sigma_p_mw),
+        float(np.min(sigma_p_mw)),
+        float(np.max(sigma_p_mw)),
+        n_clamped,
+    )
+
+    # Hourly profiles (needed for average loads)
     hourly_data = load_hourly_profiles(uc_path, power_factor=power_factor)
     load_p_mw = hourly_data["load_p_mw"]
     load_q_mvar = hourly_data["load_q_mvar"]
@@ -1450,68 +1311,15 @@ def run(config_path: Path) -> None:
 
     logger.info("Network loaded: %d buses, %d lines", n_bus, len(net.line))
 
-    # ------------------------------------------------------------------
-    # Step 3: Per-hour OPF loop (data collection only).
-    # ------------------------------------------------------------------
-    hourly_results: dict[int, dict] = {}
-    for hour in range(n_hours):
-        logger.info("--- Hour %d/%d ---", hour + 1, n_hours)
-        result = _compute_hour(
-            net_template=net,
-            hour=hour,
-            load_p_mw=load_p_mw,
-            load_q_mvar=load_q_mvar,
-            bus_ids=bus_ids,
-            slack_bus=slack_bus,
-            lossless=lossless,
-            fpf_cfg=fpf,
-        )
-        if result is not None:
-            hourly_results[hour] = result
-
-    n_ok = len(hourly_results)
-    n_fail = n_hours - n_ok
-    n_infeasible_hours = sum(
-        1
-        for res in hourly_results.values()
-        if not res["ac_feasibility"].is_feasible
-    )
-    logger.info(
-        "Hourly loop done: %d/%d hours succeeded, %d failed, %d infeasible",
-        n_ok, n_hours, n_fail, n_infeasible_hours,
-    )
-
-    if not hourly_results:
-        logger.error("All hours failed. Cannot produce results.")
-        return
-
-    # ------------------------------------------------------------------
-    # Step 4: Compute injection σ from hourly OPF results.
-    # ------------------------------------------------------------------
-    sigma_p_mw_inj, sigma_q_mvar_inj = _compute_injection_sigma(
-        hourly_results, n_bus=n_bus, power_factor=power_factor,
-    )
-    sigma_p_mw = _clamp_sigma(sigma_p_mw_inj)
-    sigma_q_mvar = _clamp_sigma(sigma_q_mvar_inj)
-    n_clamped = int(np.sum(sigma_p_mw_inj < _SIGMA_FLOOR))
-
-    logger.info(
-        "Injection sigma: n_bus=%d, sigma_P range=[%.4g, %.4g] MW (%d buses clamped)",
-        n_bus,
-        float(np.min(sigma_p_mw)),
-        float(np.max(sigma_p_mw)),
-        n_clamped,
-    )
-
-    # Save injection-derived sigma arrays
+    # Save sigma arrays
     sigma_out = output_dir / "sigma_arrays.json"
     with sigma_out.open("w", encoding="utf-8") as fh:
         json.dump(
             {
                 "sigma_p_mw": sigma_p_mw.tolist(),
                 "sigma_q_mvar": sigma_q_mvar.tolist(),
-                "sigma_source": "injection_std_across_hours",
-                "n_hours_used": n_ok,
+                "sigma_source": "load_time_series_std",
+                "n_timesteps": n_hours,
                 "n_clamped": n_clamped,
                 "sigma_floor": _SIGMA_FLOOR,
             },
@@ -1519,22 +1327,8 @@ def run(config_path: Path) -> None:
             indent=2,
         )
 
-    # Save load-profile sigma for comparison
-    sigma_load_out = output_dir / "sigma_arrays_load.json"
-    with sigma_load_out.open("w", encoding="utf-8") as fh:
-        json.dump(
-            {
-                "sigma_p_mw": sigma_data_load["sigma_p_mw"].tolist(),
-                "sigma_q_mvar": sigma_data_load["sigma_q_mvar"].tolist(),
-                "sigma_source": "load_profile_std",
-                "metadata": sigma_data_load["metadata"],
-            },
-            fh,
-            indent=2,
-        )
-
     # ------------------------------------------------------------------
-    # Step 5: Compute sigma-radius at average operating point.
+    # Step 3: Compute sigma-radius at average operating point.
     # ------------------------------------------------------------------
     avg_result = _compute_at_average_point(
         net_template=net,
@@ -1558,17 +1352,17 @@ def run(config_path: Path) -> None:
     res = _build_result_dict(avg_result)
 
     # ------------------------------------------------------------------
-    # Step 6: Build full Table 2 (pre-populate; MC/verification later).
+    # Step 4: Build full Table 2 (pre-populate; MC/verification later).
     # ------------------------------------------------------------------
     table_rows = _build_table2_rows(res, top_k=top_k_critical)
 
     # ------------------------------------------------------------------
-    # Step 7: Save h-vectors to NPZ.
+    # Step 5: Save h-vectors to NPZ.
     # ------------------------------------------------------------------
     _save_hvectors_npz(res, output_dir=output_dir)
 
     # ------------------------------------------------------------------
-    # Step 8: Worst-case verification for top-k lines.
+    # Step 6: Worst-case verification for top-k lines.
     # ------------------------------------------------------------------
     verify_cfg = cfg.get("verification", {})
     verify_top_k = int(verify_cfg.get("top_k", 10))
@@ -1590,7 +1384,7 @@ def run(config_path: Path) -> None:
         )
 
     # ------------------------------------------------------------------
-    # Step 9: Monte Carlo validation.
+    # Step 7: Monte Carlo validation.
     # ------------------------------------------------------------------
     mc_cfg = cfg.get("monte_carlo", {})
     mc_enabled = bool(mc_cfg.get("enabled", True))
@@ -1617,44 +1411,32 @@ def run(config_path: Path) -> None:
         )
 
     # ------------------------------------------------------------------
-    # Step 10: Print and export full Table 2.
+    # Step 8: Print and export full Table 2.
     # ------------------------------------------------------------------
     _print_table2(table_rows)
     _export_table2_csv(table_rows, output_dir)
 
     # ------------------------------------------------------------------
-    # Step 11: Validation checks.
+    # Step 9: Validation checks.
     # ------------------------------------------------------------------
     _run_validation_checks(
         res=res,
         avg_result=avg_result,
         table_rows=table_rows,
         mc_results=mc_results,
-        sigma_p_mw_raw=sigma_p_mw_inj,
+        sigma_p_mw_raw=sigma_p_mw_raw,
         n_bus=n_bus,
         output_dir=output_dir,
     )
 
     # ------------------------------------------------------------------
-    # Step 12: Save results JSON.
+    # Step 10: Save results JSON.
     # ------------------------------------------------------------------
-    # Per-hour summary (OPF diagnostics only)
-    hourly_summary: dict[str, Any] = {}
-    for hour, hr_res in sorted(hourly_results.items()):
-        hourly_summary[str(hour)] = {
-            "total_load_mw": hr_res["total_load_mw"],
-            "ac_feasible": hr_res["ac_feasibility"].is_feasible,
-            "n_constrained_violated": hr_res["ac_feasibility"].n_constrained_violated,
-        }
-
     results_out = {
         "case": case_cfg["name"],
-        "n_hours_total": n_hours,
-        "n_hours_ok": n_ok,
-        "n_hours_failed": n_fail,
-        "n_hours_infeasible": n_infeasible_hours,
+        "sigma_source": "load_time_series_std",
+        "n_timesteps": n_hours,
         "sigma_radius": {k: v for k, v in sorted(res["sigma_radius"].items())},
-        "per_hour_summary": hourly_summary,
         "table_rows": table_rows,
     }
     results_path = output_dir / "results.json"
@@ -1669,9 +1451,8 @@ def run(config_path: Path) -> None:
     negative_sr = [v for v in finite_sr if v < 0]
     summary = {
         "case": case_cfg["name"],
-        "n_hours_total": n_hours,
-        "n_hours_ok": n_ok,
-        "n_hours_infeasible": n_infeasible_hours,
+        "sigma_source": "load_time_series_std",
+        "n_timesteps": n_hours,
         "n_lines": len(all_sr),
         "n_lines_finite": len(finite_sr),
         "n_lines_positive_sigma": len(positive_sr),
@@ -1691,7 +1472,7 @@ def run(config_path: Path) -> None:
     logger.info("Summary written: %s", summary_path)
 
     # ------------------------------------------------------------------
-    # Step 13: Plots.
+    # Step 11: Plots.
     # ------------------------------------------------------------------
     scatter_dpi = int(plot_cfg.get("scatter_dpi", 300))
     heatmap_dpi = int(plot_cfg.get("heatmap_dpi", 300))
@@ -1701,7 +1482,6 @@ def run(config_path: Path) -> None:
         res=res,
         bus_ids=bus_ids,
         top_k_critical=top_k_critical,
-        n_hours_ok=n_ok,
         output_dir=output_dir,
         figsize=figsize,
         dpi=plot_dpi,
@@ -1732,7 +1512,7 @@ def main() -> None:
         format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
     )
     parser = argparse.ArgumentParser(
-        description="Experiment 2: sigma-radius at average operating point with UC.jl data.",
+        description="Experiment 2: sigma-radius at average operating point.",
     )
     parser.add_argument(
         "--config",
