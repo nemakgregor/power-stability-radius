@@ -26,7 +26,7 @@ which quantifies the conservatism.
 import copy
 import logging
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 import numpy as np
@@ -311,6 +311,244 @@ def verify_worst_case(
         float(limit_mva),
         bool(violated),
         float(relative_error),
+    )
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Binary search for actual violation scale
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ViolationScaleSearchResult:
+    """Result of searching for the actual scale at which nonlinear PF violates the limit.
+
+    Fields
+    ------
+    line_id : int
+        pandapower line index.
+    limit_mva : float
+        Thermal limit (MVA).
+    s0_mva : float
+        Base-point apparent power (MVA).
+    predicted_violation_scale : float
+        Scale at which the *linear model* predicts violation (always 1.0 by
+        construction of the sigma-radius certificate).
+    actual_violation_scale : float
+        Scale at which the *nonlinear PF* first violates the limit.
+        ``float('inf')`` if no violation found up to ``scale_max``.
+    actual_s_at_violation : float
+        Actual |S| at the violation scale (MVA).
+    conservatism_ratio : float
+        actual_violation_scale / predicted_violation_scale.
+        Values > 1 mean the certificate is conservative (safe).
+        Values < 1 mean the certificate is optimistic (unsafe).
+    n_pf_calls : int
+        Number of PF evaluations used in the search.
+    converged : bool
+        True if the search converged to a crossing within tolerance.
+    scale_trajectory : list[dict]
+        History of (scale, actual_s, violated) for diagnostics.
+    """
+
+    line_id: int
+    limit_mva: float
+    s0_mva: float
+    predicted_violation_scale: float
+    actual_violation_scale: float
+    actual_s_at_violation: float
+    conservatism_ratio: float
+    n_pf_calls: int
+    converged: bool
+    scale_trajectory: list[dict] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to a JSON-friendly dictionary."""
+        return asdict(self)
+
+
+def find_violation_scale(
+    *,
+    net: Any,
+    line_id: int,
+    h_vec: np.ndarray,
+    radius: float,
+    s0_mva: float,
+    limit_mva: float,
+    delta_u_unit: np.ndarray,
+    binding_end: str | None = None,
+    lossless: bool = True,
+    scale_max: float = 50.0,
+    tol: float = 0.01,
+    max_iter: int = 30,
+) -> ViolationScaleSearchResult:
+    """Find the perturbation scale at which nonlinear PF violates the thermal limit.
+
+    Uses binary search on the scale factor ``alpha`` applied to ``delta_u_unit``.
+    The perturbation applied is ``alpha * delta_u_unit``.
+
+    The linear model predicts violation at ``alpha = 1.0`` (by construction of
+    the sigma-radius certificate).  This function finds the actual ``alpha``
+    at which the full nonlinear AC PF exceeds ``limit_mva``.
+
+    Parameters
+    ----------
+    net : pandapower network
+        Base-case network (deep-copied internally).
+    line_id : int
+        Target line index.
+    h_vec : (2*n_bus,) array
+        Full-dimension sensitivity vector for the binding end.
+    radius : float
+        AC sigma-radius (used only for metadata; perturbation magnitude
+        is controlled by ``delta_u_unit``).
+    s0_mva : float
+        Base-point apparent power (MVA).
+    limit_mva : float
+        Thermal limit (MVA).
+    delta_u_unit : (2*n_bus,) array
+        Worst-case perturbation vector at scale=1.0 (the sigma-radius
+        certificate's ``wc_delta_u``).  The actual perturbation is
+        ``alpha * delta_u_unit``.
+    binding_end : str or None
+        ``"from"`` or ``"to"``, matching the analytical certificate.
+    lossless : bool
+        Whether to apply lossless policy.
+    scale_max : float
+        Maximum scale factor to search up to.
+    tol : float
+        Convergence tolerance on the scale factor.
+    max_iter : int
+        Maximum binary search iterations.
+
+    Returns
+    -------
+    ViolationScaleSearchResult
+    """
+    trajectory: list[dict] = []
+    n_pf = 0
+
+    def _run_pf_at_scale(alpha: float) -> tuple[float, bool, bool]:
+        """Run PF at ``alpha * delta_u_unit``, return (actual_s, violated, converged)."""
+        nonlocal n_pf
+        du = np.asarray(delta_u_unit, dtype=float) * float(alpha)
+        result = verify_worst_case(
+            net=net,
+            line_id=line_id,
+            h_vec=h_vec,
+            radius=radius,
+            s0_mva=s0_mva,
+            limit_mva=limit_mva,
+            scale=alpha,
+            balance=True,
+            lossless=lossless,
+            delta_u=du,
+            binding_end=binding_end,
+        )
+        n_pf += 1
+        trajectory.append({
+            "scale": alpha,
+            "actual_s_mva": result.actual_s_mva,
+            "violated": result.violated,
+            "pf_converged": result.pf_converged,
+        })
+        return result.actual_s_mva, result.violated, result.pf_converged
+
+    # Phase 1: Find an upper bound where violation occurs.
+    # Start at scale=1.0, then double until violation or scale_max.
+    lo = 0.0
+    hi = 1.0
+    s_lo, viol_lo, conv_lo = _run_pf_at_scale(lo)
+
+    if viol_lo:
+        # Already violated at scale=0 means base point is infeasible
+        return ViolationScaleSearchResult(
+            line_id=line_id,
+            limit_mva=limit_mva,
+            s0_mva=s0_mva,
+            predicted_violation_scale=1.0,
+            actual_violation_scale=0.0,
+            actual_s_at_violation=s_lo,
+            conservatism_ratio=0.0,
+            n_pf_calls=n_pf,
+            converged=True,
+            scale_trajectory=trajectory,
+        )
+
+    # Try progressively larger scales to find a violation
+    found_upper = False
+    alpha = 1.0
+    while alpha <= scale_max:
+        s_hi, viol_hi, conv_hi = _run_pf_at_scale(alpha)
+        if not conv_hi:
+            # PF diverged — treat as violation (the system cannot handle this perturbation)
+            hi = alpha
+            found_upper = True
+            break
+        if viol_hi:
+            hi = alpha
+            found_upper = True
+            break
+        lo = alpha
+        s_lo = s_hi
+        alpha *= 2.0
+
+    if not found_upper:
+        # No violation found up to scale_max
+        return ViolationScaleSearchResult(
+            line_id=line_id,
+            limit_mva=limit_mva,
+            s0_mva=s0_mva,
+            predicted_violation_scale=1.0,
+            actual_violation_scale=float("inf"),
+            actual_s_at_violation=s_lo,
+            conservatism_ratio=float("inf"),
+            n_pf_calls=n_pf,
+            converged=False,
+            scale_trajectory=trajectory,
+        )
+
+    # Phase 2: Binary search between lo (no violation) and hi (violation).
+    for _ in range(max_iter):
+        if hi - lo < tol:
+            break
+        mid = (lo + hi) / 2.0
+        s_mid, viol_mid, conv_mid = _run_pf_at_scale(mid)
+        if not conv_mid or viol_mid:
+            hi = mid
+        else:
+            lo = mid
+
+    # Final result: violation occurs at ``hi``
+    # Read actual_s at the violation boundary
+    s_final, _, conv_final = _run_pf_at_scale(hi)
+
+    converged = (hi - lo) < tol
+    conserv = hi / 1.0  # predicted is always 1.0
+
+    result = ViolationScaleSearchResult(
+        line_id=line_id,
+        limit_mva=limit_mva,
+        s0_mva=s0_mva,
+        predicted_violation_scale=1.0,
+        actual_violation_scale=hi,
+        actual_s_at_violation=s_final,
+        conservatism_ratio=conserv,
+        n_pf_calls=n_pf,
+        converged=converged,
+        scale_trajectory=trajectory,
+    )
+
+    logger.info(
+        "Violation scale search line=%d: predicted_scale=1.0, actual_scale=%.4f, "
+        "conservatism=%.4fx, n_pf=%d, converged=%s",
+        line_id,
+        hi,
+        conserv,
+        n_pf,
+        converged,
     )
 
     return result

@@ -27,6 +27,7 @@ import copy
 import csv
 import json
 import logging
+import math
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +45,7 @@ import yaml
 from stability_radius.base_point.ac import solve_ac_fpf_base_point
 from stability_radius.base_point.pandapower_opp import ACFPFConfig
 from stability_radius.base_point.pandapower_tools import (
+    apply_lossless_policy_to_pandapower_net,
     apply_opp_result_to_pandapower_net,
     resolve_slack_bus_id,
 )
@@ -54,7 +56,10 @@ from stability_radius.radii.ac_l2 import compute_ac_l2_radius
 from stability_radius.radii.ac_sigma_radius import compute_ac_sigma_radius
 from stability_radius.utils.download import download_uc_jl_instance
 from stability_radius.verification.ac_monte_carlo_sigma import run_ac_monte_carlo_sigma
-from stability_radius.verification.verify_worst_case import verify_worst_case
+from stability_radius.verification.verify_worst_case import (
+    find_violation_scale,
+    verify_worst_case,
+)
 from stability_radius.workflows import (
     _expand_h_reduced_to_full,
     _extract_binding_end_data,
@@ -775,6 +780,39 @@ def _run_worst_case_verification(
         if not any_verified:
             row["verified"] = None
 
+        # ------------------------------------------------------------------
+        # Binary search for the actual violation scale.
+        # The linear model predicts violation at scale=1.0. Find the actual
+        # scale at which the nonlinear PF flow exceeds the thermal limit.
+        # ------------------------------------------------------------------
+        viol_scale_result = None
+        try:
+            viol_scale_result = find_violation_scale(
+                net=net,
+                line_id=lid,
+                h_vec=h_vec,
+                radius=r_sigma,
+                s0_mva=s0,
+                limit_mva=limit,
+                delta_u_unit=wc_delta_u,
+                binding_end=row.get("binding_end"),
+                lossless=lossless,
+                scale_max=50.0,
+                tol=0.01,
+            )
+            logger.info(
+                "Violation scale for %s: predicted=1.0, actual=%.4f "
+                "(conservatism=%.2fx, n_pf=%d)",
+                lk,
+                viol_scale_result.actual_violation_scale,
+                viol_scale_result.conservatism_ratio,
+                viol_scale_result.n_pf_calls,
+            )
+        except Exception:
+            logger.warning(
+                "Violation scale search failed for %s", lk, exc_info=True
+            )
+
         verification_results.append(
             {
                 "line_id": lid,
@@ -783,6 +821,9 @@ def _run_worst_case_verification(
                 "s0_mva": s0,
                 "limit_mva": limit,
                 "scale_results": scale_results,
+                "violation_scale": viol_scale_result.to_dict()
+                if viol_scale_result is not None
+                else None,
                 "status": "ok",
             }
         )
@@ -909,6 +950,317 @@ def _run_monte_carlo_validation(
     print()
 
     return mc_out
+
+
+# ---------------------------------------------------------------------------
+# Monte Carlo validation with tightened limits
+# ---------------------------------------------------------------------------
+
+
+def _run_tightened_limit_mc(
+    *,
+    net: Any,
+    res: dict[str, Any],
+    avg_result: dict,
+    table_rows: list[dict],
+    bus_ids: list[int],
+    sigma_p_mw: np.ndarray,
+    sigma_q_mvar: np.ndarray,
+    lossless: bool,
+    n_samples: int,
+    seed: int,
+    target_r_sigma: float,
+    output_dir: Path,
+) -> dict | None:
+    """Run MC validation with artificially tightened thermal limits.
+
+    Two-phase approach:
+    1. **Pilot phase**: run a small number of PF samples (~200) to estimate
+       the empirical standard deviation of line flow under Gaussian
+       perturbations.  This accounts for nonlinearity and model mismatch
+       that make the linearized ``sigma_flow`` overestimate the true
+       flow variability.
+    2. **Main phase**: set ``limit_tight = s0 + target_r_sigma * sigma_empirical``
+       so that violations are reachable, then run the full MC.
+
+    This tests whether the Gaussian model correctly predicts the empirical
+    overload rate when limits are set to produce observable violations.
+    """
+    if not table_rows:
+        return None
+
+    # Find the tightest feasible line
+    top_row = None
+    for row in table_rows:
+        if row["r_sigma"] > 0 and np.isfinite(row["r_sigma"]):
+            top_row = row
+            break
+    if top_row is None:
+        logger.warning("No feasible lines for tightened-limit MC.")
+        return None
+
+    lk = top_row["line_key"]
+    lid = top_row["line_id"]
+    s0 = top_row["s0_mva"]
+    sigma_flow_analytical = top_row["sigma_flow_mva"]
+    be = top_row.get("binding_end", "to")
+
+    if not np.isfinite(sigma_flow_analytical) or sigma_flow_analytical <= 0:
+        logger.warning("sigma_flow not finite for %s, skipping tightened-limit MC.", lk)
+        return None
+
+    import pandapower as pp
+
+    from stability_radius.verification.ac_monte_carlo_sigma import (
+        _sample_gaussian_sigma,
+        _sigma_inv_norm,
+    )
+
+    sig_p = np.asarray(sigma_p_mw, dtype=float)
+    sig_q = np.asarray(sigma_q_mvar, dtype=float)
+
+    # ---- Phase 1: Pilot samples to estimate empirical sigma_flow ----
+    n_pilot = min(200, n_samples // 2)
+    logger.info(
+        "Tightened-limit MC phase 1: running %d pilot samples to estimate "
+        "empirical sigma_flow for %s",
+        n_pilot, lk,
+    )
+
+    nn_pilot = copy.deepcopy(net)
+    if lossless:
+        nn_pilot = apply_lossless_policy_to_pandapower_net(nn_pilot)
+
+    bus_ids_sorted = [int(x) for x in sorted(nn_pilot.bus.index)]
+    sgen_idx_pilot: list[int] = []
+    for bid in bus_ids_sorted:
+        idx = int(pp.create_sgen(
+            nn_pilot, bus=int(bid), p_mw=0.0, q_mvar=0.0,
+            name=f"pilot_mc_bus_{int(bid)}", in_service=True,
+        ))
+        sgen_idx_pilot.append(idx)
+
+    pp.runpp(nn_pilot, calculate_voltage_angles=True, enforce_q_lims=True, init="flat")
+    if not bool(getattr(nn_pilot, "converged", True)):
+        logger.warning("Tightened-limit MC: pilot base PF did not converge.")
+        return None
+
+    # Read base flow
+    if be == "from":
+        p0 = float(nn_pilot.res_line.loc[lid, "p_from_mw"])
+        q0 = float(nn_pilot.res_line.loc[lid, "q_from_mvar"])
+    else:
+        p0 = float(nn_pilot.res_line.loc[lid, "p_to_mw"])
+        q0 = float(nn_pilot.res_line.loc[lid, "q_to_mvar"])
+    s0_pf = math.sqrt(p0**2 + q0**2)
+
+    rng_pilot = np.random.default_rng(int(seed) + 99999)
+    dp_pilot, dq_pilot = _sample_gaussian_sigma(
+        rng=rng_pilot, n=n_pilot, sigma_p=sig_p, sigma_q=sig_q,
+    )
+
+    pilot_flows: list[float] = []
+    for j in range(n_pilot):
+        nn_pilot.sgen.loc[sgen_idx_pilot, "p_mw"] = dp_pilot[j, :]
+        nn_pilot.sgen.loc[sgen_idx_pilot, "q_mvar"] = dq_pilot[j, :]
+        try:
+            pp.runpp(nn_pilot, calculate_voltage_angles=True, enforce_q_lims=True, init="results")
+            conv = bool(getattr(nn_pilot, "converged", True))
+        except Exception:
+            conv = False
+        if conv:
+            if be == "from":
+                pf = float(nn_pilot.res_line.loc[lid, "p_from_mw"])
+                qf = float(nn_pilot.res_line.loc[lid, "q_from_mvar"])
+            else:
+                pf = float(nn_pilot.res_line.loc[lid, "p_to_mw"])
+                qf = float(nn_pilot.res_line.loc[lid, "q_to_mvar"])
+            pilot_flows.append(math.sqrt(pf**2 + qf**2))
+
+    if len(pilot_flows) < 20:
+        logger.warning("Too few converged pilot samples (%d), skipping.", len(pilot_flows))
+        return None
+
+    pilot_arr = np.array(pilot_flows)
+    sigma_flow_empirical = float(np.std(pilot_arr))
+
+    logger.info(
+        "Pilot results: s0_pf=%.4f, sigma_analytical=%.4f, sigma_empirical=%.4f "
+        "(ratio=%.4f, %d/%d converged)",
+        s0_pf, sigma_flow_analytical, sigma_flow_empirical,
+        sigma_flow_empirical / sigma_flow_analytical,
+        len(pilot_flows), n_pilot,
+    )
+
+    # ---- Phase 2: Main MC with tightened limit based on empirical sigma ----
+    tight_limit = s0_pf + target_r_sigma * sigma_flow_empirical
+
+    # Analytical prediction (using empirical sigma)
+    from stability_radius.radii.ac_sigma_radius import (
+        _overload_probability_symmetric_limit,
+    )
+
+    analytical_prob_empirical = _overload_probability_symmetric_limit(
+        s0_mva=s0_pf, c_mva=tight_limit, sigma_mva=sigma_flow_empirical,
+    )
+    # Also compute with analytical sigma for comparison
+    analytical_prob_analytical = _overload_probability_symmetric_limit(
+        s0_mva=s0, c_mva=tight_limit, sigma_mva=sigma_flow_analytical,
+    )
+
+    logger.info(
+        "Tightened-limit MC phase 2: tight_limit=%.4f MVA "
+        "(s0=%.4f + %.2f * %.4f), n_samples=%d, "
+        "P_overload(empirical sigma)=%.6e, P_overload(analytical sigma)=%.6e",
+        tight_limit, s0_pf, target_r_sigma, sigma_flow_empirical,
+        n_samples, analytical_prob_empirical, analytical_prob_analytical,
+    )
+
+    # Run main MC
+    nn = copy.deepcopy(net)
+    if lossless:
+        nn = apply_lossless_policy_to_pandapower_net(nn)
+
+    sgen_idx: list[int] = []
+    for bid in bus_ids_sorted:
+        idx = int(pp.create_sgen(
+            nn, bus=int(bid), p_mw=0.0, q_mvar=0.0,
+            name=f"tight_mc_bus_{int(bid)}", in_service=True,
+        ))
+        sgen_idx.append(idx)
+
+    pp.runpp(nn, calculate_voltage_angles=True, enforce_q_lims=True, init="flat")
+    if not bool(getattr(nn, "converged", True)):
+        logger.warning("Tightened-limit MC: main base PF did not converge.")
+        return None
+
+    rng_main = np.random.default_rng(int(seed) + 12345)
+    dp_all, dq_all = _sample_gaussian_sigma(
+        rng=rng_main, n=n_samples, sigma_p=sig_p, sigma_q=sig_q,
+    )
+
+    inv_sig_p = 1.0 / sig_p
+    inv_sig_q = 1.0 / sig_q
+    sigma_norms = _sigma_inv_norm(dp_all, dq_all, inv_sig_p, inv_sig_q)
+    inside_ball = sigma_norms <= float(target_r_sigma)
+
+    n_violations = 0
+    n_pf_failures = 0
+    n_inside_ball = int(np.sum(inside_ball))
+    inside_ball_no_violation = 0
+
+    for j in range(int(n_samples)):
+        nn.sgen.loc[sgen_idx, "p_mw"] = dp_all[j, :]
+        nn.sgen.loc[sgen_idx, "q_mvar"] = dq_all[j, :]
+
+        try:
+            pp.runpp(nn, calculate_voltage_angles=True, enforce_q_lims=True, init="results")
+            conv = bool(getattr(nn, "converged", True))
+        except Exception:
+            conv = False
+
+        if not conv:
+            n_pf_failures += 1
+            n_violations += 1
+            continue
+
+        if be == "from":
+            pf = float(nn.res_line.loc[lid, "p_from_mw"])
+            qf = float(nn.res_line.loc[lid, "q_from_mvar"])
+        else:
+            pf = float(nn.res_line.loc[lid, "p_to_mw"])
+            qf = float(nn.res_line.loc[lid, "q_to_mvar"])
+        s_actual = math.sqrt(pf**2 + qf**2)
+
+        violated = s_actual > tight_limit
+        if violated:
+            n_violations += 1
+        elif bool(inside_ball[j]):
+            inside_ball_no_violation += 1
+
+    empirical_prob = n_violations / max(n_samples, 1)
+    soundness = (
+        float(inside_ball_no_violation) / float(n_inside_ball)
+        if n_inside_ball > 0
+        else float("nan")
+    )
+
+    # Compare analytical (with empirical sigma) vs empirical
+    if empirical_prob > 0 and analytical_prob_empirical > 0:
+        ratio_empirical = analytical_prob_empirical / empirical_prob
+    elif empirical_prob == 0 and analytical_prob_empirical == 0:
+        ratio_empirical = 1.0
+    else:
+        ratio_empirical = float("inf")
+
+    # Compare analytical (with original sigma) vs empirical
+    if empirical_prob > 0 and analytical_prob_analytical > 0:
+        ratio_analytical = analytical_prob_analytical / empirical_prob
+    elif empirical_prob == 0 and analytical_prob_analytical == 0:
+        ratio_analytical = 1.0
+    else:
+        ratio_analytical = float("inf")
+
+    result = {
+        "target_line": lk,
+        "binding_end": be,
+        "target_r_sigma": target_r_sigma,
+        "s0_mva": s0,
+        "s0_pf_mva": s0_pf,
+        "sigma_flow_analytical": sigma_flow_analytical,
+        "sigma_flow_empirical": sigma_flow_empirical,
+        "sigma_ratio": sigma_flow_empirical / sigma_flow_analytical,
+        "original_limit_mva": top_row["limit_mva"],
+        "tightened_limit_mva": tight_limit,
+        "analytical_prob_with_empirical_sigma": analytical_prob_empirical,
+        "analytical_prob_with_analytical_sigma": analytical_prob_analytical,
+        "empirical_prob": empirical_prob,
+        "ratio_analytE_over_empirical": ratio_empirical,
+        "ratio_analytA_over_empirical": ratio_analytical,
+        "n_samples": n_samples,
+        "n_pilot": n_pilot,
+        "n_violations": n_violations,
+        "n_pf_failures": n_pf_failures,
+        "n_inside_ball": n_inside_ball,
+        "soundness_inside_ball": soundness,
+    }
+
+    # Print summary
+    print()
+    print("=" * 70)
+    print("Tightened-Limit MC Validation (Gaussian Consistency Test)")
+    print("=" * 70)
+    print(f"  Target line:              {lk} ({be} end)")
+    print(f"  S0 (analytical):          {s0:.4f} MVA")
+    print(f"  S0 (PF actual):           {s0_pf:.4f} MVA")
+    print(f"  sigma_flow (analytical):  {sigma_flow_analytical:.4f} MVA")
+    print(f"  sigma_flow (empirical):   {sigma_flow_empirical:.4f} MVA "
+          f"(ratio={sigma_flow_empirical / sigma_flow_analytical:.4f})")
+    print(f"  Original limit:           {top_row['limit_mva']:.4f} MVA "
+          f"(r_sigma={top_row['r_sigma']:.2f})")
+    print(f"  Tightened limit:          {tight_limit:.4f} MVA "
+          f"(r_sigma={target_r_sigma:.2f} based on empirical sigma)")
+    print(f"  Pilot samples:            {n_pilot} ({len(pilot_flows)} converged)")
+    print(f"  Main samples:             {n_samples}")
+    print(f"  Empirical violations:     {n_violations} "
+          f"({empirical_prob:.4%})")
+    print(f"  P (empirical sigma):      {analytical_prob_empirical:.4e} "
+          f"(ratio={ratio_empirical:.4f})")
+    print(f"  P (analytical sigma):     {analytical_prob_analytical:.4e} "
+          f"(ratio={ratio_analytical:.4f})")
+    print(f"  PF failures:              {n_pf_failures}")
+    gauss_ok = 0.3 <= ratio_empirical <= 3.0 if np.isfinite(ratio_empirical) else False
+    print(f"  Gaussian consistency:     {'PASS' if gauss_ok else 'FAIL'} "
+          f"(ratio in [0.3, 3.0])")
+    print("=" * 70)
+    print()
+
+    mc_tight_path = output_dir / "mc_tightened_limit.json"
+    with mc_tight_path.open("w", encoding="utf-8") as fh:
+        json.dump(result, fh, indent=2, default=_numpy_serialiser)
+    logger.info("Tightened-limit MC results saved: %s", mc_tight_path)
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -1649,6 +2001,33 @@ def run(config_path: Path) -> None:
             lossless=lossless,
             n_samples=mc_n_samples,
             seed=mc_seed,
+            output_dir=output_dir,
+        )
+
+    # ------------------------------------------------------------------
+    # Step 7b: Tightened-limit MC validation.
+    # Use artificially low limits so that violations are reachable within
+    # ~5000 samples, enabling a meaningful Gaussian consistency check.
+    # ------------------------------------------------------------------
+    mc_tight_cfg = mc_cfg.get("tightened_limit", {})
+    mc_tight_enabled = bool(mc_tight_cfg.get("enabled", mc_enabled))
+    mc_tight_r_sigma = float(mc_tight_cfg.get("target_r_sigma", 2.0))
+    mc_tight_n_samples = int(mc_tight_cfg.get("n_samples", mc_n_samples))
+
+    mc_tight_results = None
+    if mc_tight_enabled and table_rows:
+        mc_tight_results = _run_tightened_limit_mc(
+            net=avg_result["base_net"],
+            res=res,
+            avg_result=avg_result,
+            table_rows=table_rows,
+            bus_ids=bus_ids,
+            sigma_p_mw=sigma_p_mw,
+            sigma_q_mvar=sigma_q_mvar,
+            lossless=lossless,
+            n_samples=mc_tight_n_samples,
+            seed=mc_seed,
+            target_r_sigma=mc_tight_r_sigma,
             output_dir=output_dir,
         )
 
