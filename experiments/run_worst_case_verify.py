@@ -119,10 +119,16 @@ def _recompute_h_vectors(
     slack_pos = bus_ids.index(slack_bus_id)
 
     h_from = _expand_h_reduced_to_full(
-        h_vecs_raw["h_from"], n_bus=n_bus, slack_pos=slack_pos
+        h_vecs_raw["h_from"],
+        n_bus=n_bus,
+        slack_pos=slack_pos,
+        pq_mask=h_vecs_raw.get("pq_mask"),
     )
     h_to = _expand_h_reduced_to_full(
-        h_vecs_raw["h_to"], n_bus=n_bus, slack_pos=slack_pos
+        h_vecs_raw["h_to"],
+        n_bus=n_bus,
+        slack_pos=slack_pos,
+        pq_mask=h_vecs_raw.get("pq_mask"),
     )
 
     line_ids = [int(x) for x in sorted(net.line.index)]

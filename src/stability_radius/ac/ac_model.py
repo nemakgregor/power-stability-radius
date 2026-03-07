@@ -28,6 +28,41 @@ _EPS_Z_PU = 1e-18
 _SHIFT_DEG_EPS = 1e-9
 
 
+def _detect_pv_buses(net: Any, bus_ids: list[int], slack_pos: int) -> np.ndarray:
+    """Return boolean mask (n_bus,) where True = PV bus (generator with V control).
+
+    PV buses are those controlled by in-service generators (``net.gen``) or
+    extra grids (``net.ext_grid``) that are NOT the slack bus.  The slack bus
+    is excluded because it is already removed from the reduced system.
+    """
+    pv_mask = np.zeros(len(bus_ids), dtype=bool)
+    bus_pos = {bid: pos for pos, bid in enumerate(bus_ids)}
+
+    # gen buses
+    if hasattr(net, "gen") and net.gen is not None and len(net.gen):
+        for gid in net.gen.index:
+            row = net.gen.loc[gid]
+            if not _is_in_service(row):
+                continue
+            gb = int(row.get("bus", -1))
+            if gb in bus_pos:
+                pv_mask[bus_pos[gb]] = True
+
+    # ext_grid buses
+    if hasattr(net, "ext_grid") and net.ext_grid is not None and len(net.ext_grid):
+        for eid in net.ext_grid.index:
+            row = net.ext_grid.loc[eid]
+            if not _is_in_service(row):
+                continue
+            eb = int(row.get("bus", -1))
+            if eb in bus_pos:
+                pv_mask[bus_pos[eb]] = True
+
+    # Slack bus is neither PV nor PQ in the reduced system.
+    pv_mask[slack_pos] = False
+    return pv_mask
+
+
 def _line_z_total_ohm(line_row: Any, *, lossless: bool) -> complex:
     """
     Total line series impedance in Ohm.
@@ -298,15 +333,22 @@ def _build_reduced_pf_jacobian_mw_per_unit(
     va_rad: np.ndarray,
     slack_pos: int,
     sn_mva: float,
+    pv_mask: np.ndarray | None = None,
 ) -> Any:
     """
-    Build reduced PF Jacobian J for non-slack buses:
+    Build reduced PF Jacobian J with proper PV/PQ bus handling.
 
-      [dP/dθ  dP/dV]
-      [dQ/dθ  dQ/dV]
+    Structure (with n_theta = n_bus-1 non-slack buses, n_pq = PQ-only bus count)::
 
-    Variables: θ (non-slack), V (non-slack)
-    Equations: P (non-slack), Q (non-slack)
+        [dP/dθ  dP/dV_pq]   rows: P for all non-slack (n_theta)
+        [dQ/dθ  dQ/dV_pq]   rows: Q for PQ buses only (n_pq)
+
+    Variables: θ for all non-slack buses, V for PQ buses only.
+    Equations: P for all non-slack buses, Q for PQ buses only.
+
+    PV buses (generators) have fixed voltage magnitude, so V is not a free
+    variable.  Their Q equation is also excluded because reactive power is
+    determined by the generator (not a scheduled injection).
 
     Sign convention (critical for certificate soundness)
     ----------------------------------------------------
@@ -325,15 +367,6 @@ def _build_reduced_pf_jacobian_mw_per_unit(
     - P/Q are computed in per-unit and then scaled by sn_mva -> MW/MVAr
     - θ in rad
     - V in pu
-
-    Notes
-    -----
-    A dedicated finite-difference regression test compares predicted changes of
-    pandapower line-end flows (p_from_mw / p_to_mw) against the linearization that
-    uses this Jacobian, to catch:
-    - missing/extra sn_mva scaling,
-    - sign flips in the PF Jacobian convention,
-    - inconsistencies with pandapower's line-end flow sign convention ("power leaving the bus into the line").
     """
     if not _HAVE_SCIPY:
         raise ImportError(
@@ -356,13 +389,28 @@ def _build_reduced_pf_jacobian_mw_per_unit(
             "Refuse to build Jacobian to avoid silent unit mismatch."
         )
 
-    # reduced indexing
+    # ----- reduced indexing -----
     mask_non_slack = np.ones(n_bus, dtype=bool)
     mask_non_slack[int(slack_pos)] = False
 
-    red_pos = np.full(n_bus, -1, dtype=int)
-    red_pos[np.where(mask_non_slack)[0]] = np.arange(n_bus - 1, dtype=int)
-    n_red = int(n_bus - 1)
+    if pv_mask is None:
+        pv_mask = np.zeros(n_bus, dtype=bool)
+
+    pq_mask = mask_non_slack & ~pv_mask  # PQ buses: non-slack AND non-PV
+
+    # theta_red_pos: maps bus pos -> theta variable index (all non-slack)
+    theta_red_pos = np.full(n_bus, -1, dtype=int)
+    theta_red_pos[np.where(mask_non_slack)[0]] = np.arange(
+        int(np.sum(mask_non_slack)), dtype=int
+    )
+    n_theta = int(np.sum(mask_non_slack))  # = n_bus - 1
+
+    # v_red_pos: maps bus pos -> V variable index (PQ buses only)
+    v_red_pos = np.full(n_bus, -1, dtype=int)
+    v_red_pos[np.where(pq_mask)[0]] = np.arange(int(np.sum(pq_mask)), dtype=int)
+    n_pq = int(np.sum(pq_mask))
+
+    n_vars = n_theta + n_pq
 
     # complex voltages
     V = vm_pu * np.exp(1j * va_rad)
@@ -381,10 +429,10 @@ def _build_reduced_pf_jacobian_mw_per_unit(
     for i, k, yik in zip(Ycoo.row, Ycoo.col, Ycoo.data):
         if i == k:
             continue
-        ri = int(red_pos[int(i)])
-        ck = int(red_pos[int(k)])
-        if ri < 0 or ck < 0:
-            continue
+        ri_theta = int(theta_red_pos[int(i)])
+        ck_theta = int(theta_red_pos[int(k)])
+        if ri_theta < 0 or ck_theta < 0:
+            continue  # one of them is slack
 
         Vi = float(vm_pu[int(i)])
         Vk = float(vm_pu[int(k)])
@@ -401,36 +449,43 @@ def _build_reduced_pf_jacobian_mw_per_unit(
         B = float(np.imag(yik))
 
         # per-unit partials
-        dP_dtheta = Vi * Vk * (G * s - B * c)
-        dP_dV = Vi * (G * c + B * s)
+        dP_dtheta = Vi * Vk * (G * s - B * c) * float(sn_mva)
+        dP_dV = Vi * (G * c + B * s) * float(sn_mva)
 
-        dQ_dtheta = -Vi * Vk * (G * c + B * s)
-        dQ_dV = Vi * (G * s - B * c)
+        dQ_dtheta = -Vi * Vk * (G * c + B * s) * float(sn_mva)
+        dQ_dV = Vi * (G * s - B * c) * float(sn_mva)
 
-        # scale to MW/MVAr
-        dP_dtheta *= float(sn_mva)
-        dP_dV *= float(sn_mva)
-        dQ_dtheta *= float(sn_mva)
-        dQ_dV *= float(sn_mva)
+        # P row for bus i, theta column for bus k (always present for non-slack)
+        rows.append(ri_theta)
+        cols.append(ck_theta)
+        data.append(dP_dtheta)
 
-        # Row indices: P block [0..n_red-1], Q block [n_red..2*n_red-1]
-        rP = ri
-        rQ = ri + n_red
+        # P row for bus i, V column for bus k (only if k is PQ)
+        ck_v = int(v_red_pos[int(k)])
+        if ck_v >= 0:
+            rows.append(ri_theta)
+            cols.append(n_theta + ck_v)
+            data.append(dP_dV)
 
-        # Col indices: theta block [0..n_red-1], V block [n_red..2*n_red-1]
-        cTheta = ck
-        cV = ck + n_red
+        # Q row for bus i (only if i is PQ), theta column for bus k
+        ri_v = int(v_red_pos[int(i)])
+        if ri_v >= 0:
+            rows.append(n_theta + ri_v)
+            cols.append(ck_theta)
+            data.append(dQ_dtheta)
 
-        rows.extend([rP, rP, rQ, rQ])
-        cols.extend([cTheta, cV, cTheta, cV])
-        data.extend([dP_dtheta, dP_dV, dQ_dtheta, dQ_dV])
+            # Q row for bus i, V column for bus k (only if both i is PQ and k is PQ)
+            if ck_v >= 0:
+                rows.append(n_theta + ri_v)
+                cols.append(n_theta + ck_v)
+                data.append(dQ_dV)
 
     # diagonal terms for non-slack buses
     diag = Ybus.diagonal()
     for i in range(n_bus):
-        ri = int(red_pos[int(i)])
-        if ri < 0:
-            continue
+        ri_theta = int(theta_red_pos[int(i)])
+        if ri_theta < 0:
+            continue  # slack
 
         Vi = float(vm_pu[int(i)])
         if Vi <= 0.0:
@@ -442,31 +497,38 @@ def _build_reduced_pf_jacobian_mw_per_unit(
         Gii = float(np.real(Yii))
         Bii = float(np.imag(Yii))
 
-        # per-unit diagonal formulas
-        dP_dtheta_ii = -float(Q[int(i)]) - Bii * Vi * Vi
-        dP_dV_ii = float(P[int(i)]) / Vi + Gii * Vi
+        # per-unit diagonal formulas, scaled
+        dP_dtheta_ii = (-float(Q[int(i)]) - Bii * Vi * Vi) * float(sn_mva)
+        dP_dV_ii = (float(P[int(i)]) / Vi + Gii * Vi) * float(sn_mva)
 
-        dQ_dtheta_ii = float(P[int(i)]) - Gii * Vi * Vi
-        dQ_dV_ii = float(Q[int(i)]) / Vi - Bii * Vi
+        dQ_dtheta_ii = (float(P[int(i)]) - Gii * Vi * Vi) * float(sn_mva)
+        dQ_dV_ii = (float(Q[int(i)]) / Vi - Bii * Vi) * float(sn_mva)
 
-        # scale
-        dP_dtheta_ii *= float(sn_mva)
-        dP_dV_ii *= float(sn_mva)
-        dQ_dtheta_ii *= float(sn_mva)
-        dQ_dV_ii *= float(sn_mva)
+        # P-theta diagonal (always present)
+        rows.append(ri_theta)
+        cols.append(ri_theta)
+        data.append(dP_dtheta_ii)
 
-        rP = ri
-        rQ = ri + n_red
-        cTheta = ri
-        cV = ri + n_red
+        ri_v = int(v_red_pos[int(i)])
 
-        rows.extend([rP, rP, rQ, rQ])
-        cols.extend([cTheta, cV, cTheta, cV])
-        data.extend([dP_dtheta_ii, dP_dV_ii, dQ_dtheta_ii, dQ_dV_ii])
+        # P-V diagonal (only if bus i is PQ)
+        if ri_v >= 0:
+            rows.append(ri_theta)
+            cols.append(n_theta + ri_v)
+            data.append(dP_dV_ii)
 
-    J = sp.coo_matrix(
-        (data, (rows, cols)), shape=(2 * n_red, 2 * n_red), dtype=float
-    ).tocsc()
+        # Q-theta diagonal (only if bus i is PQ)
+        if ri_v >= 0:
+            rows.append(n_theta + ri_v)
+            cols.append(ri_theta)
+            data.append(dQ_dtheta_ii)
+
+            # Q-V diagonal (only if bus i is PQ)
+            rows.append(n_theta + ri_v)
+            cols.append(n_theta + ri_v)
+            data.append(dQ_dV_ii)
+
+    J = sp.coo_matrix((data, (rows, cols)), shape=(n_vars, n_vars), dtype=float).tocsc()
 
     # Debug-only: helps catch accidental sn_mva scaling changes.
     if J.nnz > 0:
@@ -478,13 +540,17 @@ def _build_reduced_pf_jacobian_mw_per_unit(
         max_abs = 0.0
 
     logger.debug(
-        "Built reduced AC PF Jacobian J: shape=%s nnz=%d sn_mva=%.6g max|J_ij|=%.6g",
+        "Built reduced AC PF Jacobian J: shape=%s nnz=%d sn_mva=%.6g max|J_ij|=%.6g "
+        "n_theta=%d n_pq=%d n_pv=%d",
         J.shape,
         int(J.nnz),
         float(sn_mva),
         float(max_abs),
+        int(n_theta),
+        int(n_pq),
+        int(np.sum(pv_mask)),
     )
-    return J, mask_non_slack, red_pos
+    return J, mask_non_slack, theta_red_pos, v_red_pos, pq_mask, n_pq
 
 
 @dataclass(frozen=True)
@@ -492,23 +558,21 @@ class ACOperator:
     """
     Sparse linear operator for AC PF sensitivities around a base point.
 
-    Mathematical model (reduced, non-slack)
-    ---------------------------------------
+    Mathematical model (reduced, PV/PQ-aware)
+    ------------------------------------------
       J * dx = du
 
     where:
-      - x = [theta_non_slack; V_non_slack]
-      - u = [P_non_slack; Q_non_slack]
+      - x = [theta_non_slack; V_pq]         (n_theta + n_pq variables)
+      - du = [dP_non_slack; dQ_pq]           (n_theta + n_pq equations)
+
+    PV buses (generators with voltage control) have fixed V, so only theta
+    appears as a variable.  Their Q equation is excluded because reactive
+    power is determined by the generator.
 
     For adjoint sensitivities per constraint:
       a = J^{-T} b
     implemented via LU solve with transposed system.
-
-    Notes
-    -----
-    This class is intentionally minimal:
-    - It does NOT attempt to handle PV/PQ switching or Q-limits.
-    - Ybus includes series-only lines, impedances and transformers with tap/phase shift.
     """
 
     bus_ids: tuple[int, ...]
@@ -520,7 +584,13 @@ class ACOperator:
     va_rad: np.ndarray  # (n_bus,)
 
     mask_non_slack: np.ndarray  # (n_bus,), bool
-    red_pos_of_bus_pos: np.ndarray  # (n_bus,), -1 for slack else 0..n-2
+    red_pos_of_bus_pos: (
+        np.ndarray
+    )  # (n_bus,), -1 for slack else 0..n-2 (= theta_red_pos)
+    pv_mask: np.ndarray  # (n_bus,), True for PV buses (generators, excl. slack)
+    pq_mask: np.ndarray  # (n_bus,), True for PQ buses (non-slack, non-PV)
+    v_red_pos: np.ndarray  # (n_bus,), -1 for slack/PV, 0..n_pq-1 for PQ
+    n_pq: int  # number of PQ buses
 
     from_bus_pos: np.ndarray  # (m_line,)
     to_bus_pos: np.ndarray  # (m_line,)
@@ -540,7 +610,18 @@ class ACOperator:
 
     @property
     def n_red(self) -> int:
+        """Number of theta variables (= n_bus - 1, all non-slack)."""
         return int(self.n_bus - 1)
+
+    @property
+    def n_vars(self) -> int:
+        """Total Jacobian dimension: n_theta + n_pq."""
+        return int(self.n_red + self.n_pq)
+
+    @property
+    def theta_red_pos(self) -> np.ndarray:
+        """Alias for red_pos_of_bus_pos (theta variable index for each bus)."""
+        return self.red_pos_of_bus_pos
 
     def solve_J(self, rhs: np.ndarray) -> np.ndarray:
         """
@@ -549,7 +630,7 @@ class ACOperator:
         Parameters
         ----------
         rhs:
-            (2*(n_bus-1),) or (2*(n_bus-1), k)
+            (n_vars,) or (n_vars, k) where n_vars = n_theta + n_pq.
 
         Returns
         -------
@@ -557,7 +638,7 @@ class ACOperator:
             Solution with same shape as rhs.
         """
         r = np.asarray(rhs, dtype=float)
-        n = 2 * self.n_red
+        n = self.n_vars
         if r.ndim == 1:
             if r.shape != (n,):
                 raise ValueError(f"rhs must have shape ({n},), got {r.shape}")
@@ -576,7 +657,7 @@ class ACOperator:
             y = J^{-T} rhs
         """
         r = np.asarray(rhs, dtype=float)
-        n = 2 * self.n_red
+        n = self.n_vars
         if r.ndim == 1:
             if r.shape != (n,):
                 raise ValueError(f"rhs must have shape ({n},), got {r.shape}")
@@ -683,8 +764,19 @@ def build_ac_operator(
     Ybus = _build_ybus_pu(
         net=net, bus_ids=bus_ids, slack_pos=slack_pos, lossless=bool(lossless)
     )
-    J, mask_non_slack, red_pos = _build_reduced_pf_jacobian_mw_per_unit(
-        Ybus=Ybus, vm_pu=vm, va_rad=va, slack_pos=slack_pos, sn_mva=sn_mva
+
+    pv_mask = _detect_pv_buses(net, bus_ids, slack_pos)
+    n_pv = int(np.sum(pv_mask))
+
+    J, mask_non_slack, theta_red_pos, v_red_pos, pq_mask, n_pq = (
+        _build_reduced_pf_jacobian_mw_per_unit(
+            Ybus=Ybus,
+            vm_pu=vm,
+            va_rad=va,
+            slack_pos=slack_pos,
+            sn_mva=sn_mva,
+            pv_mask=pv_mask,
+        )
     )
 
     try:
@@ -697,10 +789,14 @@ def build_ac_operator(
         ) from e
 
     logger.info(
-        "Built ACOperator: n_bus=%d n_line=%d slack_pos=%d J_nnz=%d lossless=%s",
+        "Built ACOperator: n_bus=%d n_line=%d slack_pos=%d n_pv=%d n_pq=%d "
+        "J_shape=%s J_nnz=%d lossless=%s",
         n_bus,
         m_line,
         int(slack_pos),
+        int(n_pv),
+        int(n_pq),
+        J.shape,
         int(J.nnz),
         bool(lossless),
     )
@@ -713,7 +809,11 @@ def build_ac_operator(
         vm_pu=vm,
         va_rad=va,
         mask_non_slack=mask_non_slack,
-        red_pos_of_bus_pos=red_pos,
+        red_pos_of_bus_pos=theta_red_pos,
+        pv_mask=pv_mask,
+        pq_mask=pq_mask,
+        v_red_pos=v_red_pos,
+        n_pq=int(n_pq),
         from_bus_pos=from_bus_pos,
         to_bus_pos=to_bus_pos,
         y_series_pu=y_series_pu,

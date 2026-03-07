@@ -43,7 +43,10 @@ import yaml
 
 from stability_radius.base_point.ac import solve_ac_fpf_base_point
 from stability_radius.base_point.pandapower_opp import ACFPFConfig
-from stability_radius.base_point.pandapower_tools import resolve_slack_bus_id
+from stability_radius.base_point.pandapower_tools import (
+    apply_opp_result_to_pandapower_net,
+    resolve_slack_bus_id,
+)
 from stability_radius.parsers.matpower import load_network
 from stability_radius.parsers.uc_jl import load_hourly_profiles, load_sigma
 from stability_radius.radii.ac_feasibility import check_ac_base_point_feasibility
@@ -96,17 +99,32 @@ def _set_loads_to_average(
     load_q_mvar: np.ndarray,
     bus_ids: list[int],
 ) -> None:
-    """Set net.load P/Q to the mean across all hours (in-place)."""
+    """Set net.load P/Q to the mean across all hours (in-place).
+
+    If a bus has multiple load elements, the average is split equally
+    among them so the total bus load equals the per-bus average.
+    """
     avg_p = load_p_mw.mean(axis=1)  # (n_bus,)
     avg_q = load_q_mvar.mean(axis=1)
     bus_to_pos = {bid: pos for pos, bid in enumerate(bus_ids)}
+
+    # Count load elements per bus for proper splitting.
+    from collections import Counter
+
+    bus_load_count: Counter[int] = Counter()
+    for load_idx in net.load.index:
+        load_bus = int(net.load.at[load_idx, "bus"])
+        if load_bus in bus_to_pos:
+            bus_load_count[load_bus] += 1
+
     for load_idx in net.load.index:
         load_bus = int(net.load.at[load_idx, "bus"])
         if load_bus not in bus_to_pos:
             continue
         pos = bus_to_pos[load_bus]
-        net.load.at[load_idx, "p_mw"] = float(avg_p[pos])
-        net.load.at[load_idx, "q_mvar"] = float(avg_q[pos])
+        n_loads = bus_load_count[load_bus]
+        net.load.at[load_idx, "p_mw"] = float(avg_p[pos]) / n_loads
+        net.load.at[load_idx, "q_mvar"] = float(avg_q[pos]) / n_loads
 
 
 # ---------------------------------------------------------------------------
@@ -156,6 +174,14 @@ def _compute_at_average_point(
         logger.error("Average-point AC OPF failed", exc_info=True)
         return None
 
+    # Apply OPP dispatch back to net so that verification / MC can
+    # reproduce the same operating point with pp.runpp().
+    apply_opp_result_to_pandapower_net(
+        net,
+        opp_gen_dispatch=base_pf.opp_gen_dispatch,
+        opp_vm_pu=base_pf.opp_vm_pu,
+    )
+
     # AC L2 radius + h-vectors
     try:
         ac_l2 = compute_ac_l2_radius(
@@ -181,10 +207,12 @@ def _compute_at_average_point(
     slack_pos = bus_ids.index(slack_bus_id)
 
     h_from = _expand_h_reduced_to_full(
-        h_vecs_raw["h_from"], n_bus=n_bus, slack_pos=slack_pos
+        h_vecs_raw["h_from"], n_bus=n_bus, slack_pos=slack_pos,
+        pq_mask=h_vecs_raw.get("pq_mask"),
     )
     h_to = _expand_h_reduced_to_full(
-        h_vecs_raw["h_to"], n_bus=n_bus, slack_pos=slack_pos
+        h_vecs_raw["h_to"], n_bus=n_bus, slack_pos=slack_pos,
+        pq_mask=h_vecs_raw.get("pq_mask"),
     )
 
     h_bind, s0_mva, s_limit_mva, line_ids = _extract_binding_end_data(
@@ -245,6 +273,8 @@ def _compute_at_average_point(
         "line_ids": line_ids,
         "total_load_mw": total_load,
         "ac_feasibility": feasibility,
+        "base_pf": base_pf,
+        "base_net": net,  # net with average loads + OPP gen dispatch applied
     }
 
 
@@ -283,9 +313,7 @@ def _build_result_dict(avg_result: dict) -> dict[str, Any]:
 
         sigma_radius[lk] = float(r_sig)
         sigma_flow_dict[lk] = float(v.get("sigma_flow_mva", float("nan")))
-        overload_prob_dict[lk] = float(
-            v.get("overload_probability_ac", float("nan"))
-        )
+        overload_prob_dict[lk] = float(v.get("overload_probability_ac", float("nan")))
         base_infeasible[lk] = float(r_sig) < 0
 
         lid = int(lk.split("_", 1)[1])
@@ -296,9 +324,7 @@ def _build_result_dict(avg_result: dict) -> dict[str, Any]:
             s_limit_mva_dict[lk] = float(avg_result["s_limit_mva"][pos])
 
         if lk in ac_l2 and isinstance(ac_l2[lk], dict):
-            ac_l2_radius_dict[lk] = float(
-                ac_l2[lk].get("radius_ac_l2", float("nan"))
-            )
+            ac_l2_radius_dict[lk] = float(ac_l2[lk].get("radius_ac_l2", float("nan")))
             binding_end_dict[lk] = str(ac_l2[lk].get("binding_end", "?"))
 
     return {
@@ -447,17 +473,16 @@ def _run_worst_case_verification(
     sigma_results: dict[str, dict[str, Any]],
     table_rows: list[dict],
     bus_ids: list[int],
-    load_p_mw: np.ndarray,
-    load_q_mvar: np.ndarray,
-    slack_bus: int,
     lossless: bool,
-    fpf_cfg: ACFPFConfig | None,
     scales: list[float],
     output_dir: Path,
 ) -> list[dict]:
     """Verify worst-case perturbation for each line in table_rows.
 
-    Verification uses the average operating point (loads set to mean).
+    *net* must be the OPP-solved base network (average loads **and** OPP gen
+    dispatch applied) so that ``pp.runpp()`` reproduces the analytical base
+    operating point.
+
     The perturbation vector is taken from the sigma-radius certificate
     (pre-computed worst_case_dp_mw / worst_case_dq_mvar), NOT from the
     L2 certificate.  This ensures that the verified direction matches
@@ -466,6 +491,176 @@ def _run_worst_case_verification(
     Lines with negative r_sigma (base infeasible) are skipped.
     """
     verification_results: list[dict] = []
+
+    # ------------------------------------------------------------------
+    # Base-point consistency check: run PF with zero perturbation and
+    # verify that actual |S| at each binding end matches the analytical
+    # s0_mva.  A large discrepancy means the verification network is not
+    # at the same operating point as the analytics.
+    # ------------------------------------------------------------------
+    bp_check_done = False
+    for row in table_rows:
+        if bp_check_done:
+            break
+        lk = row["line_key"]
+        lid = row["line_id"]
+        h_vec = res["h_bind"].get(lk)
+        r_sigma = row.get("r_sigma", float("nan"))
+        s0 = row.get("s0_mva", float("nan"))
+        be = row.get("binding_end")
+        if h_vec is None or not np.isfinite(s0) or r_sigma <= 0:
+            continue
+        n_bus_bp = len(bus_ids)
+        zero_du = np.zeros(2 * n_bus_bp, dtype=float)
+        try:
+            bp_result = verify_worst_case(
+                net=net,
+                line_id=lid,
+                h_vec=h_vec,
+                radius=r_sigma,
+                s0_mva=s0,
+                limit_mva=row.get("limit_mva", float("nan")),
+                scale=0.0,
+                balance=True,
+                lossless=lossless,
+                delta_u=zero_du,
+                binding_end=be,
+            )
+            if bp_result.pf_converged:
+                bp_err = abs(bp_result.actual_s_mva - s0) / max(s0, 1e-12)
+                if bp_err > 0.05:
+                    logger.error(
+                        "BASE-POINT MISMATCH on %s: analytical s0=%.4f MVA, "
+                        "PF actual=%.4f MVA (rel_err=%.4f). "
+                        "The verification network may not match the analytics.",
+                        lk,
+                        s0,
+                        bp_result.actual_s_mva,
+                        bp_err,
+                    )
+                else:
+                    logger.info(
+                        "Base-point consistency OK on %s: s0=%.4f, "
+                        "actual=%.4f (rel_err=%.6f)",
+                        lk,
+                        s0,
+                        bp_result.actual_s_mva,
+                        bp_err,
+                    )
+            bp_check_done = True
+        except Exception:
+            logger.warning("Base-point consistency check failed", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Tiny-step finite-difference test for h_vec validation.
+    # For the first feasible line, check that
+    #   (|S(x + eps*d)| - |S(x)|) / eps  ≈  h^T d
+    # where d is the worst-case direction.
+    #
+    # IMPORTANT: we use the *actual PF base-point flow* as the reference,
+    # NOT the analytical s0 from the certificate.  The analytical s0 may
+    # differ from the PF result due to lossless/lossy model mismatch or
+    # base-dispatch differences; using it as reference would introduce a
+    # constant bias that swamps the tiny eps perturbation.
+    # ------------------------------------------------------------------
+    fd_check_done = False
+    for row in table_rows:
+        if fd_check_done:
+            break
+        lk = row["line_key"]
+        lid = row["line_id"]
+        h_vec_fd = res["h_bind"].get(lk)
+        r_sigma_fd = row.get("r_sigma", float("nan"))
+        s0_fd = row.get("s0_mva", float("nan"))
+        be_fd = row.get("binding_end")
+        if h_vec_fd is None or not np.isfinite(s0_fd) or r_sigma_fd <= 0:
+            continue
+
+        sigma_entry_fd = sigma_results.get(lk)
+        if sigma_entry_fd is None or not isinstance(sigma_entry_fd, dict):
+            continue
+        wc_dp_fd = sigma_entry_fd.get("worst_case_dp_mw")
+        wc_dq_fd = sigma_entry_fd.get("worst_case_dq_mvar")
+        if wc_dp_fd is None or wc_dq_fd is None:
+            continue
+
+        wc_du_fd = np.concatenate(
+            [np.asarray(wc_dp_fd, dtype=float), np.asarray(wc_dq_fd, dtype=float)]
+        )
+        # Normalise to get a direction
+        wc_norm = float(np.linalg.norm(wc_du_fd))
+        if wc_norm < 1e-15:
+            continue
+        d_dir = wc_du_fd / wc_norm
+
+        eps_fd = 1e-3  # small step in MW/MVAr space
+        eps_du = eps_fd * d_dir
+
+        try:
+            # First: get the actual PF base-point flow for this line (zero
+            # perturbation).  This is the correct reference for the FD test.
+            n_bus_fd = len(bus_ids)
+            zero_du_fd = np.zeros(2 * n_bus_fd, dtype=float)
+            res_base_fd = verify_worst_case(
+                net=net,
+                line_id=lid,
+                h_vec=h_vec_fd,
+                radius=r_sigma_fd,
+                s0_mva=s0_fd,
+                limit_mva=row.get("limit_mva", float("nan")),
+                scale=0.0,
+                balance=True,
+                lossless=lossless,
+                delta_u=zero_du_fd,
+                binding_end=be_fd,
+            )
+            if not res_base_fd.pf_converged:
+                logger.warning("FD base-point PF did not converge for %s", lk)
+                fd_check_done = True
+                continue
+            s0_actual_pf = res_base_fd.actual_s_mva
+
+            # Second: perturbed PF
+            res_plus = verify_worst_case(
+                net=net,
+                line_id=lid,
+                h_vec=h_vec_fd,
+                radius=r_sigma_fd,
+                s0_mva=s0_fd,
+                limit_mva=row.get("limit_mva", float("nan")),
+                scale=1.0,
+                balance=True,
+                lossless=lossless,
+                delta_u=eps_du,
+                binding_end=be_fd,
+            )
+            if res_plus.pf_converged:
+                s_eps = res_plus.actual_s_mva
+                # Use actual PF s0 as reference (not analytical s0)
+                delta_s_fd = s_eps - s0_actual_pf
+                delta_s_lin = float(np.dot(h_vec_fd, eps_du))
+                fd_err = abs(delta_s_fd - delta_s_lin) / max(abs(delta_s_lin), 1e-12)
+                logger.info(
+                    "Finite-diff test on %s (eps=%.1e): "
+                    "dS_fd=%.6e, dS_lin=%.6e, rel_err=%.4f "
+                    "(s0_analytical=%.4f, s0_actual_pf=%.4f)",
+                    lk,
+                    eps_fd,
+                    delta_s_fd,
+                    delta_s_lin,
+                    fd_err,
+                    s0_fd,
+                    s0_actual_pf,
+                )
+                if fd_err > 0.5:
+                    logger.error(
+                        "FINITE-DIFF MISMATCH on %s: h_vec may be incorrect "
+                        "(unit mismatch, wrong indexing, or wrong line end).",
+                        lk,
+                    )
+            fd_check_done = True
+        except Exception:
+            logger.warning("Finite-diff check failed for %s", lk, exc_info=True)
 
     for row in table_rows:
         lk = row["line_key"]
@@ -526,22 +721,32 @@ def _run_worst_case_verification(
             [np.asarray(wc_dp, dtype=float), np.asarray(wc_dq, dtype=float)]
         )
 
-        # Set up network at average loads
-        net_avg = copy.deepcopy(net)
-        _set_loads_to_average(
-            net_avg,
-            load_p_mw=load_p_mw,
-            load_q_mvar=load_q_mvar,
-            bus_ids=bus_ids,
+        # Diagnostic: perturbation magnitude and linearity assessment
+        du_norm = float(np.linalg.norm(wc_delta_u))
+        du_p_norm = float(np.linalg.norm(wc_delta_u[: len(bus_ids)]))
+        du_q_norm = float(np.linalg.norm(wc_delta_u[len(bus_ids) :]))
+        logger.info(
+            "Worst-case perturbation for %s: ||du||=%.4f MW/MVAr "
+            "(||dP||=%.4f MW, ||dQ||=%.4f MVAr), "
+            "margin=%.4f MVA, s0=%.4f MVA, limit=%.4f MVA",
+            lk,
+            du_norm,
+            du_p_norm,
+            du_q_norm,
+            limit - s0,
+            s0,
+            limit,
         )
 
         # Multi-scale verification
+        # net already has average loads + OPP dispatch; verify_worst_case
+        # deep-copies internally.
         scale_results: list[dict] = []
         any_verified = False
         for scale in sorted(scales):
             try:
                 result = verify_worst_case(
-                    net=net_avg,
+                    net=net,
                     line_id=lid,
                     h_vec=h_vec,
                     radius=r_sigma,
@@ -551,6 +756,7 @@ def _run_worst_case_verification(
                     balance=True,
                     lossless=lossless,
                     delta_u=wc_delta_u * float(scale),
+                    binding_end=row.get("binding_end"),
                 )
                 sr = result.to_dict()
                 sr["scale"] = scale
@@ -601,18 +807,17 @@ def _run_monte_carlo_validation(
     res: dict[str, Any],
     table_rows: list[dict],
     bus_ids: list[int],
-    load_p_mw: np.ndarray,
-    load_q_mvar: np.ndarray,
     sigma_p_mw: np.ndarray,
     sigma_q_mvar: np.ndarray,
-    slack_bus: int,
     lossless: bool,
-    fpf_cfg: ACFPFConfig | None,
     n_samples: int,
     seed: int,
     output_dir: Path,
 ) -> dict | None:
     """Run MC validation at the average operating point.
+
+    *net* must be the OPP-solved base network (average loads **and** OPP gen
+    dispatch applied) so that the MC base PF matches the analytical base point.
 
     Only runs MC for a line with r_sigma > 0 (base feasible).
     """
@@ -637,15 +842,6 @@ def _run_monte_carlo_validation(
     r_sig = top_row["r_sigma"]
     r_sigma_for_ball = r_sig if r_sig > 0 else float("inf")
 
-    # Set up network at average loads
-    net_avg = copy.deepcopy(net)
-    _set_loads_to_average(
-        net_avg,
-        load_p_mw=load_p_mw,
-        load_q_mvar=load_q_mvar,
-        bus_ids=bus_ids,
-    )
-
     logger.info(
         "Running MC validation: n_samples=%d, r_sigma=%.4f, target_line=%s",
         n_samples,
@@ -655,7 +851,7 @@ def _run_monte_carlo_validation(
 
     try:
         mc_result = run_ac_monte_carlo_sigma(
-            net=net_avg,
+            net=net,
             sigma_p_mw=sigma_p_mw,
             sigma_q_mvar=sigma_q_mvar,
             r_sigma=r_sigma_for_ball,
@@ -691,9 +887,7 @@ def _run_monte_carlo_validation(
 
     # Print MC summary
     n_infeasible_lines = sum(
-        1
-        for lk, prob in mc_result.empirical_overload_probability.items()
-        if prob > 0.5
+        1 for lk, prob in mc_result.empirical_overload_probability.items() if prob > 0.5
     )
     print()
     print("=" * 60)
@@ -960,20 +1154,39 @@ def _plot_scatter_l2_vs_sigma(
 
     legend_elements = [
         Line2D(
-            [0], [0], marker="o", color="w", markerfacecolor="#4C72B0",
-            markersize=8, label="from end",
+            [0],
+            [0],
+            marker="o",
+            color="w",
+            markerfacecolor="#4C72B0",
+            markersize=8,
+            label="from end",
         ),
         Line2D(
-            [0], [0], marker="o", color="w", markerfacecolor="#DD8452",
-            markersize=8, label="to end",
+            [0],
+            [0],
+            marker="o",
+            color="w",
+            markerfacecolor="#DD8452",
+            markersize=8,
+            label="to end",
         ),
     ]
-    for load_frac, label in [(0.3, "$S_0/c$=30%"), (0.7, "$S_0/c$=70%"), (0.95, "$S_0/c$=95%")]:
+    for load_frac, label in [
+        (0.3, "$S_0/c$=30%"),
+        (0.7, "$S_0/c$=70%"),
+        (0.95, "$S_0/c$=95%"),
+    ]:
         sz = 5 + 15 * load_frac
         legend_elements.append(
             Line2D(
-                [0], [0], marker="o", color="w", markerfacecolor="gray",
-                markersize=sz, label=label,
+                [0],
+                [0],
+                marker="o",
+                color="w",
+                markerfacecolor="gray",
+                markersize=sz,
+                label=label,
             )
         )
     ax.legend(handles=legend_elements, fontsize=8, loc="upper left")
@@ -1179,7 +1392,8 @@ def _plot_topology(
             x = [pos[u][0], pos[v][0]]
             y = [pos[u][1], pos[v][1]]
             ax.plot(
-                x, y,
+                x,
+                y,
                 color=edge_colors[idx],
                 linewidth=edge_widths[idx],
                 solid_capstyle="round",
@@ -1189,9 +1403,13 @@ def _plot_topology(
     node_x = [pos[n][0] for n in G.nodes()]
     node_y = [pos[n][1] for n in G.nodes()]
     ax.scatter(
-        node_x, node_y,
-        c=bus_colors, s=bus_sizes,
-        edgecolors="black", linewidths=0.3, zorder=2,
+        node_x,
+        node_y,
+        c=bus_colors,
+        s=bus_sizes,
+        edgecolors="black",
+        linewidths=0.3,
+        zorder=2,
     )
 
     for lk, r_sig in top_critical:
@@ -1206,7 +1424,9 @@ def _plot_topology(
             ax.annotate(
                 f"L{lid}\n({r_sig:.1f})",
                 (mx, my),
-                fontsize=6, ha="center", va="center",
+                fontsize=6,
+                ha="center",
+                va="center",
                 bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="red", alpha=0.8),
                 zorder=3,
             )
@@ -1217,7 +1437,8 @@ def _plot_topology(
     cbar_line.set_label("Sigma-radius at average point (sigma)", fontsize=10)
 
     sm_bus = plt.cm.ScalarMappable(
-        cmap=bus_cmap, norm=mcolors.Normalize(vmin=0, vmax=threat_max),
+        cmap=bus_cmap,
+        norm=mcolors.Normalize(vmin=0, vmax=threat_max),
     )
     sm_bus.set_array([])
     cbar_bus = fig.colorbar(sm_bus, ax=ax, fraction=0.03, pad=0.04)
@@ -1398,16 +1619,12 @@ def run(config_path: Path) -> None:
 
     if table_rows:
         _run_worst_case_verification(
-            net=net,
+            net=avg_result["base_net"],
             res=res,
             sigma_results=avg_result["sigma_results"],
             table_rows=table_rows[:verify_top_k],
             bus_ids=bus_ids,
-            load_p_mw=load_p_mw,
-            load_q_mvar=load_q_mvar,
-            slack_bus=slack_bus,
             lossless=lossless,
-            fpf_cfg=fpf,
             scales=verify_scales,
             output_dir=output_dir,
         )
@@ -1423,17 +1640,13 @@ def run(config_path: Path) -> None:
     mc_results = None
     if mc_enabled and table_rows:
         mc_results = _run_monte_carlo_validation(
-            net=net,
+            net=avg_result["base_net"],
             res=res,
             table_rows=table_rows,
             bus_ids=bus_ids,
-            load_p_mw=load_p_mw,
-            load_q_mvar=load_q_mvar,
             sigma_p_mw=sigma_p_mw,
             sigma_q_mvar=sigma_q_mvar,
-            slack_bus=slack_bus,
             lossless=lossless,
-            fpf_cfg=fpf,
             n_samples=mc_n_samples,
             seed=mc_seed,
             output_dir=output_dir,

@@ -45,6 +45,7 @@ import numpy as np
 
 from stability_radius.base_point.pandapower_tools import (
     apply_lossless_policy_to_pandapower_net,
+    apply_opp_result_to_pandapower_net,
     ensure_ext_grid_at_slack,
     resolve_slack_bus_id,
 )
@@ -588,7 +589,23 @@ def solve_ac_fpf(
             "Expected radians after conversion; got max|angle| > 10."
         )
 
-    # ---- Log solution summary ----
+    # ---- Extract OPP gen dispatch for reproducibility ----
+    # After runopp, nn.res_gen / nn.res_sgen / nn.res_ext_grid contain the
+    # optimal dispatch.  We capture it so callers can reproduce the same
+    # operating point with plain runpp().
+    opp_gen_dispatch: dict[str, float] = {}
+    if hasattr(nn, "res_gen") and nn.res_gen is not None and len(nn.res_gen):
+        for gid in sorted(nn.res_gen.index):
+            opp_gen_dispatch[f"gen_{int(gid)}"] = float(nn.res_gen.loc[gid, "p_mw"])
+    if hasattr(nn, "res_sgen") and nn.res_sgen is not None and len(nn.res_sgen):
+        for sid in sorted(nn.res_sgen.index):
+            opp_gen_dispatch[f"sgen_{int(sid)}"] = float(nn.res_sgen.loc[sid, "p_mw"])
+    # ext_grid P is slack-determined; capture vm_pu setpoints instead.
+    opp_vm_pu: dict[int, float] = {}
+    for bid in bus_ids:
+        opp_vm_pu[bid] = float(nn.res_bus.loc[bid, "vm_pu"])
+
+    # ---- Log OPP solution summary ----
     logger.info(
         "AC FPF solved: status=PP_OPP_OK attempt=%s "
         "v_mag[min,med,max]=[%.4g,%.4g,%.4g] "
@@ -599,6 +616,111 @@ def solve_ac_fpf(
         float(np.max(v_mag)),
         float(np.sum(bus_p_mw_arr)) if bus_p_mw_arr is not None else float("nan"),
     )
+
+    # ---- Post-OPP PF validation ----
+    # The OPP uses PYPOWER's PIPS interior-point solver, which can produce a
+    # slightly different operating point than Newton-Raphson PF (runpp).  The
+    # AC certificate Jacobian must be linearized at exactly the point that
+    # runpp reproduces, because verification and MC both use runpp.
+    #
+    # Apply the OPP dispatch back to the lossless network and re-solve with
+    # runpp to get the Newton-Raphson PF solution.
+    import pandapower as _pp
+
+    apply_opp_result_to_pandapower_net(
+        nn,
+        opp_gen_dispatch=opp_gen_dispatch,
+        opp_vm_pu=opp_vm_pu,
+    )
+
+    pf_ok = False
+    try:
+        _pp.runpp(
+            nn,
+            calculate_voltage_angles=True,
+            enforce_q_lims=True,
+            init="results",
+            max_iteration=50,
+            tolerance_mva=1e-8,
+        )
+        pf_ok = bool(getattr(nn, "converged", True))
+    except Exception:
+        pf_ok = False
+
+    if not pf_ok:
+        # Retry with flat start
+        try:
+            _pp.runpp(
+                nn,
+                calculate_voltage_angles=True,
+                enforce_q_lims=False,
+                init="flat",
+                max_iteration=100,
+                tolerance_mva=1e-8,
+            )
+            pf_ok = bool(getattr(nn, "converged", True))
+        except Exception:
+            pf_ok = False
+
+    if pf_ok:
+        # Re-extract Vm, Va, line flows from the PF result.
+        v_mag_pf = np.asarray(
+            [float(nn.res_bus.loc[bid, "vm_pu"]) for bid in bus_ids], dtype=float
+        )
+        va_deg_pf = np.asarray(
+            [float(nn.res_bus.loc[bid, "va_degree"]) for bid in bus_ids], dtype=float
+        )
+        v_ang_pf = (va_deg_pf * math.pi / 180.0).astype(float, copy=False)
+
+        p0_pf = np.zeros(len(idx), dtype=float)
+        q0_pf = np.zeros(len(idx), dtype=float)
+        p1_pf = np.zeros(len(idx), dtype=float)
+        q1_pf = np.zeros(len(idx), dtype=float)
+        for pos, lid in enumerate(idx):
+            row = nn.line.loc[lid]
+            if not _is_in_service(row):
+                continue
+            p0_pf[pos] = float(nn.res_line.loc[lid, "p_from_mw"])
+            q0_pf[pos] = float(nn.res_line.loc[lid, "q_from_mvar"])
+            p1_pf[pos] = float(nn.res_line.loc[lid, "p_to_mw"])
+            q1_pf[pos] = float(nn.res_line.loc[lid, "q_to_mvar"])
+
+        bus_p_mw_pf: np.ndarray | None = None
+        if "p_mw" in nn.res_bus.columns:
+            bus_p_mw_pf = np.asarray(
+                [float(nn.res_bus.loc[bid, "p_mw"]) for bid in bus_ids], dtype=float
+            )
+        bus_q_mvar_pf: np.ndarray | None = None
+        if "q_mvar" in nn.res_bus.columns:
+            bus_q_mvar_pf = np.asarray(
+                [float(nn.res_bus.loc[bid, "q_mvar"]) for bid in bus_ids], dtype=float
+            )
+
+        # Log the operating-point shift from OPP → PF.
+        dv = float(np.max(np.abs(v_mag_pf - v_mag)))
+        dp0 = float(np.max(np.abs(p0_pf - p0)))
+        logger.info(
+            "Post-OPP PF validation: max|ΔVm|=%.6g pu, max|Δp_from|=%.6g MW "
+            "(overwriting OPP base point with PF solution)",
+            dv,
+            dp0,
+        )
+
+        # Overwrite with PF results.
+        v_mag = v_mag_pf
+        v_ang = v_ang_pf
+        p0 = p0_pf
+        q0 = q0_pf
+        p1 = p1_pf
+        q1 = q1_pf
+        bus_p_mw_arr = bus_p_mw_pf
+        bus_q_mvar_arr = bus_q_mvar_pf
+        pf_repairs.append("post_opp_pf_applied")
+    else:
+        logger.warning(
+            "Post-OPP PF validation FAILED to converge; "
+            "using OPP operating point directly (may cause Jacobian mismatch)."
+        )
 
     return PyPSAAPFResult(
         bus_ids=tuple(bus_ids),
@@ -614,4 +736,6 @@ def solve_ac_fpf(
         pf_repairs=list(pf_repairs),
         bus_p_mw=bus_p_mw_arr,
         bus_q_mvar=bus_q_mvar_arr,
+        opp_gen_dispatch=opp_gen_dispatch,
+        opp_vm_pu=opp_vm_pu,
     )

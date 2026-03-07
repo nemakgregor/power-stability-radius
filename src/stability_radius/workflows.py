@@ -415,37 +415,80 @@ def _check_opf_dc_consistency(
 
 
 def _expand_h_reduced_to_full(
-    h_reduced: np.ndarray, *, n_bus: int, slack_pos: int
+    h_reduced: np.ndarray,
+    *,
+    n_bus: int,
+    slack_pos: int,
+    pq_mask: np.ndarray | None = None,
 ) -> np.ndarray:
     """
-    Expand reduced h-vectors (2*n_red,) to full dimension (2*n_bus,).
+    Expand reduced h-vectors to full dimension (2*n_bus,).
 
-    The reduced h-vector has shape (m, 2*n_red) where n_red = n_bus - 1
-    (slack bus removed from both theta and V blocks). This inserts a zero
-    at the slack bus position in each block.
+    The h-vector is the injection-space gradient: h = J^{-T} (d|S|/dx),
+    with blocks [h_P_red | h_Q_red].
+
+    When ``pq_mask`` is None (all non-slack buses are PQ), the reduced
+    layout is ``[h_P(n_red) | h_Q(n_red)]`` and we insert a zero at
+    ``slack_pos`` in each block.
+
+    When ``pq_mask`` is provided (networks with PV generator buses),
+    the reduced layout is ``[h_P(n_theta) | h_Q(n_pq)]`` where
+    ``n_theta = n_bus - 1`` (all non-slack) and ``n_pq = sum(pq_mask)``.
+    The P block inserts a zero at slack_pos.  The Q block scatters
+    ``n_pq`` values to PQ bus positions; PV and slack buses get zero.
 
     Parameters
     ----------
-    h_reduced : (m, 2*n_red) array
+    h_reduced : (m, n_theta + n_pq) array
     n_bus     : total bus count (including slack)
-    slack_pos : position of the slack bus in the sorted bus ordering (0-based)
+    slack_pos : position of the slack bus in the sorted bus ordering
+    pq_mask   : (n_bus,) bool array, True for PQ buses.  None means all-PQ.
 
     Returns
     -------
-    (m, 2*n_bus) array with zeros at slack positions in both blocks.
+    (m, 2*n_bus) array.  Layout: [h_P_full | h_Q_full].
     """
     h = np.asarray(h_reduced, dtype=float)
     n_red = n_bus - 1
-    if h.ndim != 2 or h.shape[1] != 2 * n_red:
-        raise ValueError(f"h_reduced shape must be (m, {2 * n_red}), got {h.shape}")
+
+    if pq_mask is None:
+        # Legacy path: all non-slack buses are PQ.
+        if h.ndim != 2 or h.shape[1] != 2 * n_red:
+            raise ValueError(
+                f"h_reduced shape must be (m, {2 * n_red}), got {h.shape}"
+            )
+        m = h.shape[0]
+        p_red = h[:, :n_red]
+        q_red = h[:, n_red:]
+
+        p_full = np.insert(p_red, slack_pos, 0.0, axis=1)
+        q_full = np.insert(q_red, slack_pos, 0.0, axis=1)
+        return np.hstack([p_full, q_full])
+
+    # PV-aware path.
+    pq = np.asarray(pq_mask, dtype=bool)
+    n_pq = int(np.sum(pq))
+    n_vars = n_red + n_pq
+
+    if h.ndim != 2 or h.shape[1] != n_vars:
+        raise ValueError(
+            f"h_reduced shape must be (m, {n_vars}), got {h.shape} "
+            f"(n_theta={n_red}, n_pq={n_pq})"
+        )
 
     m = h.shape[0]
-    theta_red = h[:, :n_red]
-    v_red = h[:, n_red:]
+    p_red = h[:, :n_red]       # (m, n_theta)
+    q_red = h[:, n_red:]       # (m, n_pq)
 
-    theta_full = np.insert(theta_red, slack_pos, 0.0, axis=1)
-    v_full = np.insert(v_red, slack_pos, 0.0, axis=1)
-    return np.hstack([theta_full, v_full])
+    # P block: insert zero at slack_pos -> (m, n_bus)
+    p_full = np.insert(p_red, slack_pos, 0.0, axis=1)
+
+    # Q block: scatter PQ-only values to full bus dimension
+    q_full = np.zeros((m, n_bus), dtype=float)
+    pq_indices = np.where(pq)[0]
+    q_full[:, pq_indices] = q_red
+
+    return np.hstack([p_full, q_full])
 
 
 def _build_sigma_arrays(
@@ -1185,10 +1228,12 @@ def compute_results_for_case(
                     slack_pos = bus_ids.index(slack_bus_id)
 
                     h_from_full = _expand_h_reduced_to_full(
-                        h_vecs_raw["h_from"], n_bus=n_bus, slack_pos=slack_pos
+                        h_vecs_raw["h_from"], n_bus=n_bus, slack_pos=slack_pos,
+                        pq_mask=h_vecs_raw.get("pq_mask"),
                     )
                     h_to_full = _expand_h_reduced_to_full(
-                        h_vecs_raw["h_to"], n_bus=n_bus, slack_pos=slack_pos
+                        h_vecs_raw["h_to"], n_bus=n_bus, slack_pos=slack_pos,
+                        pq_mask=h_vecs_raw.get("pq_mask"),
                     )
 
                     h_bind, s0_mva, s_limit_mva, line_ids_ac = (
@@ -1246,10 +1291,12 @@ def compute_results_for_case(
 
                 h_vectors_saved = {
                     "h_from": _expand_h_reduced_to_full(
-                        h_vecs_raw["h_from"], n_bus=n_bus, slack_pos=slack_pos
+                        h_vecs_raw["h_from"], n_bus=n_bus, slack_pos=slack_pos,
+                        pq_mask=h_vecs_raw.get("pq_mask"),
                     ),
                     "h_to": _expand_h_reduced_to_full(
-                        h_vecs_raw["h_to"], n_bus=n_bus, slack_pos=slack_pos
+                        h_vecs_raw["h_to"], n_bus=n_bus, slack_pos=slack_pos,
+                        pq_mask=h_vecs_raw.get("pq_mask"),
                     ),
                     "bus_ids": np.array(bus_ids, dtype=int),
                     "line_ids": np.array(

@@ -236,8 +236,6 @@ class TestWorstCaseVerificationSkipsInfeasible:
         rows = _build_table2_rows(res, top_k=3)
 
         mock_net = MagicMock()
-        load_p = np.zeros((3, 1))
-        load_q = np.zeros((3, 1))
         output_dir = Path("/tmp/test_verify")
 
         with (
@@ -252,6 +250,7 @@ class TestWorstCaseVerificationSkipsInfeasible:
             mock_result.to_dict.return_value = {"mock": True}
             mock_result.pf_converged = True
             mock_result.violated = True
+            mock_result.actual_s_mva = 50.0
             mock_verify.return_value = mock_result
 
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -262,11 +261,7 @@ class TestWorstCaseVerificationSkipsInfeasible:
                 sigma_results=avg["sigma_results"],
                 table_rows=rows,
                 bus_ids=[0, 1, 2],
-                load_p_mw=load_p,
-                load_q_mvar=load_q,
-                slack_bus=0,
                 lossless=True,
-                fpf_cfg=None,
                 scales=[1.0],
                 output_dir=output_dir,
             )
@@ -276,8 +271,10 @@ class TestWorstCaseVerificationSkipsInfeasible:
         line0_result = next(r for r in results if r.get("line_key") == "line_0")
         assert line0_result["status"] == "skipped_infeasible"
 
-        # Lines 1 and 2 have positive r_sigma, should be verified
-        assert mock_verify.call_count == 2
+        # Lines 1 and 2 have positive r_sigma, should be verified.
+        # Additional call from base-point consistency check (1) is also expected.
+        # (Finite-diff test is skipped because worst_case_dp/dq are all zeros.)
+        assert mock_verify.call_count == 3
 
 
 # ---------------------------------------------------------------------------
@@ -298,15 +295,12 @@ class TestMonteCarloFeasibleLineSelection:
         ]
 
         mock_net = MagicMock()
-        load_p = np.zeros((3, 10))
-        load_q = np.zeros((3, 10))
         sigma_p = np.ones(3)
         sigma_q = np.ones(3)
 
         with (
             patch("experiments.run_sigma_radius.copy") as mock_copy,
             patch("experiments.run_sigma_radius.run_ac_monte_carlo_sigma") as mock_mc,
-            patch("experiments.run_sigma_radius._set_loads_to_average"),
             patch.object(Path, "open", create=True),
             patch("experiments.run_sigma_radius.json"),
         ):
@@ -328,13 +322,9 @@ class TestMonteCarloFeasibleLineSelection:
                 res={},
                 table_rows=table_rows,
                 bus_ids=[0, 1, 2],
-                load_p_mw=load_p,
-                load_q_mvar=load_q,
                 sigma_p_mw=sigma_p,
                 sigma_q_mvar=sigma_q,
-                slack_bus=0,
                 lossless=True,
-                fpf_cfg=None,
                 n_samples=100,
                 seed=42,
                 output_dir=output_dir,
@@ -354,15 +344,12 @@ class TestMonteCarloFeasibleLineSelection:
         ]
 
         mock_net = MagicMock()
-        load_p = np.zeros((3, 10))
-        load_q = np.zeros((3, 10))
         sigma_p = np.ones(3)
         sigma_q = np.ones(3)
 
         with (
             patch("experiments.run_sigma_radius.copy") as mock_copy,
             patch("experiments.run_sigma_radius.run_ac_monte_carlo_sigma") as mock_mc,
-            patch("experiments.run_sigma_radius._set_loads_to_average"),
             patch.object(Path, "open", create=True),
             patch("experiments.run_sigma_radius.json"),
         ):
@@ -384,13 +371,9 @@ class TestMonteCarloFeasibleLineSelection:
                 res={},
                 table_rows=table_rows,
                 bus_ids=[0, 1, 2],
-                load_p_mw=load_p,
-                load_q_mvar=load_q,
                 sigma_p_mw=sigma_p,
                 sigma_q_mvar=sigma_q,
-                slack_bus=0,
                 lossless=True,
-                fpf_cfg=None,
                 n_samples=100,
                 seed=42,
                 output_dir=output_dir,
@@ -706,8 +689,6 @@ class TestMultiScaleVerification:
         rows = _build_table2_rows(res, top_k=1)
 
         mock_net = MagicMock()
-        load_p = np.zeros((3, 1))
-        load_q = np.zeros((3, 1))
 
         with (
             patch("experiments.run_sigma_radius.copy") as mock_copy,
@@ -724,6 +705,7 @@ class TestMultiScaleVerification:
             }
             mock_result.pf_converged = True
             mock_result.violated = False
+            mock_result.actual_s_mva = 80.0
             mock_verify.return_value = mock_result
 
             output_dir = Path("/tmp/test_multiscale")
@@ -735,11 +717,7 @@ class TestMultiScaleVerification:
                 sigma_results=avg["sigma_results"],
                 table_rows=rows,
                 bus_ids=[0, 1, 2],
-                load_p_mw=load_p,
-                load_q_mvar=load_q,
-                slack_bus=0,
                 lossless=True,
-                fpf_cfg=None,
                 scales=[0.5, 1.0, 1.5],
                 output_dir=output_dir,
             )
@@ -747,4 +725,5 @@ class TestMultiScaleVerification:
         ok_results = [r for r in results if r.get("status") == "ok"]
         assert len(ok_results) == 1
         assert len(ok_results[0]["scale_results"]) == 3
-        assert mock_verify.call_count == 3
+        # 1 BP check + 3 scale verifications (FD skipped: zero worst-case vectors)
+        assert mock_verify.call_count == 4

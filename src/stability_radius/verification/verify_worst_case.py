@@ -151,6 +151,7 @@ def verify_worst_case(
     balance: bool = True,
     lossless: bool = True,
     delta_u: np.ndarray | None = None,
+    binding_end: str | None = None,
 ) -> WorstCaseVerificationResult:
     """
     Verify a worst-case perturbation by running a full nonlinear AC PF.
@@ -181,6 +182,10 @@ def verify_worst_case(
     delta_u : (2*n_bus,) array or None
         If provided, use this perturbation vector directly instead of
         constructing it from h_vec and radius.
+    binding_end : str or None
+        ``"from"`` or ``"to"``.  If provided, the actual |S| is read
+        from this specific line end (matching the analytical certificate)
+        instead of taking ``max(S_from, S_to)``.
 
     Returns
     -------
@@ -259,7 +264,7 @@ def verify_worst_case(
             relative_error=float("nan"),
         )
 
-    # Extract actual apparent power at both line ends
+    # Extract actual apparent power at the binding line end
     lid = int(line_id)
     p_from = float(nn.res_line.loc[lid, "p_from_mw"])
     q_from = float(nn.res_line.loc[lid, "q_from_mvar"])
@@ -268,7 +273,14 @@ def verify_worst_case(
 
     s_from = math.sqrt(p_from * p_from + q_from * q_from)
     s_to = math.sqrt(p_to * p_to + q_to * q_to)
-    actual_s = max(s_from, s_to)
+
+    if binding_end == "from":
+        actual_s = s_from
+    elif binding_end == "to":
+        actual_s = s_to
+    else:
+        # Fallback: max of both ends (legacy behaviour).
+        actual_s = max(s_from, s_to)
 
     # Violated if actual flow exceeds limit
     violated = bool(actual_s > float(limit_mva))

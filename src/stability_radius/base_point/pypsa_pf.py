@@ -96,6 +96,8 @@ class PyPSAAPFResult:
     pf_repairs: list[str] | None = None  # list of repair actions applied
     bus_p_mw: np.ndarray | None = None  # (n_bus,) net P injection per bus from AC PF
     bus_q_mvar: np.ndarray | None = None  # (n_bus,) net Q injection per bus from AC PF
+    opp_gen_dispatch: dict[str, float] | None = None  # gen_id -> P_mw from OPP
+    opp_vm_pu: dict[int, float] | None = None  # bus_id -> Vm from OPP
 
 
 def _is_in_service(row: Any) -> bool:
