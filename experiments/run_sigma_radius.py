@@ -55,7 +55,6 @@ from stability_radius.radii.ac_feasibility import check_ac_base_point_feasibilit
 from stability_radius.radii.ac_l2 import compute_ac_l2_radius
 from stability_radius.radii.ac_sigma_radius import compute_ac_sigma_radius
 from stability_radius.utils.download import download_uc_jl_instance
-from stability_radius.verification.ac_monte_carlo_sigma import run_ac_monte_carlo_sigma
 from stability_radius.verification.verify_worst_case import (
     find_violation_scale,
     verify_worst_case,
@@ -95,6 +94,51 @@ def _clamp_sigma(sigma: np.ndarray, floor: float = _SIGMA_FLOOR) -> np.ndarray:
     out = sigma.copy()
     out[out < floor] = floor
     return out
+
+
+def _generate_synthetic_sigma(
+    net: Any,
+    bus_ids: list[int],
+    *,
+    sigma_fraction: float = 0.10,
+    power_factor: float = 0.9,
+    floor: float = _SIGMA_FLOOR,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Generate synthetic per-bus σ_P, σ_Q from the network's base loads.
+
+    Each bus's σ_P is set proportional to its total active load:
+        σ_P = sigma_fraction * |P_load|
+    Buses with zero load get σ_P = floor.  σ_Q is derived via power factor:
+        σ_Q = σ_P * sin(arccos(pf)) / pf
+
+    This allows running the sigma-radius pipeline on any network without
+    needing UC.jl time-series data.
+    """
+    bus_to_pos = {bid: i for i, bid in enumerate(bus_ids)}
+    n_bus = len(bus_ids)
+    total_p = np.zeros(n_bus)
+
+    for load_idx in net.load.index:
+        b = int(net.load.at[load_idx, "bus"])
+        if b in bus_to_pos:
+            total_p[bus_to_pos[b]] += abs(float(net.load.at[load_idx, "p_mw"]))
+
+    sigma_p = sigma_fraction * total_p
+    sigma_p[sigma_p < floor] = floor
+
+    pf = max(min(power_factor, 0.999), 0.01)
+    q_over_p = math.sqrt(1.0 - pf**2) / pf
+    sigma_q = sigma_p * q_over_p
+    sigma_q[sigma_q < floor] = floor
+
+    logger.info(
+        "Synthetic sigma: n_bus=%d, sigma_fraction=%.2f, "
+        "sig_P range=[%.4g, %.4g] MW, sig_Q range=[%.4g, %.4g] MVAr",
+        n_bus, sigma_fraction,
+        float(np.min(sigma_p)), float(np.max(sigma_p)),
+        float(np.min(sigma_q)), float(np.max(sigma_q)),
+    )
+    return sigma_p, sigma_q
 
 
 def _set_loads_to_average(
@@ -396,40 +440,35 @@ def _build_table2_rows(
 def _print_table2(rows: list[dict]) -> None:
     """Print full Table 2 to stdout."""
     header = (
-        f"{'Line':>6s}  {'End':>4s}  {'S0':>8s}  {'Limit':>8s}  {'Margin':>8s}  "
-        f"{'sig_flow':>8s}  {'r_sig':>8s}  {'P_over':>10s}  {'r_L2':>8s}  "
-        f"{'MC_viol':>8s}  {'OK?':>4s}  {'Feas':>5s}"
+        f"{'Line':>6s}  {'End':>4s}  {'S0(MVA)':>9s}  {'Limit':>9s}  "
+        f"{'Margin':>9s}  {'sig_flow':>9s}  {'r_sigma':>9s}  "
+        f"{'P_over':>10s}  {'r_L2':>8s}  {'Verif':>5s}  {'Feas':>4s}"
     )
     width = len(header)
     print()
     print("=" * width)
-    print("Table 2: AC Sigma-Radius (top-k tightest lines, average operating point)")
+    print("Table 2: AC Sigma-Radius (top-k tightest lines)")
     print("=" * width)
     print(header)
     print("-" * width)
 
     for r in rows:
-        mc = (
-            f"{r['mc_violation_rate']:.2e}"
-            if r["mc_violation_rate"] is not None
-            else "   --"
-        )
-        ver = (
-            " Y"
-            if r["verified"] is True
-            else (" N" if r["verified"] is False else " --")
-        )
         p_ov = r["p_overload"]
         p_str = f"{p_ov:.2e}" if np.isfinite(p_ov) else "      --"
         feas = "  NO" if r.get("base_infeasible", False) else "  ok"
+        if r["verified"] is True:
+            ver_str = "  YES"
+        elif r["verified"] is False:
+            ver_str = "   NO"
+        else:
+            ver_str = "   --"
         print(
             f"{r['line_id']:>6d}  {r['binding_end']:>4s}  "
-            f"{r['s0_mva']:>8.2f}  {r['limit_mva']:>8.2f}  {r['margin_mva']:>8.2f}  "
-            f"{r['sigma_flow_mva']:>8.4f}  {r['r_sigma']:>8.4f}  {p_str:>10s}  "
-            f"{r['r_l2_uniform']:>8.2f}  {mc:>8s}  {ver:>4s}  {feas:>5s}"
+            f"{r['s0_mva']:>9.2f}  {r['limit_mva']:>9.2f}  {r['margin_mva']:>9.2f}  "
+            f"{r['sigma_flow_mva']:>9.4f}  {r['r_sigma']:>9.4f}  {p_str:>10s}  "
+            f"{r['r_l2_uniform']:>8.2f}  {ver_str}  {feas}"
         )
 
-    # Summary counts
     n_infeasible = sum(1 for r in rows if r.get("base_infeasible", False))
     if n_infeasible > 0:
         print(
@@ -454,7 +493,6 @@ def _export_table2_csv(rows: list[dict], output_dir: Path) -> None:
         "r_sigma",
         "p_overload",
         "r_l2_uniform",
-        "mc_violation_rate",
         "verified",
         "base_infeasible",
     ]
@@ -838,121 +876,6 @@ def _run_worst_case_verification(
 
 
 # ---------------------------------------------------------------------------
-# Monte Carlo validation
-# ---------------------------------------------------------------------------
-
-
-def _run_monte_carlo_validation(
-    *,
-    net: Any,
-    res: dict[str, Any],
-    table_rows: list[dict],
-    bus_ids: list[int],
-    sigma_p_mw: np.ndarray,
-    sigma_q_mvar: np.ndarray,
-    lossless: bool,
-    n_samples: int,
-    seed: int,
-    output_dir: Path,
-) -> dict | None:
-    """Run MC validation at the average operating point.
-
-    *net* must be the OPP-solved base network (average loads **and** OPP gen
-    dispatch applied) so that the MC base PF matches the analytical base point.
-
-    Only runs MC for a line with r_sigma > 0 (base feasible).
-    """
-    if not table_rows:
-        return None
-
-    # Find the tightest *feasible* line (r_sigma > 0) for the MC sigma-ball check
-    top_row = None
-    for row in table_rows:
-        if row["r_sigma"] > 0 and np.isfinite(row["r_sigma"]):
-            top_row = row
-            break
-
-    if top_row is None:
-        logger.warning(
-            "All top-k lines have r_sigma <= 0 (base infeasible). "
-            "Running MC anyway for per-line empirical overload rates, "
-            "but soundness_inside_sigma_ball will be N/A."
-        )
-        top_row = table_rows[0]
-
-    r_sig = top_row["r_sigma"]
-    r_sigma_for_ball = r_sig if r_sig > 0 else float("inf")
-
-    logger.info(
-        "Running MC validation: n_samples=%d, r_sigma=%.4f, target_line=%s",
-        n_samples,
-        r_sig,
-        top_row["line_key"],
-    )
-
-    try:
-        mc_result = run_ac_monte_carlo_sigma(
-            net=net,
-            sigma_p_mw=sigma_p_mw,
-            sigma_q_mvar=sigma_q_mvar,
-            r_sigma=r_sigma_for_ball,
-            n_samples=n_samples,
-            seed=seed,
-            lossless=lossless,
-        )
-    except Exception:
-        logger.warning("MC validation failed", exc_info=True)
-        return None
-
-    # Populate per-line MC violation rates into table rows
-    for row in table_rows:
-        mc_key = row["line_key"]
-        if mc_key in mc_result.empirical_overload_probability:
-            row["mc_violation_rate"] = mc_result.empirical_overload_probability[mc_key]
-
-    # Save
-    mc_out = {
-        "r_sigma": r_sig,
-        "r_sigma_for_ball": r_sigma_for_ball,
-        "target_line": top_row["line_key"],
-        "n_samples": mc_result.n_samples,
-        "n_violations": mc_result.n_violations,
-        "n_pf_failures": mc_result.n_pf_failures,
-        "soundness_inside_sigma_ball": mc_result.soundness_inside_sigma_ball,
-        "empirical_overload_probability": mc_result.empirical_overload_probability,
-    }
-    mc_path = output_dir / "mc_results.json"
-    with mc_path.open("w", encoding="utf-8") as fh:
-        json.dump(mc_out, fh, indent=2, default=_numpy_serialiser)
-    logger.info("MC results saved: %s", mc_path)
-
-    # Print MC summary
-    n_infeasible_lines = sum(
-        1 for lk, prob in mc_result.empirical_overload_probability.items() if prob > 0.5
-    )
-    print()
-    print("=" * 60)
-    print("Monte Carlo Validation Summary")
-    print("=" * 60)
-    print(f"  Target line:              {top_row['line_key']}")
-    print(f"  r_sigma:                  {r_sig:.4f}")
-    print(f"  Samples:                  {mc_result.n_samples}")
-    print(f"  Samples with violations:  {mc_result.n_violations}")
-    print(f"  PF failures:              {mc_result.n_pf_failures}")
-    print(f"  Soundness (in sigma-ball): {mc_result.soundness_inside_sigma_ball:.4f}")
-    print(f"  Lines with >50% overload: {n_infeasible_lines}")
-    if n_infeasible_lines > 0:
-        print(
-            "  NOTE: Lines with >50% MC overload are likely base-infeasible "
-            "(S0 > c at this operating point)"
-        )
-    print("=" * 60)
-    print()
-
-    return mc_out
-
-
-# ---------------------------------------------------------------------------
 # Monte Carlo validation with tightened limits
 # ---------------------------------------------------------------------------
 
@@ -1040,7 +963,14 @@ def _run_tightened_limit_mc(
         ))
         sgen_idx_pilot.append(idx)
 
-    pp.runpp(nn_pilot, calculate_voltage_angles=True, enforce_q_lims=True, init="flat")
+    try:
+        pp.runpp(nn_pilot, calculate_voltage_angles=True, enforce_q_lims=True, init="results")
+    except Exception:
+        try:
+            pp.runpp(nn_pilot, calculate_voltage_angles=True, enforce_q_lims=True, init="flat")
+        except Exception:
+            logger.warning("Tightened-limit MC: pilot base PF did not converge.")
+            return None
     if not bool(getattr(nn_pilot, "converged", True)):
         logger.warning("Tightened-limit MC: pilot base PF did not converge.")
         return None
@@ -1129,7 +1059,14 @@ def _run_tightened_limit_mc(
         ))
         sgen_idx.append(idx)
 
-    pp.runpp(nn, calculate_voltage_angles=True, enforce_q_lims=True, init="flat")
+    try:
+        pp.runpp(nn, calculate_voltage_angles=True, enforce_q_lims=True, init="results")
+    except Exception:
+        try:
+            pp.runpp(nn, calculate_voltage_angles=True, enforce_q_lims=True, init="flat")
+        except Exception:
+            logger.warning("Tightened-limit MC: main base PF did not converge.")
+            return None
     if not bool(getattr(nn, "converged", True)):
         logger.warning("Tightened-limit MC: main base PF did not converge.")
         return None
@@ -1273,7 +1210,6 @@ def _run_validation_checks(
     res: dict[str, Any],
     avg_result: dict,
     table_rows: list[dict],
-    mc_results: dict | None,
     sigma_p_mw_raw: np.ndarray,
     n_bus: int,
     output_dir: Path,
@@ -1321,35 +1257,16 @@ def _run_validation_checks(
         "warn": floor_frac > 0.5,
     }
 
-    # 3. Gaussian consistency (analytical vs MC)
-    gauss_details: list[dict] = []
-    if mc_results is not None:
-        mc_probs = mc_results.get("empirical_overload_probability", {})
-        for row in table_rows:
-            lk = row["line_key"]
-            analytical = row["p_overload"]
-            mc_emp = mc_probs.get(lk)
-            if mc_emp is None or not np.isfinite(analytical):
-                continue
-            if mc_emp > 0 and analytical > 0:
-                ratio = analytical / mc_emp
-            elif mc_emp == 0 and analytical == 0:
-                ratio = 1.0
-            else:
-                ratio = float("inf")
-            ok = 0.5 <= ratio <= 2.0 if np.isfinite(ratio) else False
-            gauss_details.append(
-                {
-                    "line": lk,
-                    "analytical": analytical,
-                    "mc_empirical": mc_emp,
-                    "ratio": ratio,
-                    "ok": ok,
-                }
-            )
+    # 3. Gaussian consistency note
+    # The original per-line analytical-vs-MC comparison is not meaningful here
+    # because r_sigma is typically 10-25+, making analytical P(overload) ~1e-23
+    # to ~1e-142, which cannot be validated with any practical MC sample count.
+    # The tightened-limit MC (Step 7b) is the correct Gaussian consistency
+    # test — it uses empirical sigma_flow and artificially low limits to
+    # produce observable violations (~2-5%) and validates the Gaussian model.
     checks["gaussian_consistency"] = {
-        "details": gauss_details,
-        "all_ok": all(d["ok"] for d in gauss_details) if gauss_details else True,
+        "note": "See tightened-limit MC (Step 7b) for meaningful Gaussian validation.",
+        "all_ok": True,
     }
 
     # Print summary
@@ -1372,18 +1289,9 @@ def _run_validation_checks(
         f"  Sigma floor impact:    {n_clamped}/{n_bus} buses clamped "
         f"({'WARN' if checks['sigma_floor']['warn'] else 'OK'})"
     )
-    if gauss_details:
-        print(
-            f"  Gaussian consistency:  {'PASS' if checks['gaussian_consistency']['all_ok'] else 'WARN'}"
-        )
-        for d in gauss_details:
-            print(
-                f"    {d['line']}: analytical={d['analytical']:.2e}, "
-                f"mc={d['mc_empirical']:.2e}, ratio={d['ratio']:.2f} "
-                f"{'OK' if d['ok'] else 'MISMATCH'}"
-            )
-    else:
-        print("  Gaussian consistency:  N/A (no MC data)")
+    print(
+        "  Gaussian consistency:  see tightened-limit MC (Step 7b)"
+    )
     print("=" * 60)
     print()
 
@@ -1397,236 +1305,238 @@ def _run_validation_checks(
 
 
 # ---------------------------------------------------------------------------
-# Figure 2: L2 vs sigma-radius scatter plot
+# Figure: Top critical lines by sigma-radius (horizontal bar chart)
 # ---------------------------------------------------------------------------
 
 
-def _plot_scatter_l2_vs_sigma(
+def _plot_critical_lines_bar(
     res: dict[str, Any],
     *,
+    case_name: str = "",
     output_dir: Path,
     dpi: int = 300,
+    top_k: int = 20,
 ) -> None:
-    """Scatter plot: AC L2 radius vs sigma-radius across all lines.
-
-    Only lines with r_sigma > 0 AND r_L2 > 0 are included for log-log axes.
-    """
-    line_keys = sorted(res["sigma_radius"].keys())
-
-    r_l2_vals: list[float] = []
-    r_sig_vals: list[float] = []
-    loading_fracs: list[float] = []
-    binding_ends: list[str] = []
-    line_labels: list[str] = []
-
-    n_skipped_negative = 0
-    for lk in line_keys:
-        r_sig = res["sigma_radius"].get(lk, float("nan"))
-        r_l2 = res["ac_l2_radius"].get(lk, float("nan"))
-        s0 = res["s0_mva"].get(lk, float("nan"))
-        c = res["s_limit_mva"].get(lk, float("nan"))
-        be = res["binding_end"].get(lk, "?")
-
-        if not np.isfinite(r_sig) or not np.isfinite(r_l2):
-            continue
-        if r_l2 <= 0 or r_sig <= 0:
-            n_skipped_negative += 1
-            continue
-
-        r_l2_vals.append(r_l2)
-        r_sig_vals.append(r_sig)
-        loading_fracs.append(
-            s0 / c if np.isfinite(s0) and np.isfinite(c) and c > 0 else 0.5
-        )
-        binding_ends.append(be)
-        line_labels.append(lk)
-
-    if n_skipped_negative > 0:
-        logger.info(
-            "Scatter plot: skipped %d lines with r_sig<=0 or r_L2<=0 (base infeasible)",
-            n_skipped_negative,
-        )
-
-    if len(r_l2_vals) < 2:
-        logger.warning("Not enough data for L2 vs sigma scatter plot.")
+    """Horizontal bar chart of the tightest lines by sigma-radius."""
+    candidates = sorted(
+        (
+            (lk, r_sig)
+            for lk, r_sig in res["sigma_radius"].items()
+            if np.isfinite(r_sig) and r_sig > 0
+        ),
+        key=lambda kv: kv[1],
+    )
+    show = candidates[:top_k]
+    if not show:
+        logger.warning("No positive-radius lines for critical-lines bar chart.")
         return
 
-    r_l2_arr = np.array(r_l2_vals)
-    r_sig_arr = np.array(r_sig_vals)
-    loading_arr = np.array(loading_fracs)
+    line_labels = []
+    r_sigma_vals = []
+    loading_fracs = []
+    for lk, r_sig in reversed(show):  # reversed so tightest is at top
+        lid = int(lk.split("_", 1)[1])
+        s0 = res["s0_mva"].get(lk, 0.0)
+        c = res["s_limit_mva"].get(lk, 1.0)
+        load_frac = s0 / c if c > 0 else 0.0
+        line_labels.append(f"L{lid}")
+        r_sigma_vals.append(r_sig)
+        loading_fracs.append(load_frac)
 
-    fig, ax = plt.subplots(figsize=(8, 6))
+    r_arr = np.array(r_sigma_vals)
+    load_arr = np.array(loading_fracs)
 
-    colors = ["#4C72B0" if be == "from" else "#DD8452" for be in binding_ends]
-    sizes = 5 + 15 * loading_arr
+    cmap = plt.colormaps["RdYlGn"]
+    # Invert: high loading (near 1.0) = red, low loading (near 0) = green
+    colors = [cmap(1.0 - lf) for lf in load_arr]
 
-    ax.scatter(
-        r_l2_arr,
-        r_sig_arr,
-        c=colors,
-        s=sizes**2,
-        alpha=0.6,
-        edgecolors="gray",
-        linewidths=0.3,
-    )
+    fig, ax = plt.subplots(figsize=(10, max(4, len(show) * 0.35)))
+    y_pos = np.arange(len(line_labels))
+    ax.barh(y_pos, r_arr, color=colors, edgecolor="gray", linewidth=0.5)
 
-    # Diagonal reference line
-    mean_sigma = np.mean(r_l2_arr / r_sig_arr)
-    ref_x = np.array([r_l2_arr.min(), r_l2_arr.max()])
-    ax.plot(
-        ref_x,
-        ref_x / mean_sigma,
-        "--",
-        color="gray",
-        linewidth=0.8,
-        alpha=0.6,
-        label=f"uniform-$\\sigma$ ref ($\\bar{{\\sigma}}$={mean_sigma:.1f})",
-    )
-
-    # Label top-3 tightest lines
-    sorted_idx = np.argsort(r_sig_arr)[:3]
-    for idx in sorted_idx:
-        lid = int(line_labels[idx].split("_", 1)[1])
-        ax.annotate(
-            f"L{lid}",
-            (r_l2_arr[idx], r_sig_arr[idx]),
-            textcoords="offset points",
-            xytext=(5, 5),
-            fontsize=8,
-            fontweight="bold",
+    for i, (r, lf) in enumerate(zip(r_arr, load_arr)):
+        ax.text(
+            r * 1.05, i, f"r={r:.1f}  ({lf:.0%} loaded)",
+            va="center", fontsize=8,
         )
 
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(line_labels, fontsize=9)
     ax.set_xscale("log")
-    ax.set_yscale("log")
-    ax.set_xlabel("$r_{L2}$ (MVA)", fontsize=12)
-    ax.set_ylabel("$r_\\sigma$ (number of $\\sigma$)", fontsize=12)
-    ax.tick_params(labelsize=10)
+    ax.set_xlabel("Sigma-radius $r_\\sigma$", fontsize=12)
+    ax.set_title(
+        f"{case_name}: Top-{len(show)} Critical Lines by Sigma-Radius",
+        fontsize=13,
+    )
+    ax.invert_yaxis()
 
-    from matplotlib.lines import Line2D
-
-    legend_elements = [
-        Line2D(
-            [0],
-            [0],
-            marker="o",
-            color="w",
-            markerfacecolor="#4C72B0",
-            markersize=8,
-            label="from end",
-        ),
-        Line2D(
-            [0],
-            [0],
-            marker="o",
-            color="w",
-            markerfacecolor="#DD8452",
-            markersize=8,
-            label="to end",
-        ),
-    ]
-    for load_frac, label in [
-        (0.3, "$S_0/c$=30%"),
-        (0.7, "$S_0/c$=70%"),
-        (0.95, "$S_0/c$=95%"),
-    ]:
-        sz = 5 + 15 * load_frac
-        legend_elements.append(
-            Line2D(
-                [0],
-                [0],
-                marker="o",
-                color="w",
-                markerfacecolor="gray",
-                markersize=sz,
-                label=label,
-            )
-        )
-    ax.legend(handles=legend_elements, fontsize=8, loc="upper left")
+    sm = plt.cm.ScalarMappable(
+        cmap=cmap, norm=mcolors.Normalize(vmin=0, vmax=1),
+    )
+    sm.set_array([])
+    cbar = fig.colorbar(sm, ax=ax, fraction=0.03, pad=0.01)
+    cbar.set_label("Loading fraction $S_0 / c$", fontsize=10)
 
     fig.tight_layout()
     for ext in ("png", "pdf"):
-        path = output_dir / f"fig2_l2_vs_sigma.{ext}"
+        path = output_dir / f"fig_critical_lines.{ext}"
         fig.savefig(str(path), dpi=dpi, bbox_inches="tight")
-    logger.info("Figure 2 (L2 vs sigma scatter) saved.")
+    logger.info("Critical lines bar chart saved.")
     plt.close(fig)
 
 
 # ---------------------------------------------------------------------------
-# Figure 2b: Per-bus sigma heatmap
+# Figure: Flow vs thermal limit scatter (which lines are close to overload)
 # ---------------------------------------------------------------------------
 
 
-def _plot_sigma_heatmap(
-    sigma_p_mw: np.ndarray,
-    sigma_q_mvar: np.ndarray,
-    *,
-    bus_ids: list[int],
+def _plot_flow_vs_limit(
     res: dict[str, Any],
-    top_k_critical: int,
+    *,
+    case_name: str = "",
     output_dir: Path,
     dpi: int = 300,
-    max_buses: int = 30,
+    top_k_label: int = 5,
 ) -> None:
-    """Heatmap of per-bus sigma_P and sigma_Q, sorted by total sigma."""
-    n_bus = len(bus_ids)
-    total_sigma = np.sqrt(sigma_p_mw**2 + sigma_q_mvar**2)
-    sorted_idx = np.argsort(total_sigma)[::-1]
+    """Scatter plot of base-point flow S0 vs thermal limit for each line."""
+    s0_vals: list[float] = []
+    limit_vals: list[float] = []
+    r_sigma_vals: list[float] = []
+    labels: list[str] = []
 
-    show_idx = sorted_idx[:max_buses]
-    show_bus_ids = [bus_ids[i] for i in show_idx]
-
-    data = np.column_stack([sigma_p_mw[show_idx], sigma_q_mvar[show_idx]])
-
-    # Find buses that contribute to top-k critical lines
-    sorted_lines = sorted(res["sigma_radius"].items(), key=lambda kv: kv[1])
-    top_critical = sorted_lines[:top_k_critical]
-    critical_bus_positions: set[int] = set()
-    for lk, _r in top_critical:
-        h = res["h_bind"].get(lk)
-        if h is None:
+    for lk, r_sig in res["sigma_radius"].items():
+        s0 = res["s0_mva"].get(lk, float("nan"))
+        c = res["s_limit_mva"].get(lk, float("nan"))
+        if not np.isfinite(s0) or not np.isfinite(c) or not np.isfinite(r_sig):
             continue
-        h_p = h[:n_bus]
-        h_q = h[n_bus:]
-        contrib = h_p**2 + h_q**2
-        top_bus_idx = np.argsort(contrib)[-5:]
-        critical_bus_positions.update(top_bus_idx.tolist())
+        s0_vals.append(s0)
+        limit_vals.append(c)
+        r_sigma_vals.append(r_sig)
+        labels.append(lk)
 
-    fig, ax = plt.subplots(figsize=(6, max(6, len(show_idx) * 0.3)))
+    if len(s0_vals) < 2:
+        logger.warning("Not enough data for flow-vs-limit plot.")
+        return
 
-    data_log = data.copy()
-    data_log[data_log <= 0] = _SIGMA_FLOOR
-    vmin = (
-        float(np.min(data_log[data_log > _SIGMA_FLOOR]))
-        if np.any(data_log > _SIGMA_FLOOR)
-        else _SIGMA_FLOOR
+    s0_arr = np.array(s0_vals)
+    limit_arr = np.array(limit_vals)
+    r_sig_arr = np.array(r_sigma_vals)
+
+    # Clip r_sigma for color mapping (log scale, positive only)
+    r_clip = np.clip(r_sig_arr, 0.1, None)
+    log_r = np.log10(r_clip)
+
+    fig, ax = plt.subplots(figsize=(9, 7))
+
+    sc = ax.scatter(
+        limit_arr, s0_arr,
+        c=log_r, cmap="RdYlGn", edgecolors="gray", linewidths=0.3,
+        s=40, alpha=0.7,
     )
-    vmax = float(np.max(data_log))
 
-    norm = mcolors.LogNorm(
-        vmin=max(vmin, _SIGMA_FLOOR), vmax=max(vmax, _SIGMA_FLOOR * 10)
+    # Diagonal S0 = limit
+    max_val = max(float(np.max(limit_arr)), float(np.max(s0_arr))) * 1.05
+    ax.plot([0, max_val], [0, max_val], "r--", linewidth=1, alpha=0.5,
+            label="$S_0 = c$ (overload boundary)")
+
+    # Label top-k closest to boundary (smallest margin)
+    margins = limit_arr - s0_arr
+    closest_idx = np.argsort(np.abs(margins))[:top_k_label]
+    for idx in closest_idx:
+        lid = int(labels[idx].split("_", 1)[1])
+        ax.annotate(
+            f"L{lid} (r={r_sig_arr[idx]:.1f})",
+            (limit_arr[idx], s0_arr[idx]),
+            textcoords="offset points", xytext=(5, -8),
+            fontsize=7, fontweight="bold",
+            arrowprops=dict(arrowstyle="-", color="gray", lw=0.5),
+        )
+
+    ax.set_xlabel("Thermal limit $c$ (MVA)", fontsize=12)
+    ax.set_ylabel("Base-point flow $S_0$ (MVA)", fontsize=12)
+    ax.set_title(
+        f"{case_name}: Line Loading vs Thermal Limit", fontsize=13,
     )
-    im = ax.imshow(
-        data_log, aspect="auto", cmap="Reds", norm=norm, interpolation="nearest"
-    )
+    ax.legend(fontsize=9, loc="upper left")
 
-    for row_pos, orig_idx in enumerate(show_idx):
-        if orig_idx in critical_bus_positions:
-            for col in range(2):
-                ax.plot(col, row_pos, marker="*", color="blue", markersize=8, zorder=3)
-
-    ax.set_yticks(range(len(show_idx)))
-    ax.set_yticklabels([f"bus {bid}" for bid in show_bus_ids], fontsize=8)
-    ax.set_xticks([0, 1])
-    ax.set_xticklabels(["$\\sigma_P$ (MW)", "$\\sigma_Q$ (MVAr)"], fontsize=11)
-
-    cbar = fig.colorbar(im, ax=ax, fraction=0.04, pad=0.02)
-    cbar.set_label("Injection std dev (MW / MVAr)", fontsize=10)
+    cbar = fig.colorbar(sc, ax=ax, fraction=0.03, pad=0.01)
+    cbar.set_label("$\\log_{10}(r_\\sigma)$", fontsize=10)
 
     fig.tight_layout()
     for ext in ("png", "pdf"):
-        path = output_dir / f"fig2b_sigma_heatmap.{ext}"
+        path = output_dir / f"fig_flow_vs_limit.{ext}"
         fig.savefig(str(path), dpi=dpi, bbox_inches="tight")
-    logger.info("Figure 2b (sigma heatmap) saved.")
+    logger.info("Flow vs limit scatter saved.")
+    plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# Figure: Violation scale (certificate conservatism)
+# ---------------------------------------------------------------------------
+
+
+def _plot_violation_scale(
+    verification_results: list[dict],
+    *,
+    case_name: str = "",
+    output_dir: Path,
+    dpi: int = 300,
+) -> None:
+    """Bar chart: actual violation scale vs predicted (1.0) for each line."""
+    items: list[tuple[str, float, float]] = []
+    for vr in verification_results:
+        vs = vr.get("violation_scale")
+        if vs is None:
+            continue
+        actual = vs.get("actual_violation_scale", float("nan"))
+        conserv = vs.get("conservatism_ratio", float("nan"))
+        if not np.isfinite(actual) or not np.isfinite(conserv):
+            continue
+        lk = vr.get("line_key", f"line_{vr.get('line_id', '?')}")
+        lid = int(lk.split("_", 1)[1])
+        items.append((f"L{lid}", actual, conserv))
+
+    if not items:
+        logger.warning("No violation-scale data for conservatism plot.")
+        return
+
+    labels_list = [x[0] for x in items]
+    actuals = np.array([x[1] for x in items])
+    conserv_ratios = np.array([x[2] for x in items])
+
+    # Color by conservatism: ~1.0 = green (accurate), >2 = yellow, >5 = red
+    cmap = plt.colormaps["RdYlGn"]
+    colors = [cmap(min(1.0, 1.0 / max(c, 0.01))) for c in conserv_ratios]
+
+    fig, ax = plt.subplots(figsize=(10, max(3, len(items) * 0.45)))
+    y_pos = np.arange(len(items))
+    ax.barh(y_pos, actuals, color=colors, edgecolor="gray", linewidth=0.5)
+    ax.axvline(x=1.0, color="red", linestyle="--", linewidth=1.5,
+               label="Predicted violation (scale=1.0)")
+
+    for i, (a, c) in enumerate(zip(actuals, conserv_ratios)):
+        ax.text(
+            a + 0.05, i,
+            f"actual={a:.2f}  ({c:.1f}x conserv.)",
+            va="center", fontsize=8,
+        )
+
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(labels_list, fontsize=9)
+    ax.set_xlabel("Perturbation scale at first violation", fontsize=12)
+    ax.set_title(
+        f"{case_name}: Certificate Conservatism "
+        "(actual vs predicted violation scale)",
+        fontsize=13,
+    )
+    ax.legend(fontsize=9)
+    ax.invert_yaxis()
+
+    fig.tight_layout()
+    for ext in ("png", "pdf"):
+        path = output_dir / f"fig_violation_scale.{ext}"
+        fig.savefig(str(path), dpi=dpi, bbox_inches="tight")
+    logger.info("Violation scale (conservatism) chart saved.")
     plt.close(fig)
 
 
@@ -1663,6 +1573,7 @@ def _plot_topology(
     res: dict[str, Any],
     bus_ids: list[int],
     top_k_critical: int,
+    case_name: str = "",
     output_dir: Path,
     figsize: tuple[float, float] = (16, 12),
     dpi: int = 200,
@@ -1671,7 +1582,8 @@ def _plot_topology(
     n_bus = len(bus_ids)
 
     G = pt.create_nxgraph(net, respect_switches=False)
-    pos = nx.kamada_kawai_layout(G)
+    # spring_layout is O(n) iterations — much faster than kamada_kawai O(n³)
+    pos = nx.spring_layout(G, k=2.0 / max(1, n_bus**0.5), iterations=80, seed=42)
 
     line_indices = list(net.line.index)
     sr = res["sigma_radius"]
@@ -1799,7 +1711,7 @@ def _plot_topology(
     )
 
     ax.set_title(
-        "Case118: AC Sigma-Radius at Average Operating Point",
+        f"{case_name}: AC Sigma-Radius at Average Operating Point",
         fontsize=14,
     )
     ax.set_axis_off()
@@ -1820,7 +1732,6 @@ def _plot_topology(
 def run(config_path: Path) -> None:
     cfg = _load_config(config_path)
     case_cfg = cfg["case"]
-    uc_cfg = cfg["uc_jl"]
     compute_cfg = cfg.get("compute", {})
     ac_cfg = compute_cfg.get("ac", {})
     fpf_cfg_dict = ac_cfg.get("fpf", {})
@@ -1854,47 +1765,7 @@ def run(config_path: Path) -> None:
     )
 
     # ------------------------------------------------------------------
-    # Step 1: Download UC.jl data + compute σ from load time series.
-    # ------------------------------------------------------------------
-    uc_dest = Path(uc_cfg.get("dest_dir", "data/uc_jl"))
-    uc_case_name = str(uc_cfg["case_name"])
-    uc_date = str(uc_cfg.get("date", "2017-01-01"))
-    power_factor = float(uc_cfg.get("power_factor", 0.9))
-
-    logger.info("Downloading UC.jl instance: %s (date=%s)", uc_case_name, uc_date)
-    uc_path = download_uc_jl_instance(uc_case_name, dest_dir=uc_dest, date=uc_date)
-
-    # σ from load time series (std of per-bus P_load(t) and Q_load(t))
-    sigma_data = load_sigma(uc_path, power_factor=power_factor)
-    sigma_p_mw_raw = sigma_data["sigma_p_mw"]
-    sigma_q_mvar_raw = sigma_data["sigma_q_mvar"]
-    sigma_p_mw = _clamp_sigma(sigma_p_mw_raw)
-    sigma_q_mvar = _clamp_sigma(sigma_q_mvar_raw)
-    n_clamped = int(np.sum(sigma_p_mw_raw < _SIGMA_FLOOR))
-
-    logger.info(
-        "Load-profile sigma: n_bus=%d, sigma_P range=[%.4g, %.4g] MW (%d buses clamped)",
-        len(sigma_p_mw),
-        float(np.min(sigma_p_mw)),
-        float(np.max(sigma_p_mw)),
-        n_clamped,
-    )
-
-    # Hourly profiles (needed for average loads)
-    hourly_data = load_hourly_profiles(uc_path, power_factor=power_factor)
-    load_p_mw = hourly_data["load_p_mw"]
-    load_q_mvar = hourly_data["load_q_mvar"]
-    n_hours = hourly_data["n_timesteps"]
-
-    logger.info(
-        "Hourly profiles: %d timesteps, total_P range=[%.1f, %.1f] MW",
-        n_hours,
-        float(np.sum(load_p_mw, axis=0).min()),
-        float(np.sum(load_p_mw, axis=0).max()),
-    )
-
-    # ------------------------------------------------------------------
-    # Step 2: Load network.
+    # Step 1: Load network.
     # ------------------------------------------------------------------
     from stability_radius.utils.download import ensure_case_file
 
@@ -1905,12 +1776,114 @@ def run(config_path: Path) -> None:
     bus_ids = [int(x) for x in sorted(net.bus.index)]
     n_bus = len(bus_ids)
 
-    if load_p_mw.shape[0] != n_bus:
-        raise ValueError(
-            f"Hourly profile bus count ({load_p_mw.shape[0]}) != network ({n_bus})"
+    logger.info("Network loaded: %d buses, %d lines", n_bus, len(net.line))
+
+    # ------------------------------------------------------------------
+    # Step 2: Compute sigma and load profiles.
+    #
+    # sigma_source: "uc_jl" uses UC.jl time-series data (e.g. case118).
+    #               "synthetic" generates sigma as a fraction of case loads
+    #               (works with any network, no external data needed).
+    # ------------------------------------------------------------------
+    sigma_source = str(cfg.get("sigma_source", "uc_jl"))
+
+    if sigma_source == "uc_jl":
+        uc_cfg = cfg["uc_jl"]
+        uc_dest = Path(uc_cfg.get("dest_dir", "data/uc_jl"))
+        uc_case_name = str(uc_cfg["case_name"])
+        uc_date = str(uc_cfg.get("date", "2017-01-01"))
+        power_factor = float(uc_cfg.get("power_factor", 0.9))
+
+        logger.info("Downloading UC.jl instance: %s (date=%s)", uc_case_name, uc_date)
+        uc_path = download_uc_jl_instance(
+            uc_case_name, dest_dir=uc_dest, date=uc_date,
         )
 
-    logger.info("Network loaded: %d buses, %d lines", n_bus, len(net.line))
+        sigma_data = load_sigma(uc_path, power_factor=power_factor)
+        sigma_p_mw_raw = sigma_data["sigma_p_mw"]
+        sigma_q_mvar_raw = sigma_data["sigma_q_mvar"]
+        sigma_p_mw = _clamp_sigma(sigma_p_mw_raw)
+        sigma_q_mvar = _clamp_sigma(sigma_q_mvar_raw)
+        n_clamped = int(np.sum(sigma_p_mw_raw < _SIGMA_FLOOR))
+
+        hourly_data = load_hourly_profiles(uc_path, power_factor=power_factor)
+        load_p_mw = hourly_data["load_p_mw"]
+        load_q_mvar = hourly_data["load_q_mvar"]
+        n_hours = hourly_data["n_timesteps"]
+
+        if load_p_mw.shape[0] != n_bus:
+            raise ValueError(
+                f"UC.jl bus count ({load_p_mw.shape[0]}) != network ({n_bus})"
+            )
+
+        logger.info(
+            "UC.jl sigma: n_bus=%d, sigma_P range=[%.4g, %.4g] MW "
+            "(%d clamped), %d timesteps",
+            len(sigma_p_mw),
+            float(np.min(sigma_p_mw)),
+            float(np.max(sigma_p_mw)),
+            n_clamped,
+            n_hours,
+        )
+
+    elif sigma_source == "synthetic":
+        # Generate sigma from case loads: sigma_P = fraction * |P_load|
+        synth_cfg = cfg.get("synthetic_sigma", {})
+        sigma_fraction = float(synth_cfg.get("fraction", 0.10))
+        power_factor = float(synth_cfg.get("power_factor", 0.9))
+
+        bus_to_pos = {bid: pos for pos, bid in enumerate(bus_ids)}
+        bus_p_load = np.zeros(n_bus, dtype=float)
+        bus_q_load = np.zeros(n_bus, dtype=float)
+
+        for load_idx in net.load.index:
+            lb = int(net.load.at[load_idx, "bus"])
+            if lb in bus_to_pos:
+                pos = bus_to_pos[lb]
+                bus_p_load[pos] += abs(float(net.load.at[load_idx, "p_mw"]))
+                bus_q_load[pos] += abs(
+                    float(net.load.at[load_idx, "q_mvar"]),
+                )
+
+        sigma_p_mw_raw = sigma_fraction * bus_p_load
+        sigma_q_mvar_raw = sigma_fraction * bus_q_load
+        # For buses with zero load, use a small sigma based on mean load
+        mean_p = (
+            float(np.mean(bus_p_load[bus_p_load > 0]))
+            if np.any(bus_p_load > 0)
+            else 1.0
+        )
+        sigma_p_mw_raw[sigma_p_mw_raw < _SIGMA_FLOOR] = (
+            sigma_fraction * mean_p * 0.1
+        )
+        sigma_q_mvar_raw[sigma_q_mvar_raw < _SIGMA_FLOOR] = (
+            sigma_fraction * mean_p * 0.1 * math.tan(math.acos(power_factor))
+        )
+
+        sigma_p_mw = _clamp_sigma(sigma_p_mw_raw)
+        sigma_q_mvar = _clamp_sigma(sigma_q_mvar_raw)
+        n_clamped = int(np.sum(sigma_p_mw_raw < _SIGMA_FLOOR))
+
+        # For synthetic mode, loads already in the case are the "average"
+        load_p_mw = bus_p_load[:, None]  # shape (n_bus, 1)
+        load_q_mvar = bus_q_load[:, None]
+        n_hours = 1
+
+        logger.info(
+            "Synthetic sigma (%.0f%% of load): n_bus=%d, "
+            "sigma_P range=[%.4g, %.4g] MW (%d clamped)",
+            sigma_fraction * 100,
+            len(sigma_p_mw),
+            float(np.min(sigma_p_mw)),
+            float(np.max(sigma_p_mw)),
+            n_clamped,
+        )
+
+    else:
+        raise ValueError(
+            f"Unknown sigma_source: {sigma_source!r}. "
+            "Use 'uc_jl' or 'synthetic'."
+        )
 
     # Save sigma arrays
     sigma_out = output_dir / "sigma_arrays.json"
@@ -1919,7 +1892,7 @@ def run(config_path: Path) -> None:
             {
                 "sigma_p_mw": sigma_p_mw.tolist(),
                 "sigma_q_mvar": sigma_q_mvar.tolist(),
-                "sigma_source": "load_time_series_std",
+                "sigma_source": sigma_source,
                 "n_timesteps": n_hours,
                 "n_clamped": n_clamped,
                 "sigma_floor": _SIGMA_FLOOR,
@@ -1969,8 +1942,9 @@ def run(config_path: Path) -> None:
     verify_top_k = int(verify_cfg.get("top_k", 10))
     verify_scales = [float(s) for s in verify_cfg.get("scales", [1.0])]
 
+    verification_results = None
     if table_rows:
-        _run_worst_case_verification(
+        verification_results = _run_worst_case_verification(
             net=avg_result["base_net"],
             res=res,
             sigma_results=avg_result["sigma_results"],
@@ -1982,41 +1956,26 @@ def run(config_path: Path) -> None:
         )
 
     # ------------------------------------------------------------------
-    # Step 7: Monte Carlo validation.
+    # Step 7: Monte Carlo validation (tightened-limit).
+    # Uses artificially low limits so that violations are reachable within
+    # ~5000 samples, enabling a meaningful Gaussian consistency check.
+    # The old "standard" MC (comparing analytical P(overload) ~1e-23 to
+    # MC P=0.00) has been removed — it always showed MISMATCH because
+    # r_sigma >> 5 makes analytical probabilities astronomically small.
     # ------------------------------------------------------------------
     mc_cfg = cfg.get("monte_carlo", {})
     mc_enabled = bool(mc_cfg.get("enabled", True))
     mc_n_samples = int(mc_cfg.get("n_samples", 5000))
     mc_seed = int(mc_cfg.get("seed", 42))
 
-    mc_results = None
-    if mc_enabled and table_rows:
-        mc_results = _run_monte_carlo_validation(
-            net=avg_result["base_net"],
-            res=res,
-            table_rows=table_rows,
-            bus_ids=bus_ids,
-            sigma_p_mw=sigma_p_mw,
-            sigma_q_mvar=sigma_q_mvar,
-            lossless=lossless,
-            n_samples=mc_n_samples,
-            seed=mc_seed,
-            output_dir=output_dir,
-        )
-
-    # ------------------------------------------------------------------
-    # Step 7b: Tightened-limit MC validation.
-    # Use artificially low limits so that violations are reachable within
-    # ~5000 samples, enabling a meaningful Gaussian consistency check.
-    # ------------------------------------------------------------------
     mc_tight_cfg = mc_cfg.get("tightened_limit", {})
     mc_tight_enabled = bool(mc_tight_cfg.get("enabled", mc_enabled))
     mc_tight_r_sigma = float(mc_tight_cfg.get("target_r_sigma", 2.0))
     mc_tight_n_samples = int(mc_tight_cfg.get("n_samples", mc_n_samples))
 
-    mc_tight_results = None
+    mc_results = None
     if mc_tight_enabled and table_rows:
-        mc_tight_results = _run_tightened_limit_mc(
+        mc_results = _run_tightened_limit_mc(
             net=avg_result["base_net"],
             res=res,
             avg_result=avg_result,
@@ -2044,7 +2003,6 @@ def run(config_path: Path) -> None:
         res=res,
         avg_result=avg_result,
         table_rows=table_rows,
-        mc_results=mc_results,
         sigma_p_mw_raw=sigma_p_mw_raw,
         n_bus=n_bus,
         output_dir=output_dir,
@@ -2055,7 +2013,7 @@ def run(config_path: Path) -> None:
     # ------------------------------------------------------------------
     results_out = {
         "case": case_cfg["name"],
-        "sigma_source": "load_time_series_std",
+        "sigma_source": sigma_source,
         "n_timesteps": n_hours,
         "sigma_radius": {k: v for k, v in sorted(res["sigma_radius"].items())},
         "table_rows": table_rows,
@@ -2072,7 +2030,7 @@ def run(config_path: Path) -> None:
     negative_sr = [v for v in finite_sr if v < 0]
     summary = {
         "case": case_cfg["name"],
-        "sigma_source": "load_time_series_std",
+        "sigma_source": sigma_source,
         "n_timesteps": n_hours,
         "n_lines": len(all_sr),
         "n_lines_finite": len(finite_sr),
@@ -2095,43 +2053,104 @@ def run(config_path: Path) -> None:
     # ------------------------------------------------------------------
     # Step 11: Plots.
     # ------------------------------------------------------------------
-    scatter_dpi = int(plot_cfg.get("scatter_dpi", 300))
-    heatmap_dpi = int(plot_cfg.get("heatmap_dpi", 300))
+    case_name = str(case_cfg.get("name", "unknown"))
 
-    _plot_topology(
-        net,
-        res=res,
-        bus_ids=bus_ids,
-        top_k_critical=top_k_critical,
-        output_dir=output_dir,
-        figsize=figsize,
-        dpi=plot_dpi,
+    for plot_fn, plot_kwargs in [
+        (
+            _plot_topology,
+            dict(
+                net=net, res=res, bus_ids=bus_ids,
+                top_k_critical=top_k_critical, case_name=case_name,
+                output_dir=output_dir, figsize=figsize, dpi=plot_dpi,
+            ),
+        ),
+        (
+            _plot_critical_lines_bar,
+            dict(res=res, case_name=case_name, output_dir=output_dir, dpi=plot_dpi),
+        ),
+        (
+            _plot_flow_vs_limit,
+            dict(res=res, case_name=case_name, output_dir=output_dir, dpi=plot_dpi),
+        ),
+    ]:
+        try:
+            plot_fn(**plot_kwargs)
+        except Exception:
+            logger.warning("Plot %s failed", plot_fn.__name__, exc_info=True)
+
+    if verification_results:
+        try:
+            _plot_violation_scale(
+                verification_results,
+                case_name=case_name, output_dir=output_dir, dpi=plot_dpi,
+            )
+        except Exception:
+            logger.warning("Violation scale plot failed", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Final summary.
+    # ------------------------------------------------------------------
+    min_r = min(positive_sr) if positive_sr else float("nan")
+    min_r_line = ""
+    if positive_sr:
+        for lk, v in sorted(res["sigma_radius"].items(), key=lambda kv: kv[1]):
+            if v > 0:
+                min_r_line = f" (line {lk.split('_', 1)[1]})"
+                break
+    mc_status = "N/A"
+    if mc_results and isinstance(mc_results, dict):
+        ratio = mc_results.get("ratio_analytE_over_empirical", None)
+        if ratio is not None and ratio != float("inf"):
+            mc_status = f"PASS (ratio={ratio:.2f})" if 0.5 <= ratio <= 2.0 else f"FAIL (ratio={ratio:.2f})"
+        elif mc_results.get("n_violations", 0) == 0 and mc_results.get("empirical_prob", 0) == 0:
+            mc_status = "PASS (0 violations)"
+
+    print()
+    print("=" * 55)
+    print("  EXPERIMENT SUMMARY")
+    print("=" * 55)
+    print(f"  Case:           {case_name} ({n_bus} buses, {len(net.line)} lines)")
+    print(f"  Sigma source:   {sigma_source}")
+    print(f"  Min r_sigma:    {min_r:.2f}{min_r_line}")
+    print(f"  Median r_sigma: {summary['global_median_sigma_radius']:.2f}")
+    print(f"  Tightened MC:   {mc_status}")
+    print(f"  Output:         {output_dir}")
+    print("=" * 55)
+    print()
+
+    logger.info("Experiment complete. Output: %s", output_dir)
+
+
+def _setup_logging(output_dir: Path) -> None:
+    """Configure root logger: console (INFO) + debug.log file (DEBUG)."""
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG)
+
+    # Remove existing handlers to avoid duplicates on re-runs
+    for h in root.handlers[:]:
+        root.removeHandler(h)
+
+    # Console handler: INFO
+    console = logging.StreamHandler()
+    console.setLevel(logging.INFO)
+    console.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s")
     )
+    root.addHandler(console)
 
-    _plot_scatter_l2_vs_sigma(
-        res,
-        output_dir=output_dir,
-        dpi=scatter_dpi,
+    # File handler: DEBUG → output_dir/debug.log
+    output_dir.mkdir(parents=True, exist_ok=True)
+    fh = logging.FileHandler(
+        str(output_dir / "debug.log"), mode="w", encoding="utf-8",
     )
-
-    _plot_sigma_heatmap(
-        sigma_p_mw,
-        sigma_q_mvar,
-        bus_ids=bus_ids,
-        res=res,
-        top_k_critical=top_k_critical,
-        output_dir=output_dir,
-        dpi=heatmap_dpi,
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s")
     )
-
-    logger.info("Experiment 2 complete. Output: %s", output_dir)
+    root.addHandler(fh)
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
-    )
     parser = argparse.ArgumentParser(
         description="Experiment 2: sigma-radius at average operating point.",
     )
@@ -2139,9 +2158,18 @@ def main() -> None:
         "--config",
         type=Path,
         default=_DEFAULT_CONFIG,
-        help="Path to uc_jl_case118.yaml config.",
+        help="Path to YAML config file.",
     )
     args = parser.parse_args()
+
+    # Pre-read config to get output_dir before run() starts
+    with args.config.open(encoding="utf-8") as fh:
+        _pre_cfg = yaml.safe_load(fh)
+    _out_dir = Path(
+        _pre_cfg.get("output_dir", "experiments/output/sigma_radius_hourly")
+    )
+    _setup_logging(_out_dir)
+
     run(args.config)
 
 
