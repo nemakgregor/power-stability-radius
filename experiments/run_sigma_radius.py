@@ -397,20 +397,17 @@ def _build_result_dict(avg_result: dict) -> dict[str, Any]:
 
 def _build_table2_rows(
     res: dict[str, Any],
-    *,
-    top_k: int = 10,
 ) -> list[dict]:
-    """Build Table 2 rows (top-k tightest lines) from average-point results.
+    """Build Table 2 rows for ALL lines, sorted by sigma-radius ascending.
 
     Lines with negative sigma-radius (base infeasible) are included and
     flagged.  MC violation rate and verified status are left as None --
     filled later.
     """
     candidates = sorted(res["sigma_radius"].items(), key=lambda kv: kv[1])
-    top = candidates[:top_k]
 
     rows: list[dict] = []
-    for lk, r_sig in top:
+    for lk, r_sig in candidates:
         lid = int(lk.split("_", 1)[1])
         s0 = res["s0_mva"].get(lk, float("nan"))
         c = res["s_limit_mva"].get(lk, float("nan"))
@@ -437,8 +434,9 @@ def _build_table2_rows(
     return rows
 
 
-def _print_table2(rows: list[dict]) -> None:
-    """Print full Table 2 to stdout."""
+def _print_table2(rows: list[dict], *, top_k: int = 20) -> None:
+    """Print Table 2 to stdout (top_k tightest lines)."""
+    display = rows[:top_k]
     header = (
         f"{'Line':>6s}  {'End':>4s}  {'S0(MVA)':>9s}  {'Limit':>9s}  "
         f"{'Margin':>9s}  {'sig_flow':>9s}  {'r_sigma':>9s}  "
@@ -447,12 +445,12 @@ def _print_table2(rows: list[dict]) -> None:
     width = len(header)
     print()
     print("=" * width)
-    print("Table 2: AC Sigma-Radius (top-k tightest lines)")
+    print(f"Table 2: AC Sigma-Radius (top-{len(display)} of {len(rows)} lines)")
     print("=" * width)
     print(header)
     print("-" * width)
 
-    for r in rows:
+    for r in display:
         p_ov = r["p_overload"]
         p_str = f"{p_ov:.2e}" if np.isfinite(p_ov) else "      --"
         feas = "  NO" if r.get("base_infeasible", False) else "  ok"
@@ -1315,9 +1313,8 @@ def _plot_critical_lines_bar(
     case_name: str = "",
     output_dir: Path,
     dpi: int = 300,
-    top_k: int = 20,
 ) -> None:
-    """Horizontal bar chart of the tightest lines by sigma-radius."""
+    """Horizontal bar chart of ALL lines sorted by sigma-radius (linear scale)."""
     candidates = sorted(
         (
             (lk, r_sig)
@@ -1326,15 +1323,14 @@ def _plot_critical_lines_bar(
         ),
         key=lambda kv: kv[1],
     )
-    show = candidates[:top_k]
-    if not show:
+    if not candidates:
         logger.warning("No positive-radius lines for critical-lines bar chart.")
         return
 
     line_labels = []
     r_sigma_vals = []
     loading_fracs = []
-    for lk, r_sig in reversed(show):  # reversed so tightest is at top
+    for lk, r_sig in reversed(candidates):  # reversed so tightest is at top
         lid = int(lk.split("_", 1)[1])
         s0 = res["s0_mva"].get(lk, 0.0)
         c = res["s_limit_mva"].get(lk, 1.0)
@@ -1343,29 +1339,46 @@ def _plot_critical_lines_bar(
         r_sigma_vals.append(r_sig)
         loading_fracs.append(load_frac)
 
+    n_lines = len(candidates)
     r_arr = np.array(r_sigma_vals)
     load_arr = np.array(loading_fracs)
+
+    # Clip x-axis at 95th percentile to avoid outliers compressing the view
+    x_limit = float(np.percentile(r_arr, 95)) * 1.15
+    if x_limit <= 0:
+        x_limit = float(np.max(r_arr)) * 1.05
+    r_display = np.clip(r_arr, 0, x_limit)
 
     cmap = plt.colormaps["RdYlGn"]
     # Invert: high loading (near 1.0) = red, low loading (near 0) = green
     colors = [cmap(1.0 - lf) for lf in load_arr]
 
-    fig, ax = plt.subplots(figsize=(10, max(4, len(show) * 0.35)))
-    y_pos = np.arange(len(line_labels))
-    ax.barh(y_pos, r_arr, color=colors, edgecolor="gray", linewidth=0.5)
+    fig, ax = plt.subplots(figsize=(12, max(4, n_lines * 0.18)))
+    y_pos = np.arange(n_lines)
+    ax.barh(y_pos, r_display, color=colors, edgecolor="gray", linewidth=0.3)
 
-    for i, (r, lf) in enumerate(zip(r_arr, load_arr)):
-        ax.text(
-            r * 1.05, i, f"r={r:.1f}  ({lf:.0%} loaded)",
-            va="center", fontsize=8,
-        )
+    # Only annotate the 20 tightest lines with text labels (bottom of plot)
+    n_annotate = min(20, n_lines)
+    for i in range(n_lines - n_annotate, n_lines):
+        r = r_arr[i]
+        lf = load_arr[i]
+        x_text = min(r, x_limit) + x_limit * 0.01
+        label = f"r={r:.1f}  ({lf:.0%})"
+        ax.text(x_text, i, label, va="center", fontsize=6)
 
-    ax.set_yticks(y_pos)
-    ax.set_yticklabels(line_labels, fontsize=9)
-    ax.set_xscale("log")
+    # Mark clipped bars
+    n_clipped = int(np.sum(r_arr > x_limit))
+
+    ax.set_xlim(0, x_limit * 1.15)
+    ax.set_yticks(y_pos[::max(1, n_lines // 50)])
+    ax.set_yticklabels(
+        [line_labels[i] for i in range(0, n_lines, max(1, n_lines // 50))],
+        fontsize=7,
+    )
     ax.set_xlabel("Sigma-radius $r_\\sigma$", fontsize=12)
+    clip_note = f" (x-axis clipped, {n_clipped} lines exceed)" if n_clipped else ""
     ax.set_title(
-        f"{case_name}: Top-{len(show)} Critical Lines by Sigma-Radius",
+        f"{case_name}: All {n_lines} Lines by Sigma-Radius{clip_note}",
         fontsize=13,
     )
     ax.invert_yaxis()
@@ -1396,9 +1409,14 @@ def _plot_flow_vs_limit(
     case_name: str = "",
     output_dir: Path,
     dpi: int = 300,
-    top_k_label: int = 5,
+    top_k_label: int = 10,
+    r_sigma_max: float = 50.0,
 ) -> None:
-    """Scatter plot of base-point flow S0 vs thermal limit for each line."""
+    """Scatter plot of base-point flow S0 vs thermal limit.
+
+    Only lines with r_sigma <= *r_sigma_max* are shown (filters out the
+    most stable lines that are far from overload and would clutter the plot).
+    """
     s0_vals: list[float] = []
     limit_vals: list[float] = []
     r_sigma_vals: list[float] = []
@@ -1409,6 +1427,8 @@ def _plot_flow_vs_limit(
         c = res["s_limit_mva"].get(lk, float("nan"))
         if not np.isfinite(s0) or not np.isfinite(c) or not np.isfinite(r_sig):
             continue
+        if r_sig > r_sigma_max:
+            continue
         s0_vals.append(s0)
         limit_vals.append(c)
         r_sigma_vals.append(r_sig)
@@ -1418,19 +1438,19 @@ def _plot_flow_vs_limit(
         logger.warning("Not enough data for flow-vs-limit plot.")
         return
 
+    n_total = sum(1 for r in res["sigma_radius"].values() if np.isfinite(r))
+
     s0_arr = np.array(s0_vals)
     limit_arr = np.array(limit_vals)
     r_sig_arr = np.array(r_sigma_vals)
 
-    # Clip r_sigma for color mapping (log scale, positive only)
-    r_clip = np.clip(r_sig_arr, 0.1, None)
-    log_r = np.log10(r_clip)
-
     fig, ax = plt.subplots(figsize=(9, 7))
 
+    # Linear color scale for r_sigma
+    r_clip = np.clip(r_sig_arr, 0, None)
     sc = ax.scatter(
         limit_arr, s0_arr,
-        c=log_r, cmap="RdYlGn", edgecolors="gray", linewidths=0.3,
+        c=r_clip, cmap="RdYlGn", edgecolors="gray", linewidths=0.3,
         s=40, alpha=0.7,
     )
 
@@ -1455,12 +1475,14 @@ def _plot_flow_vs_limit(
     ax.set_xlabel("Thermal limit $c$ (MVA)", fontsize=12)
     ax.set_ylabel("Base-point flow $S_0$ (MVA)", fontsize=12)
     ax.set_title(
-        f"{case_name}: Line Loading vs Thermal Limit", fontsize=13,
+        f"{case_name}: Line Loading vs Thermal Limit "
+        f"({len(s0_vals)}/{n_total} lines with $r_\\sigma \\leq {r_sigma_max:.0f}$)",
+        fontsize=13,
     )
     ax.legend(fontsize=9, loc="upper left")
 
     cbar = fig.colorbar(sc, ax=ax, fraction=0.03, pad=0.01)
-    cbar.set_label("$\\log_{10}(r_\\sigma)$", fontsize=10)
+    cbar.set_label("$r_\\sigma$", fontsize=10)
 
     fig.tight_layout()
     for ext in ("png", "pdf"):
@@ -1928,7 +1950,7 @@ def run(config_path: Path) -> None:
     # ------------------------------------------------------------------
     # Step 4: Build full Table 2 (pre-populate; MC/verification later).
     # ------------------------------------------------------------------
-    table_rows = _build_table2_rows(res, top_k=top_k_critical)
+    table_rows = _build_table2_rows(res)
 
     # ------------------------------------------------------------------
     # Step 5: Save h-vectors to NPZ.
@@ -1993,7 +2015,7 @@ def run(config_path: Path) -> None:
     # ------------------------------------------------------------------
     # Step 8: Print and export full Table 2.
     # ------------------------------------------------------------------
-    _print_table2(table_rows)
+    _print_table2(table_rows, top_k=top_k_critical)
     _export_table2_csv(table_rows, output_dir)
 
     # ------------------------------------------------------------------

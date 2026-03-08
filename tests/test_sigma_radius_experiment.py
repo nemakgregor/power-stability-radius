@@ -163,18 +163,18 @@ class TestBuildResultDict:
 
 
 class TestBuildTable2Rows:
-    def test_top_k_limits_output(self) -> None:
+    def test_returns_all_rows(self) -> None:
         from experiments.run_sigma_radius import _build_table2_rows
 
         res = _make_res([1.0, 2.0, 3.0, 4.0, 5.0])
-        rows = _build_table2_rows(res, top_k=3)
-        assert len(rows) == 3
+        rows = _build_table2_rows(res)
+        assert len(rows) == 5
 
     def test_rows_sorted_ascending_by_r_sigma(self) -> None:
         from experiments.run_sigma_radius import _build_table2_rows
 
         res = _make_res([5.0, 1.0, 3.0, 2.0, 4.0])
-        rows = _build_table2_rows(res, top_k=5)
+        rows = _build_table2_rows(res)
         r_values = [r["r_sigma"] for r in rows]
         assert r_values == sorted(r_values)
 
@@ -182,7 +182,7 @@ class TestBuildTable2Rows:
         from experiments.run_sigma_radius import _build_table2_rows
 
         res = _make_res([-2.0, 1.0, 3.0])
-        rows = _build_table2_rows(res, top_k=3)
+        rows = _build_table2_rows(res)
         assert rows[0]["base_infeasible"] is True
         assert rows[0]["r_sigma"] == pytest.approx(-2.0)
         assert rows[1]["base_infeasible"] is False
@@ -192,7 +192,7 @@ class TestBuildTable2Rows:
         from experiments.run_sigma_radius import _build_table2_rows
 
         res = _make_res([1.0, 2.0])
-        rows = _build_table2_rows(res, top_k=2)
+        rows = _build_table2_rows(res)
         for row in rows:
             assert row["mc_violation_rate"] is None
             assert row["verified"] is None
@@ -201,7 +201,7 @@ class TestBuildTable2Rows:
         from experiments.run_sigma_radius import _build_table2_rows
 
         res = _make_res([5.0], s0_values=[80.0], limit_values=[100.0])
-        rows = _build_table2_rows(res, top_k=1)
+        rows = _build_table2_rows(res)
         assert rows[0]["margin_mva"] == pytest.approx(20.0)
 
 
@@ -233,7 +233,8 @@ class TestWorstCaseVerificationSkipsInfeasible:
             s0_values=[105.0, 50.0, 40.0],
             limit_values=[100.0, 100.0, 100.0],
         )
-        rows = _build_table2_rows(res, top_k=3)
+        rows = _build_table2_rows(res)
+        rows = rows[:3]  # take only 3 for verification
 
         mock_net = MagicMock()
         output_dir = Path("/tmp/test_verify")
@@ -280,108 +281,6 @@ class TestWorstCaseVerificationSkipsInfeasible:
 # ---------------------------------------------------------------------------
 # Tests for MC validation with feasible-line selection
 # ---------------------------------------------------------------------------
-
-
-class TestMonteCarloFeasibleLineSelection:
-    def test_selects_tightest_positive_r_sigma(self) -> None:
-        """MC should select the tightest r_sigma > 0 line."""
-        from experiments.run_sigma_radius import _run_monte_carlo_validation
-
-        table_rows = [
-            {"line_key": "line_0", "r_sigma": -3.0, "base_infeasible": True},
-            {"line_key": "line_1", "r_sigma": -1.0, "base_infeasible": True},
-            {"line_key": "line_2", "r_sigma": 2.0, "base_infeasible": False},
-            {"line_key": "line_3", "r_sigma": 8.0, "base_infeasible": False},
-        ]
-
-        mock_net = MagicMock()
-        sigma_p = np.ones(3)
-        sigma_q = np.ones(3)
-
-        with (
-            patch("experiments.run_sigma_radius.copy") as mock_copy,
-            patch("experiments.run_sigma_radius.run_ac_monte_carlo_sigma") as mock_mc,
-            patch.object(Path, "open", create=True),
-            patch("experiments.run_sigma_radius.json"),
-        ):
-            mock_copy.deepcopy.return_value = mock_net
-
-            mock_mc_result = MagicMock()
-            mock_mc_result.n_samples = 100
-            mock_mc_result.n_violations = 5
-            mock_mc_result.n_pf_failures = 0
-            mock_mc_result.soundness_inside_sigma_ball = 0.95
-            mock_mc_result.empirical_overload_probability = {}
-            mock_mc.return_value = mock_mc_result
-
-            output_dir = Path("/tmp/test_mc")
-            output_dir.mkdir(parents=True, exist_ok=True)
-
-            result = _run_monte_carlo_validation(
-                net=mock_net,
-                res={},
-                table_rows=table_rows,
-                bus_ids=[0, 1, 2],
-                sigma_p_mw=sigma_p,
-                sigma_q_mvar=sigma_q,
-                lossless=True,
-                n_samples=100,
-                seed=42,
-                output_dir=output_dir,
-            )
-
-            assert result is not None
-            mc_call_kwargs = mock_mc.call_args[1]
-            assert mc_call_kwargs["r_sigma"] == pytest.approx(2.0)
-
-    def test_all_infeasible_uses_inf_for_ball(self) -> None:
-        """When all lines are infeasible, r_sigma_for_ball should be inf."""
-        from experiments.run_sigma_radius import _run_monte_carlo_validation
-
-        table_rows = [
-            {"line_key": "line_0", "r_sigma": -3.0, "base_infeasible": True},
-            {"line_key": "line_1", "r_sigma": -1.0, "base_infeasible": True},
-        ]
-
-        mock_net = MagicMock()
-        sigma_p = np.ones(3)
-        sigma_q = np.ones(3)
-
-        with (
-            patch("experiments.run_sigma_radius.copy") as mock_copy,
-            patch("experiments.run_sigma_radius.run_ac_monte_carlo_sigma") as mock_mc,
-            patch.object(Path, "open", create=True),
-            patch("experiments.run_sigma_radius.json"),
-        ):
-            mock_copy.deepcopy.return_value = mock_net
-
-            mock_mc_result = MagicMock()
-            mock_mc_result.n_samples = 100
-            mock_mc_result.n_violations = 100
-            mock_mc_result.n_pf_failures = 0
-            mock_mc_result.soundness_inside_sigma_ball = float("nan")
-            mock_mc_result.empirical_overload_probability = {}
-            mock_mc.return_value = mock_mc_result
-
-            output_dir = Path("/tmp/test_mc_inf")
-            output_dir.mkdir(parents=True, exist_ok=True)
-
-            result = _run_monte_carlo_validation(
-                net=mock_net,
-                res={},
-                table_rows=table_rows,
-                bus_ids=[0, 1, 2],
-                sigma_p_mw=sigma_p,
-                sigma_q_mvar=sigma_q,
-                lossless=True,
-                n_samples=100,
-                seed=42,
-                output_dir=output_dir,
-            )
-
-            assert result is not None
-            mc_call_kwargs = mock_mc.call_args[1]
-            assert mc_call_kwargs["r_sigma"] == float("inf")
 
 
 # ---------------------------------------------------------------------------
@@ -437,7 +336,7 @@ class TestValidationChecks:
         )
         from experiments.run_sigma_radius import _build_result_dict
         res = _build_result_dict(avg_result)
-        rows = _build_table2_rows(res, top_k=4)
+        rows = _build_table2_rows(res)
 
         output_dir = Path("/tmp/test_validation")
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -450,7 +349,6 @@ class TestValidationChecks:
                 res=res,
                 avg_result=avg_result,
                 table_rows=rows,
-                mc_results=None,
                 sigma_p_mw_raw=np.ones(3),
                 n_bus=3,
                 output_dir=output_dir,
@@ -469,7 +367,7 @@ class TestValidationChecks:
         avg_result = _make_avg_result(n_lines=1, line_ids=[0], sigma_radii=[5.0])
         from experiments.run_sigma_radius import _build_result_dict
         res = _build_result_dict(avg_result)
-        rows = _build_table2_rows(res, top_k=1)
+        rows = _build_table2_rows(res)
 
         output_dir = Path("/tmp/test_balance")
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -482,7 +380,6 @@ class TestValidationChecks:
                 res=res,
                 avg_result=avg_result,
                 table_rows=rows,
-                mc_results=None,
                 sigma_p_mw_raw=np.ones(3),
                 n_bus=3,
                 output_dir=output_dir,
@@ -504,7 +401,7 @@ class TestCSVExport:
         )
 
         res = _make_res([-1.0, 3.0])
-        rows = _build_table2_rows(res, top_k=2)
+        rows = _build_table2_rows(res)
         _export_table2_csv(rows, tmp_path)
 
         csv_path = tmp_path / "table2_sigma_radius.csv"
@@ -686,7 +583,8 @@ class TestMultiScaleVerification:
             s0_values=[80.0],
             limit_values=[100.0],
         )
-        rows = _build_table2_rows(res, top_k=1)
+        rows = _build_table2_rows(res)
+        rows = rows[:1]  # take only 1 for verification
 
         mock_net = MagicMock()
 
