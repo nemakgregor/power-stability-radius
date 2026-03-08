@@ -335,6 +335,7 @@ class TestValidationChecks:
             limit_values=[100.0, 100.0, 100.0, 100.0],
         )
         from experiments.run_sigma_radius import _build_result_dict
+
         res = _build_result_dict(avg_result)
         rows = _build_table2_rows(res)
 
@@ -366,6 +367,7 @@ class TestValidationChecks:
 
         avg_result = _make_avg_result(n_lines=1, line_ids=[0], sigma_radii=[5.0])
         from experiments.run_sigma_radius import _build_result_dict
+
         res = _build_result_dict(avg_result)
         rows = _build_table2_rows(res)
 
@@ -474,8 +476,14 @@ class TestACFeasibilityCheck:
         pp.create_ext_grid(net, b0, vm_pu=1.0)
         pp.create_load(net, b1, p_mw=50.0, q_mvar=10.0)
         pp.create_line_from_parameters(
-            net, from_bus=b0, to_bus=b1, length_km=1.0,
-            r_ohm_per_km=0.01, x_ohm_per_km=0.10, c_nf_per_km=0.0, max_i_ka=1.0,
+            net,
+            from_bus=b0,
+            to_bus=b1,
+            length_km=1.0,
+            r_ohm_per_km=0.01,
+            x_ohm_per_km=0.10,
+            c_nf_per_km=0.0,
+            max_i_ka=1.0,
         )
 
         base_pf = solve_ac_pf_base_point_from_pandapower(
@@ -504,8 +512,14 @@ class TestACFeasibilityCheck:
         pp.create_ext_grid(net, b0, vm_pu=1.0)
         pp.create_load(net, b1, p_mw=30.0, q_mvar=5.0)
         pp.create_line_from_parameters(
-            net, from_bus=b0, to_bus=b1, length_km=1.0,
-            r_ohm_per_km=0.01, x_ohm_per_km=0.10, c_nf_per_km=0.0, max_i_ka=1.0,
+            net,
+            from_bus=b0,
+            to_bus=b1,
+            length_km=1.0,
+            r_ohm_per_km=0.01,
+            x_ohm_per_km=0.10,
+            c_nf_per_km=0.0,
+            max_i_ka=1.0,
         )
 
         base_pf = solve_ac_pf_base_point_from_pandapower(
@@ -535,8 +549,12 @@ class TestNegativeSigmaRadius:
         c = np.array([100.0])
 
         res = compute_ac_sigma_radius(
-            h_vectors=h, s_limit_mva=c, s0_mva=s0,
-            sigma_p_mw=sigma_p, sigma_q_mvar=sigma_q, balance=True,
+            h_vectors=h,
+            s_limit_mva=c,
+            s0_mva=s0,
+            sigma_p_mw=sigma_p,
+            sigma_q_mvar=sigma_q,
+            balance=True,
         )
         assert res["line_0"]["radius_ac_sigma"] < 0
 
@@ -550,8 +568,12 @@ class TestNegativeSigmaRadius:
         c = np.array([100.0])
 
         res = compute_ac_sigma_radius(
-            h_vectors=h, s_limit_mva=c, s0_mva=s0,
-            sigma_p_mw=sigma_p, sigma_q_mvar=sigma_q, balance=True,
+            h_vectors=h,
+            s_limit_mva=c,
+            s0_mva=s0,
+            sigma_p_mw=sigma_p,
+            sigma_q_mvar=sigma_q,
+            balance=True,
         )
         assert res["line_0"]["radius_ac_sigma"] > 0
 
@@ -598,8 +620,12 @@ class TestMultiScaleVerification:
 
             mock_result = MagicMock()
             mock_result.to_dict.return_value = {
-                "line_id": 0, "actual_s_mva": 95.0, "predicted_s_mva": 100.0,
-                "pf_converged": True, "violated": False, "relative_error": 0.05,
+                "line_id": 0,
+                "actual_s_mva": 95.0,
+                "predicted_s_mva": 100.0,
+                "pf_converged": True,
+                "violated": False,
+                "relative_error": 0.05,
             }
             mock_result.pf_converged = True
             mock_result.violated = False
