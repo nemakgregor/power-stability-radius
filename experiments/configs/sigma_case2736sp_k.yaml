@@ -1,0 +1,52 @@
+# Sigma-radius experiment: pglib_opf_case2736sp_k (2736 buses, Polish system)
+#
+# Uses synthetic sigma (10% of bus loads) since UC.jl data is not available
+# for this network.
+
+case:
+  name: case2736sp_k
+  matpower_file: pglib_opf_case2736sp_k.m
+  slack_bus: 0
+
+sigma_source: synthetic
+
+synthetic_sigma:
+  fraction: 0.10
+  power_factor: 0.9
+
+compute:
+  ac:
+    chunk_size: 64
+    balance: true
+    lossless: true
+    fpf:
+      pg0_source: midpoint
+      vm_min_pu: 0.8
+      vm_max_pu: 1.1
+      max_iteration: 300
+      max_loading_percent: 99.0
+      init: dc
+      max_attempts: 3
+      per_attempt_timeout: 600
+
+verification:
+  top_k: 5
+  scales: [0.5, 1.0, 1.5]
+
+monte_carlo:
+  enabled: true
+  n_samples: 2000
+  seed: 42
+  tightened_limit:
+    enabled: true
+    target_r_sigma: 2.0
+    n_samples: 2000
+
+plot:
+  top_k_critical: 5
+  figsize: [20, 16]
+  dpi: 200
+
+allow_download: true
+data_dir: data/input
+output_dir: experiments/output/sigma_case2736sp_k

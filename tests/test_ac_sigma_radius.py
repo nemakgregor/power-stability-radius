@@ -15,7 +15,10 @@ def test_ac_sigma_radius_matches_margin_over_sigma_flow_synthetic_3bus() -> None
     Contract under test:
       r_sigma = (c - |S0|) / sigma_flow
 
-    We choose h blocks already balanced (sum=0), so balance projection should not change results.
+    With balance=True the σ²-weighted projection is applied:
+      hP_adj = hP - sum(σ²·hP)/sum(σ²)
+      hQ_adj = hQ - sum(σ²·hQ)/sum(σ²)
+    which ensures the worst-case perturbation satisfies 1ᵀΔP = 0, 1ᵀΔQ = 0.
     """
     n_bus = 3
     n_lines = 1
@@ -33,13 +36,14 @@ def test_ac_sigma_radius_matches_margin_over_sigma_flow_synthetic_3bus() -> None
     margin = float(c[0] - s0[0])
     assert margin == pytest.approx(10.0)
 
+    # Apply σ²-weighted balanced projection (same as compute_ac_sigma_radius)
+    sigp2 = sigma_p * sigma_p
+    sigq2 = sigma_q * sigma_q
+    hP_adj = hP - np.sum(sigp2 * hP) / np.sum(sigp2)
+    hQ_adj = hQ - np.sum(sigq2 * hQ) / np.sum(sigq2)
+
     expected_sigma_flow = math.sqrt(
-        (sigma_p[0] * hP[0]) ** 2
-        + (sigma_p[1] * hP[1]) ** 2
-        + (sigma_p[2] * hP[2]) ** 2
-        + (sigma_q[0] * hQ[0]) ** 2
-        + (sigma_q[1] * hQ[1]) ** 2
-        + (sigma_q[2] * hQ[2]) ** 2
+        np.sum((sigma_p * hP_adj) ** 2) + np.sum((sigma_q * hQ_adj) ** 2)
     )
 
     res = compute_ac_sigma_radius(
@@ -71,11 +75,15 @@ def test_ac_sigma_radius_matches_margin_over_sigma_flow_synthetic_3bus() -> None
     assert dp.shape == (n_bus,)
     assert dq.shape == (n_bus,)
 
-    # Component-wise formula check (eq. [5]).
-    expected_dp = expected_r * (sigma_p * sigma_p * hP) / expected_sigma_flow
-    expected_dq = expected_r * (sigma_q * sigma_q * hQ) / expected_sigma_flow
+    # Component-wise formula check (eq. [5]) with projected h.
+    expected_dp = expected_r * (sigma_p * sigma_p * hP_adj) / expected_sigma_flow
+    expected_dq = expected_r * (sigma_q * sigma_q * hQ_adj) / expected_sigma_flow
     assert np.allclose(dp, expected_dp, atol=1e-12, rtol=0.0)
     assert np.allclose(dq, expected_dq, atol=1e-12, rtol=0.0)
+
+    # Balance constraint: worst-case perturbation must satisfy 1ᵀΔP = 0, 1ᵀΔQ = 0
+    assert abs(np.sum(dp)) < 1e-10, f"sum(dp) = {np.sum(dp)}, not zero"
+    assert abs(np.sum(dq)) < 1e-10, f"sum(dq) = {np.sum(dq)}, not zero"
 
     prob = float(row["overload_probability_ac"])
     assert 0.0 <= prob <= 1.0

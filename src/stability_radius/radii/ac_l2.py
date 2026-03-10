@@ -21,7 +21,11 @@ _FALLBACK_WP_WQ = 1.0 / math.sqrt(2.0)
 
 
 def _balanced_two_block_norm_from_red(
-    *, a_p_red: np.ndarray, a_q_red: np.ndarray, n_bus_total: int
+    *,
+    a_p_red: np.ndarray,
+    a_q_red: np.ndarray,
+    n_bus_total: int,
+    n_pq_total: int | None = None,
 ) -> float:
     """
     Balanced dual norm for AC injections with two constraints:
@@ -29,6 +33,13 @@ def _balanced_two_block_norm_from_red(
 
     Combined:
       sqrt( ||Proj(aP)||^2 + ||Proj(aQ)||^2 )
+
+    Parameters
+    ----------
+    n_bus_total : int
+        Total bus count for the P-block projection.
+    n_pq_total : int or None
+        PQ bus count for the Q-block projection.  If None, uses n_bus_total.
     """
     ap = np.asarray(a_p_red, dtype=float).reshape(-1)
     aq = np.asarray(a_q_red, dtype=float).reshape(-1)
@@ -37,9 +48,10 @@ def _balanced_two_block_norm_from_red(
     s_p = float(np.sum(ap))
     proj2_p = t_p - (s_p * s_p) / float(n_bus_total)
 
+    n_q = int(n_pq_total) if n_pq_total is not None else int(n_bus_total)
     t_q = float(np.dot(aq, aq))
     s_q = float(np.sum(aq))
-    proj2_q = t_q - (s_q * s_q) / float(n_bus_total)
+    proj2_q = t_q - (s_q * s_q) / float(n_q) if n_q > 0 else t_q
 
     return math.sqrt(max(proj2_p, 0.0) + max(proj2_q, 0.0))
 
@@ -132,9 +144,13 @@ def compute_ac_l2_radius(
         margin_end[2 * i + 1] = float(margin_to[i])
 
     # ---------- optional h-vector storage ----------
+    n_vars = int(op.n_vars)
+    n_theta = int(op.n_red)
+    n_pq = int(op.n_pq)
+
     if return_h_vectors:
-        h_from = np.zeros((m, 2 * n_red), dtype=float)
-        h_to = np.zeros((m, 2 * n_red), dtype=float)
+        h_from = np.zeros((m, n_vars), dtype=float)
+        h_to = np.zeros((m, n_vars), dtype=float)
 
     # ---------- chunked adjoint solves ----------
     fallback_used = 0
@@ -144,7 +160,7 @@ def compute_ac_l2_radius(
         end = min(n_con, start + int(chunk_size))
         k = int(end - start)
 
-        B = np.zeros((2 * n_red, k), dtype=float)
+        B = np.zeros((n_vars, k), dtype=float)
 
         for j in range(k):
             con_idx = int(start + j)
@@ -217,22 +233,30 @@ def compute_ac_l2_radius(
             b_Vi = wP * dP_dVi + wQ * dQ_dVi
             b_Vk = wP * dP_dVk + wQ * dQ_dVk
 
-            ri = int(op.red_pos_of_bus_pos[i_pos])
-            rk = int(op.red_pos_of_bus_pos[k_pos])
+            # Theta entries (all non-slack buses)
+            ri_theta = int(op.theta_red_pos[i_pos])
+            rk_theta = int(op.theta_red_pos[k_pos])
 
-            if ri >= 0:
-                B[ri, j] += float(b_ti)
-                B[n_red + ri, j] += float(b_Vi)
-            if rk >= 0:
-                B[rk, j] += float(b_tk)
-                B[n_red + rk, j] += float(b_Vk)
+            if ri_theta >= 0:
+                B[ri_theta, j] += float(b_ti)
+            if rk_theta >= 0:
+                B[rk_theta, j] += float(b_tk)
+
+            # V entries (PQ buses only)
+            ri_v = int(op.v_red_pos[i_pos])
+            rk_v = int(op.v_red_pos[k_pos])
+
+            if ri_v >= 0:
+                B[n_theta + ri_v, j] += float(b_Vi)
+            if rk_v >= 0:
+                B[n_theta + rk_v, j] += float(b_Vk)
 
         Y = op.solve_J_transpose(B)
 
         for j in range(k):
             con_idx = int(start + j)
-            a_p = Y[0:n_red, j]
-            a_q = Y[n_red : 2 * n_red, j]
+            a_p = Y[0:n_theta, j]
+            a_q = Y[n_theta:n_vars, j]
 
             if return_h_vectors:
                 line_pos = con_idx // 2
@@ -243,7 +267,10 @@ def compute_ac_l2_radius(
 
             if bool(balance):
                 denom = _balanced_two_block_norm_from_red(
-                    a_p_red=a_p, a_q_red=a_q, n_bus_total=n_bus
+                    a_p_red=a_p,
+                    a_q_red=a_q,
+                    n_bus_total=n_bus,
+                    n_pq_total=n_pq,
                 )
             else:
                 denom = float(np.linalg.norm(Y[:, j], ord=2))
@@ -335,6 +362,7 @@ def compute_ac_l2_radius(
         results["_h_vectors"] = {
             "h_from": h_from,
             "h_to": h_to,
+            "pq_mask": op.pq_mask,
         }
 
     return results

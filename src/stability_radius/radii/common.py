@@ -25,7 +25,7 @@ class LineBaseQuantities:
     - p0_abs_mw is abs(flow0_mw).
     - limit_mva_assumed_mw is the thermal limit extracted from the case (typically MVA),
       and then used as MW under the DC PF=1 convention.
-    - margin_mw = max(limit - abs(flow0), 0).
+    - margin_mw = limit - abs(flow0).  Can be negative if the base flow exceeds the limit.
 
     Unconstrained lines
     -------------------
@@ -80,6 +80,9 @@ class LineBaseQuantities:
 
     # Optional: per-generator dispatch (PyPSA generator names -> P(MW)).
     opf_gen_dispatch_mw_by_name: tuple[tuple[str, float], ...] | None = None
+
+    # Optional: ext_grid absorption used by OPF (MW).
+    opf_ext_grid_absorption_mw: float = 0.0
 
 
 def _line_row_id(line_row: object) -> str:
@@ -442,7 +445,7 @@ def get_line_base_quantities(
     flow0 = np.asarray(opf_res.line_flows_mw, dtype=float)
 
     p0_abs = np.abs(flow0)
-    margins = np.maximum(limits_mva_assumed_mw - p0_abs, 0.0)
+    margins = limits_mva_assumed_mw - p0_abs
 
     bus_ids = [int(x) for x in sorted(net.bus.index)]
     if tuple(bus_ids) != tuple(opf_res.bus_ids):
@@ -470,6 +473,9 @@ def get_line_base_quantities(
         bus_injections_mw=bus_inj,
         opf_limits_mw=opf_limits,
         opf_gen_dispatch_mw_by_name=getattr(opf_res, "gen_dispatch_mw_by_name", None),
+        opf_ext_grid_absorption_mw=float(
+            getattr(opf_res, "ext_grid_absorption_mw", 0.0)
+        ),
     )
 
 

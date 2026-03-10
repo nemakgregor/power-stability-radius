@@ -34,14 +34,17 @@ Gaussian overload probability (symmetric limits):
 
 Balanced disturbances (optional)
 --------------------------------
-If balance=True, we project each h-vector block independently onto:
+If balance=True, we enforce the physical power balance constraint:
     1^T ΔP = 0 and 1^T ΔQ = 0
 
-This is implemented by mean-subtraction on the P and Q blocks:
-    hP <- hP - mean(hP)
-    hQ <- hQ - mean(hQ)
+Because the worst-case perturbation is dp_i = r * σ_i² * hP_i / σ_flow,
+the constraint sum(dp_i) = 0 requires sum(σ_i² * hP_i) = 0.  We achieve
+this via a σ²-weighted mean subtraction:
+    hP <- hP - sum(σ_P² · hP) / sum(σ_P²)
+    hQ <- hQ - sum(σ_Q² · hQ) / sum(σ_Q²)
 
-Note: this follows the same projection logic used for the AC L2 certificate norms.
+This differs from the L2 certificate (which uses unweighted mean-subtraction)
+because here the perturbation ellipsoid is anisotropic (Σ-weighted).
 """
 
 import logging
@@ -217,11 +220,26 @@ def compute_ac_sigma_radius(
     hQ = np.asarray(H[:, n_bus : 2 * n_bus], dtype=float, order="C")
 
     if bool(balance):
-        # Project each block independently: Proj(v) = v - mean(v)*1.
-        # This matches the logic used for AC L2 certificate norms (two independent balance constraints).
-        hP = hP - np.mean(hP, axis=1, keepdims=True)
-        hQ = hQ - np.mean(hQ, axis=1, keepdims=True)
-        logger.debug("Applied balanced projection to h-vectors (P/Q blocks).")
+        # Physical balance constraint: 1^T ΔP = 0 and 1^T ΔQ = 0.
+        #
+        # Worst-case perturbation: dp_i = σ_i² · hP_adj_i · r / σ_flow.
+        # For sum(dp) = 0 we need sum(σ_i² · hP_adj_i) = 0, so we subtract
+        # the σ²-weighted mean:
+        #   hP_adj = hP - sum(σ_P² · hP) / sum(σ_P²)
+        #
+        # This is the Lagrangian solution for max h^T Δu s.t. ||Σ^{-1/2} Δu|| ≤ r
+        # and 1^T ΔP = 0, 1^T ΔQ = 0.
+        sigp2 = (sig_p * sig_p)[None, :]  # (1, n_bus)
+        sigq2 = (sig_q * sig_q)[None, :]
+        sum_sigp2 = float(np.sum(sigp2))
+        sum_sigq2 = float(np.sum(sigq2))
+        if sum_sigp2 > 0:
+            mu_p = np.sum(sigp2 * hP, axis=1, keepdims=True) / sum_sigp2
+            hP = hP - mu_p
+        if sum_sigq2 > 0:
+            mu_q = np.sum(sigq2 * hQ, axis=1, keepdims=True) / sum_sigq2
+            hQ = hQ - mu_q
+        logger.debug("Applied sigma²-weighted balanced projection to h-vectors.")
 
     # sigma_flow_l = || [sigma_p*hP, sigma_q*hQ] ||_2
     scaledP = hP * sig_p[None, :]

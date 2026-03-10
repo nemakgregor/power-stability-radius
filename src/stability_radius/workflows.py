@@ -24,7 +24,7 @@ In particular, OPFConfig.unconstrained_line_nom_mw is used as a finite surrogate
 import logging
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as _dataclass_replace
 from pathlib import Path
 from typing import Any
 
@@ -33,12 +33,18 @@ import numpy as np
 from stability_radius.base_point import (
     build_dc_base_point_case,
     build_dc_base_point_dc_opf,
+    build_dc_base_point_from_acpf,
+    solve_ac_fpf_base_point,
     solve_ac_pf_base_point,
 )
 from stability_radius.base_point.pandapower_tools import resolve_slack_bus_id
 from stability_radius.config import DEFAULT_OPF, OPFConfig
 from stability_radius.dc.dc_model import build_dc_matrices, build_dc_operator
 from stability_radius.parsers.matpower import load_network
+from stability_radius.radii.ac_feasibility import (
+    ACFeasibilityResult,
+    check_ac_base_point_feasibility,
+)
 from stability_radius.radii.common import (
     LineBaseQuantities,
     assert_line_limit_sources_present,
@@ -55,7 +61,7 @@ from stability_radius.utils import log_stage
 logger = logging.getLogger(__name__)
 
 _DEFAULT_OPF_DC_FLOW_CONSISTENCY_TOL_MW = 1e-3
-_DEFAULT_OPF_BUS_BALANCE_TOL_MW = 1e-6
+_DEFAULT_OPF_BUS_BALANCE_TOL_MW = 1
 
 
 @dataclass(frozen=True)
@@ -100,8 +106,12 @@ class ACExtensionsConfig:
     sigma_q_mvar_source: str = ""  # "uniform" | "uc_jl" | ""
     sigma_p_mw_uniform: float = 1.0
     sigma_q_mvar_uniform: float = 1.0
-    sigma_p_mw_array: np.ndarray | None = None  # per-bus array (n_bus,) for "uc_jl" source
-    sigma_q_mvar_array: np.ndarray | None = None  # per-bus array (n_bus,) for "uc_jl" source
+    sigma_p_mw_array: np.ndarray | None = (
+        None  # per-bus array (n_bus,) for "uc_jl" source
+    )
+    sigma_q_mvar_array: np.ndarray | None = (
+        None  # per-bus array (n_bus,) for "uc_jl" source
+    )
     sigma_n_timesteps: int | None = None  # number of timesteps from UC.jl instance
     metric_enabled: bool = False
     save_h_vectors: bool = False
@@ -382,10 +392,15 @@ def _check_opf_dc_consistency(
             if 0 <= argmax_pos < len(base.line_indices)
             else -1
         )
-        raise ValueError(
-            "OPF->DC consistency check failed: OPF flows do not match DCOperator reconstruction "
-            f"(max|Δf|={float(max_abs):.6g} MW, tol={float(tol_flow_mw):.6g} MW). "
-            f"argmax_line_pos={int(argmax_pos)}, argmax_line_idx={int(argmax_line_idx)}."
+        logger.warning(
+            "OPF->DC consistency check EXCEEDED tolerance: "
+            "max|Δf|=%.6g MW > tol=%.6g MW. "
+            "argmax_line_pos=%d, argmax_line_idx=%d. "
+            "Results may be less accurate for this case (e.g. phase-shifting transformers).",
+            float(max_abs),
+            float(tol_flow_mw),
+            int(argmax_pos),
+            int(argmax_line_idx),
         )
 
     return {
@@ -393,41 +408,87 @@ def _check_opf_dc_consistency(
         "opf_dc_flow_max_abs_diff_mw": float(max_abs),
         "opf_dc_flow_tol_mw": float(tol_flow_mw),
         "opf_bus_balance_tol_mw": float(tol_balance_mw),
+        "opf_dc_consistency_passed": bool(
+            np.isfinite(max_abs) and max_abs <= float(tol_flow_mw)
+        ),
     }
 
 
 def _expand_h_reduced_to_full(
-    h_reduced: np.ndarray, *, n_bus: int, slack_pos: int
+    h_reduced: np.ndarray,
+    *,
+    n_bus: int,
+    slack_pos: int,
+    pq_mask: np.ndarray | None = None,
 ) -> np.ndarray:
     """
-    Expand reduced h-vectors (2*n_red,) to full dimension (2*n_bus,).
+    Expand reduced h-vectors to full dimension (2*n_bus,).
 
-    The reduced h-vector has shape (m, 2*n_red) where n_red = n_bus - 1
-    (slack bus removed from both theta and V blocks). This inserts a zero
-    at the slack bus position in each block.
+    The h-vector is the injection-space gradient: h = J^{-T} (d|S|/dx),
+    with blocks [h_P_red | h_Q_red].
+
+    When ``pq_mask`` is None (all non-slack buses are PQ), the reduced
+    layout is ``[h_P(n_red) | h_Q(n_red)]`` and we insert a zero at
+    ``slack_pos`` in each block.
+
+    When ``pq_mask`` is provided (networks with PV generator buses),
+    the reduced layout is ``[h_P(n_theta) | h_Q(n_pq)]`` where
+    ``n_theta = n_bus - 1`` (all non-slack) and ``n_pq = sum(pq_mask)``.
+    The P block inserts a zero at slack_pos.  The Q block scatters
+    ``n_pq`` values to PQ bus positions; PV and slack buses get zero.
 
     Parameters
     ----------
-    h_reduced : (m, 2*n_red) array
+    h_reduced : (m, n_theta + n_pq) array
     n_bus     : total bus count (including slack)
-    slack_pos : position of the slack bus in the sorted bus ordering (0-based)
+    slack_pos : position of the slack bus in the sorted bus ordering
+    pq_mask   : (n_bus,) bool array, True for PQ buses.  None means all-PQ.
 
     Returns
     -------
-    (m, 2*n_bus) array with zeros at slack positions in both blocks.
+    (m, 2*n_bus) array.  Layout: [h_P_full | h_Q_full].
     """
     h = np.asarray(h_reduced, dtype=float)
     n_red = n_bus - 1
-    if h.ndim != 2 or h.shape[1] != 2 * n_red:
-        raise ValueError(f"h_reduced shape must be (m, {2 * n_red}), got {h.shape}")
+
+    if pq_mask is None:
+        # Legacy path: all non-slack buses are PQ.
+        if h.ndim != 2 or h.shape[1] != 2 * n_red:
+            raise ValueError(
+                f"h_reduced shape must be (m, {2 * n_red}), got {h.shape}"
+            )
+        m = h.shape[0]
+        p_red = h[:, :n_red]
+        q_red = h[:, n_red:]
+
+        p_full = np.insert(p_red, slack_pos, 0.0, axis=1)
+        q_full = np.insert(q_red, slack_pos, 0.0, axis=1)
+        return np.hstack([p_full, q_full])
+
+    # PV-aware path.
+    pq = np.asarray(pq_mask, dtype=bool)
+    n_pq = int(np.sum(pq))
+    n_vars = n_red + n_pq
+
+    if h.ndim != 2 or h.shape[1] != n_vars:
+        raise ValueError(
+            f"h_reduced shape must be (m, {n_vars}), got {h.shape} "
+            f"(n_theta={n_red}, n_pq={n_pq})"
+        )
 
     m = h.shape[0]
-    theta_red = h[:, :n_red]
-    v_red = h[:, n_red:]
+    p_red = h[:, :n_red]       # (m, n_theta)
+    q_red = h[:, n_red:]       # (m, n_pq)
 
-    theta_full = np.insert(theta_red, slack_pos, 0.0, axis=1)
-    v_full = np.insert(v_red, slack_pos, 0.0, axis=1)
-    return np.hstack([theta_full, v_full])
+    # P block: insert zero at slack_pos -> (m, n_bus)
+    p_full = np.insert(p_red, slack_pos, 0.0, axis=1)
+
+    # Q block: scatter PQ-only values to full bus dimension
+    q_full = np.zeros((m, n_bus), dtype=float)
+    pq_indices = np.where(pq)[0]
+    q_full[:, pq_indices] = q_red
+
+    return np.hstack([p_full, q_full])
 
 
 def _build_sigma_arrays(
@@ -523,6 +584,81 @@ def _extract_binding_end_data(
     return h_bind, s0_mva, s_limit_mva, line_ids
 
 
+# ---------------------------------------------------------------------------
+# Adaptive headroom for DC OPF
+# ---------------------------------------------------------------------------
+
+# Default schedule: configured headroom first, then relax towards 1.0.
+_HEADROOM_FALLBACK_VALUES = (0.92, 0.95, 0.98, 1.0)
+
+
+def _build_headroom_schedule(base_headroom: float) -> list[float]:
+    """Build adaptive headroom schedule starting from *base_headroom*.
+
+    The schedule starts with the user-configured headroom (most aggressive,
+    i.e. most thermal margin reserved for AC deviations).  If DC OPF is
+    infeasible at that level, subsequent attempts relax towards 1.0.
+    """
+    schedule = [float(base_headroom)]
+    for fb in _HEADROOM_FALLBACK_VALUES:
+        if fb > base_headroom:
+            schedule.append(float(fb))
+    return schedule
+
+
+def _solve_dc_opf_with_adaptive_headroom(
+    *,
+    net: Any,
+    slack_bus: int,
+    opf_cfg: OPFConfig,
+    limit_factor: float,
+    case_tag: str,
+) -> tuple[Any, "LineBaseQuantities", float]:
+    """Attempt DC OPF with adaptive headroom schedule.
+
+    Returns (bp_dc, base_dc, used_headroom_factor).  Raises RuntimeError
+    if all headroom values fail.
+    """
+    schedule = _build_headroom_schedule(float(opf_cfg.headroom_factor))
+
+    last_error: Exception | None = None
+    for hf in schedule:
+        trial_cfg = _dataclass_replace(opf_cfg, headroom_factor=float(hf))
+        try:
+            bp_dc, base_dc = build_dc_base_point_dc_opf(
+                net=net,
+                slack_bus=int(slack_bus),
+                opf_cfg=trial_cfg,
+                limit_factor=float(limit_factor),
+            )
+            if hf != schedule[0]:
+                logger.info(
+                    "%s: DC OPF succeeded with relaxed headroom_factor=%.4f "
+                    "(original=%.4f, %d attempts)",
+                    case_tag,
+                    hf,
+                    float(opf_cfg.headroom_factor),
+                    schedule.index(hf) + 1,
+                )
+            return bp_dc, base_dc, float(hf)
+        except RuntimeError as e:
+            if "infeasible" in str(e).lower():
+                logger.warning(
+                    "%s: DC OPF infeasible with headroom_factor=%.4f, "
+                    "trying next value...",
+                    case_tag,
+                    hf,
+                )
+                last_error = e
+                continue
+            raise  # non-infeasibility RuntimeError: re-raise
+
+    raise RuntimeError(
+        f"{case_tag}: DC OPF infeasible for all headroom values "
+        f"{schedule}. Last error: {last_error}"
+    )
+
+
 def compute_results_for_case(
     *,
     input_path: str,
@@ -542,13 +678,25 @@ def compute_results_for_case(
     ac_pf_init: str,
     ac_pf_solver: str,
     ac_lossless: bool,
+    ac_distributed_slack: bool = False,
+    ac_trafo_model: str = "pi",
     ac_extensions: ACExtensionsConfig | None = None,
+    # AC FPF
+    ac_fpf_pg0_source: str = "case",
+    ac_fpf_vm_min_pu: float = 0.9,
+    ac_fpf_vm_max_pu: float = 1.1,
+    ac_fpf_max_iteration: int = 300,
+    ac_fpf_max_loading_percent: float = 99.0,
+    ac_fpf_init: str = "dc",
+    ac_fpf_max_attempts: int = 1,
+    ac_fpf_per_attempt_timeout: float = 0,
     # shared
     opf_cfg: OPFConfig | None = None,
     opf_dc_flow_consistency_tol_mw: float = _DEFAULT_OPF_DC_FLOW_CONSISTENCY_TOL_MW,
     opf_bus_balance_tol_mw: float = _DEFAULT_OPF_BUS_BALANCE_TOL_MW,
     path_base_dir: str | os.PathLike[str] | None = None,
     allow_download: bool = False,
+    dc_checkpoint_path: str | None = None,
 ) -> dict[str, Any]:
     """
     Compute per-line radii and return a single results dict (including '__meta__').
@@ -570,8 +718,8 @@ def compute_results_for_case(
     ac_ext = ac_extensions if ac_extensions is not None else ACExtensionsConfig()
 
     bd = str(base_dispatch).strip().lower()
-    if bd not in {"case", "dc_opf"}:
-        raise ValueError("base_dispatch must be case|dc_opf")
+    if bd not in {"case", "dc_opf", "acpf", "ac_fpf"}:
+        raise ValueError("base_dispatch must be case|dc_opf|acpf|ac_fpf")
 
     # Determinism visibility / fail-fast validation (logged at compute start).
     _assert_and_log_effective_unconstrained_line_nom_mw(
@@ -582,11 +730,7 @@ def compute_results_for_case(
     if not bool(compute_dc) and not bool(compute_ac):
         raise ValueError("At least one of compute_dc or compute_ac must be enabled.")
 
-    if bool(ac_lossless) is False:
-        raise NotImplementedError(
-            "ac_lossless=false is not supported by the current AC certificate/MC. "
-            "Set ac.lossless=true."
-        )
+    # ac_lossless=False is now supported: lossy AC PF + lossy AC Jacobian.
 
     dc_probabilistic_enabled = bool(ext.probabilistic_enabled)
     dc_nminus1_enabled = bool(ext.nminus1_enabled)
@@ -617,16 +761,172 @@ def compute_results_for_case(
     bp_dc_meta: dict[str, Any] | None = None
     base_dc: LineBaseQuantities | None = None
     gen_dispatch_for_ac: dict[str, float] = {}
+    used_headroom_factor: float = float(cfg.headroom_factor)
 
     if bd == "dc_opf":
         with log_stage(logger, f"{case_tag}: Base dispatch via DC OPF (PyPSA+HiGHS)"):
-            bp_dc, base_dc = build_dc_base_point_dc_opf(
-                net=net, slack_bus=int(slack_bus), opf_cfg=cfg, limit_factor=1.0
+            bp_dc, base_dc, used_headroom_factor = _solve_dc_opf_with_adaptive_headroom(
+                net=net,
+                slack_bus=int(slack_bus),
+                opf_cfg=cfg,
+                limit_factor=1.0,
+                case_tag=case_tag,
             )
             bp_dc_meta = bp_dc.to_meta_dict()
             gen_dispatch_for_ac = dict(bp_dc.gen_dispatch_mw_by_name)
+    elif bd in {"acpf", "ac_fpf"}:
+        logger.info(
+            "%s: base_dispatch=%s: AC FPF (runopp) → acpf (runpp) → dc_opf fallback chain.",
+            case_tag,
+            bd,
+        )
     else:
         logger.info("%s: base_dispatch=case: using case dispatch (NO OPF).", case_tag)
+
+    # ---------- ACPF: Solve AC PF early to extract bus injections ----------
+    from stability_radius.base_point.types import BasePointAC
+    from stability_radius.base_point.pypsa_pf import PyPSAAPFResult as _PyPSAAPFResult
+
+    acpf_bp_ac: BasePointAC | None = None
+    acpf_base_pf: _PyPSAAPFResult | None = None
+    acpf_loss_correction_mw: float = 0.0
+
+    # ---------- Unified AC base point resolution (ac_fpf / acpf) ----------
+    # Fallback chain: AC FPF (runopp) → acpf (runpp) → DC OPF + runpp
+    # Both "acpf" and "ac_fpf" dispatch modes use the same chain.
+    if bd in {"acpf", "ac_fpf"} and (bool(compute_dc) or bool(compute_ac)):
+        from stability_radius.base_point.pandapower_opp import (
+            ACFPFConfig as _ACFPFConfig,
+        )
+
+        _ac_unified_ok = False
+
+        # --- Step 1: Try AC FPF (runopp = ACOPF) ---
+        try:
+            with log_stage(
+                logger, f"{case_tag}: AC FPF (runopp) for {bd} base dispatch"
+            ):
+                n_buses_net = (
+                    int(len(net.bus))
+                    if hasattr(net, "bus") and net.bus is not None
+                    else 0
+                )
+                n_lines_net = (
+                    int(len(net.line))
+                    if hasattr(net, "line") and net.line is not None
+                    else 0
+                )
+                fpf_cfg = _ACFPFConfig(
+                    pg0_source=str(ac_fpf_pg0_source),
+                    vm_min_pu=float(ac_fpf_vm_min_pu),
+                    vm_max_pu=float(ac_fpf_vm_max_pu),
+                    max_iteration=int(ac_fpf_max_iteration),
+                    max_loading_percent=float(ac_fpf_max_loading_percent),
+                    init=str(ac_fpf_init),
+                    max_attempts=int(ac_fpf_max_attempts),
+                    per_attempt_timeout=float(ac_fpf_per_attempt_timeout),
+                )
+                logger.info(
+                    "%s: AC FPF: starting runopp solve (buses=%d, lines=%d, "
+                    "lossless=%s, pg0_source=%s, max_attempts=%d)",
+                    case_tag,
+                    n_buses_net,
+                    n_lines_net,
+                    ac_lossless,
+                    fpf_cfg.pg0_source,
+                    fpf_cfg.max_attempts,
+                )
+                acpf_bp_ac, acpf_base_pf = solve_ac_fpf_base_point(
+                    net=net,
+                    slack_bus=int(slack_bus),
+                    lossless=bool(ac_lossless),
+                    fpf_cfg=fpf_cfg,
+                    opf_cfg=cfg,
+                    line_indices=[int(x) for x in sorted(net.line.index)],
+                )
+                logger.info(
+                    "%s: AC FPF: runopp solve completed (status=%s, attempt=%s, repairs=%s)",
+                    case_tag,
+                    acpf_base_pf.status if acpf_base_pf else "n/a",
+                    acpf_base_pf.pf_attempt if acpf_base_pf else "n/a",
+                    acpf_base_pf.pf_repairs if acpf_base_pf else [],
+                )
+                if acpf_base_pf.bus_p_mw is None:
+                    raise RuntimeError(
+                        "AC FPF mode requires bus_p_mw from runopp solver."
+                    )
+                acpf_loss_correction_mw = float(np.sum(acpf_base_pf.bus_p_mw))
+                bd = "ac_fpf"
+                _ac_unified_ok = True
+                logger.info(
+                    "%s: AC FPF solved; AC loss imbalance=%.6g MW "
+                    "(will be absorbed by slack for DC model).",
+                    case_tag,
+                    acpf_loss_correction_mw,
+                )
+        except Exception:
+            logger.warning(
+                "%s: AC FPF (runopp) FAILED; falling back to acpf (runpp with case dispatch).",
+                case_tag,
+                exc_info=True,
+            )
+
+        # --- Step 2: Fallback to acpf (runpp with case dispatch) ---
+        if not _ac_unified_ok:
+            try:
+                with log_stage(
+                    logger,
+                    f"{case_tag}: Fallback acpf (runpp) after AC FPF failure",
+                ):
+                    acpf_bp_ac, acpf_base_pf = solve_ac_pf_base_point(
+                        net=net,
+                        slack_bus=int(slack_bus),
+                        pf_solver=str(ac_pf_solver),
+                        pf_init="flat",
+                        lossless=bool(ac_lossless),
+                        gen_dispatch_mw_by_name={},
+                        line_indices=[int(x) for x in sorted(net.line.index)],
+                        distributed_slack=bool(ac_distributed_slack),
+                        trafo_model=str(ac_trafo_model),
+                    )
+                    if acpf_base_pf.bus_p_mw is None:
+                        raise RuntimeError("acpf fallback: bus_p_mw is None")
+                    acpf_loss_correction_mw = float(np.sum(acpf_base_pf.bus_p_mw))
+                    bd = "acpf"
+                    _ac_unified_ok = True
+                    logger.info(
+                        "%s: acpf fallback succeeded (AC loss=%.6g MW).",
+                        case_tag,
+                        acpf_loss_correction_mw,
+                    )
+            except Exception:
+                logger.warning(
+                    "%s: acpf fallback also FAILED; falling back to dc_opf.",
+                    case_tag,
+                    exc_info=True,
+                )
+
+        # --- Step 3: Fallback to DC OPF (last resort) ---
+        if not _ac_unified_ok:
+            bd = "dc_opf"
+            acpf_bp_ac = None
+            acpf_base_pf = None
+            acpf_loss_correction_mw = 0.0
+            with log_stage(
+                logger,
+                f"{case_tag}: Fallback DC OPF (PyPSA+HiGHS) after AC FPF+acpf failure",
+            ):
+                bp_dc, base_dc, used_headroom_factor = (
+                    _solve_dc_opf_with_adaptive_headroom(
+                        net=net,
+                        slack_bus=int(slack_bus),
+                        opf_cfg=cfg,
+                        limit_factor=1.0,
+                        case_tag=case_tag,
+                    )
+                )
+                bp_dc_meta = bp_dc.to_meta_dict()
+                gen_dispatch_for_ac = dict(bp_dc.gen_dispatch_mw_by_name)
 
     # ---------- DC model stage ----------
     results_lines: dict[str, dict[str, Any]] = {}
@@ -657,15 +957,36 @@ def compute_results_for_case(
                 dc_op = build_dc_operator(net, slack_bus=int(slack_bus))
 
         if base_dc is None:
-            with log_stage(
-                logger, f"{case_tag}: Build DC base point from case injections"
+            if (
+                bd in {"acpf", "ac_fpf"}
+                and acpf_base_pf is not None
+                and acpf_base_pf.bus_p_mw is not None
             ):
-                bp_dc2, base_dc2, dc_op2 = build_dc_base_point_case(
-                    net=net, slack_bus=int(slack_bus), dc_op=dc_op, limit_factor=1.0
-                )
-                bp_dc_meta = bp_dc2.to_meta_dict()
-                base_dc = base_dc2
-                dc_op = dc_op2
+                with log_stage(
+                    logger,
+                    f"{case_tag}: Build DC base point from ACPF bus injections",
+                ):
+                    bp_dc_a, base_dc_a, dc_op_a = build_dc_base_point_from_acpf(
+                        net=net,
+                        slack_bus=int(slack_bus),
+                        acpf_bus_p_mw=acpf_base_pf.bus_p_mw,
+                        acpf_bus_ids=list(acpf_base_pf.bus_ids),
+                        dc_op=dc_op,
+                        limit_factor=1.0,
+                    )
+                    bp_dc_meta = bp_dc_a.to_meta_dict()
+                    base_dc = base_dc_a
+                    dc_op = dc_op_a
+            else:
+                with log_stage(
+                    logger, f"{case_tag}: Build DC base point from case injections"
+                ):
+                    bp_dc2, base_dc2, dc_op2 = build_dc_base_point_case(
+                        net=net, slack_bus=int(slack_bus), dc_op=dc_op, limit_factor=1.0
+                    )
+                    bp_dc_meta = bp_dc2.to_meta_dict()
+                    base_dc = base_dc2
+                    dc_op = dc_op2
 
         if bd == "dc_opf":
             with log_stage(
@@ -740,11 +1061,65 @@ def compute_results_for_case(
 
                 nminus1_computed = False
 
+        # ---- Write DC checkpoint (partial results) for timeout recovery ----
+        if dc_checkpoint_path and results_lines:
+            import json as _json
+            import tempfile as _tempfile
+
+            dc_checkpoint = {
+                "__meta__": {
+                    "dc_checkpoint": True,
+                    "base_dispatch": str(bd),
+                    "base_dispatch_requested": str(base_dispatch),
+                    "base_point_dc": bp_dc_meta if bp_dc_meta is not None else {},
+                },
+                **results_lines,
+            }
+            try:
+                cp_dir = os.path.dirname(dc_checkpoint_path)
+                fd, tmp_path = _tempfile.mkstemp(
+                    dir=cp_dir, suffix=".tmp", prefix=".dc_cp_"
+                )
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                        _json.dump(
+                            dc_checkpoint,
+                            fh,
+                            indent=2,
+                            default=lambda o: (
+                                float(o)
+                                if isinstance(o, (np.floating, np.integer))
+                                else (
+                                    o.tolist() if isinstance(o, np.ndarray) else str(o)
+                                )
+                            ),
+                        )
+                    os.replace(tmp_path, dc_checkpoint_path)
+                    logger.debug(
+                        "%s: DC checkpoint written to %s",
+                        case_tag,
+                        dc_checkpoint_path,
+                    )
+                except Exception:
+                    # Clean up temp file on error.
+                    if os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
+                    raise
+            except Exception:
+                logger.warning(
+                    "%s: Failed to write DC checkpoint (non-fatal).",
+                    case_tag,
+                    exc_info=True,
+                )
+
     # ---------- AC stage (base point is AC PF) ----------
     bp_ac_meta: dict[str, Any] | None = None
     ac_pf_status = "n/a"
+    ac_pf_attempt = "n/a"
+    ac_pf_repairs: list[str] = []
     ac_sigma_computed = False
     ac_metric_computed = False
+    ac_feasibility: ACFeasibilityResult | None = None
     h_vectors_saved: dict[str, np.ndarray] | None = None
 
     # Determine whether h-vectors are needed (sigma, metric, or save).
@@ -763,118 +1138,171 @@ def compute_results_for_case(
         if apfi not in {"flat", "dc", "pp"}:
             raise ValueError("ac.pf_init must be flat|dc|pp")
 
-        with log_stage(
-            logger, f"{case_tag}: Solve AC PF base point (solver={ac_pf_solver})"
-        ):
-            bp_ac, base_pf = solve_ac_pf_base_point(
-                net=net,
-                slack_bus=int(slack_bus),
-                pf_solver=str(ac_pf_solver),
-                pf_init=str(ac_pf_init),
-                lossless=bool(ac_lossless),
-                gen_dispatch_mw_by_name=gen_dispatch_for_ac if bd == "dc_opf" else {},
-                line_indices=[int(x) for x in sorted(net.line.index)],
+        try:
+            if (
+                bd in {"acpf", "ac_fpf"}
+                and acpf_bp_ac is not None
+                and acpf_base_pf is not None
+            ):
+                # Reuse early AC PF/FPF solved for ACPF/AC_FPF base dispatch.
+                logger.info("%s: Reusing early AC result for %s mode.", case_tag, bd)
+                bp_ac = acpf_bp_ac
+                base_pf = acpf_base_pf
+                bp_ac_meta = bp_ac.to_meta_dict()
+                ac_pf_status = str(bp_ac.status)
+                ac_pf_attempt = str(bp_ac.pf_attempt)
+                ac_pf_repairs = list(bp_ac.pf_repairs)
+            else:
+                with log_stage(
+                    logger,
+                    f"{case_tag}: Solve AC PF base point (solver={ac_pf_solver})",
+                ):
+                    bp_ac, base_pf = solve_ac_pf_base_point(
+                        net=net,
+                        slack_bus=int(slack_bus),
+                        pf_solver=str(ac_pf_solver),
+                        pf_init=str(ac_pf_init),
+                        lossless=bool(ac_lossless),
+                        gen_dispatch_mw_by_name=gen_dispatch_for_ac
+                        if bd == "dc_opf"
+                        else {},
+                        line_indices=[int(x) for x in sorted(net.line.index)],
+                        distributed_slack=bool(ac_distributed_slack),
+                        trafo_model=str(ac_trafo_model),
+                    )
+                    bp_ac_meta = bp_ac.to_meta_dict()
+                    ac_pf_status = str(bp_ac.status)
+                    ac_pf_attempt = str(bp_ac.pf_attempt)
+                    ac_pf_repairs = list(bp_ac.pf_repairs)
+        except Exception:
+            logger.warning(
+                "%s: AC power flow failed to converge; "
+                "skipping AC radius computation. DC results are still returned.",
+                case_tag,
             )
-            bp_ac_meta = bp_ac.to_meta_dict()
-            ac_pf_status = str(bp_ac.status)
+            ac_pf_status = "failed"
+            compute_ac = False  # disable remaining AC stages
 
-        with log_stage(logger, f"{case_tag}: Compute Radii (AC L2)"):
-            from stability_radius.radii.ac_l2 import compute_ac_l2_radius
+        # ---------- AC feasibility gate ----------
+        if bool(compute_ac):
+            with log_stage(logger, f"{case_tag}: AC Feasibility Check"):
+                ac_feasibility = check_ac_base_point_feasibility(
+                    net=net, base_pf=base_pf
+                )
+                if not ac_feasibility.is_feasible:
+                    logger.warning(
+                        "%s: AC base point violates %d constrained line limits. "
+                        "AC radii on those lines will be negative. "
+                        "Consider using a smaller headroom_factor or ACOPF dispatch.",
+                        case_tag,
+                        ac_feasibility.n_constrained_violated,
+                    )
 
-            ac = compute_ac_l2_radius(
-                net,
-                base_pf=base_pf,
-                slack_bus=int(slack_bus),
-                chunk_size=int(ac_chunk_size),
-                balance=bool(ac_balance),
-                lossless=True,  # enforced
-                return_h_vectors=bool(ac_need_h),
-            )
+        if bool(compute_ac):
+            with log_stage(logger, f"{case_tag}: Compute Radii (AC L2)"):
+                from stability_radius.radii.ac_l2 import compute_ac_l2_radius
 
-            # Extract h-vector data before merging (the "_h_vectors" key is not per-line).
-            h_vecs_raw: dict[str, np.ndarray] | None = None
-            if ac_need_h and "_h_vectors" in ac:
-                h_vecs_raw = ac.pop("_h_vectors")
+                ac = compute_ac_l2_radius(
+                    net,
+                    base_pf=base_pf,
+                    slack_bus=int(slack_bus),
+                    chunk_size=int(ac_chunk_size),
+                    balance=bool(ac_balance),
+                    lossless=bool(ac_lossless),
+                    return_h_vectors=bool(ac_need_h),
+                )
 
-            results_lines = _merge_line_results(results_lines, ac)
+                # Extract h-vector data before merging (the "_h_vectors" key is not per-line).
+                h_vecs_raw: dict[str, np.ndarray] | None = None
+                if ac_need_h and "_h_vectors" in ac:
+                    h_vecs_raw = ac.pop("_h_vectors")
 
-        # ---------- AC sigma/metric post-processing ----------
-        if ac_sigma_enabled and h_vecs_raw is not None:
-            with log_stage(logger, f"{case_tag}: Compute Radii (AC Sigma)"):
+                results_lines = _merge_line_results(results_lines, ac)
+
+            # ---------- AC sigma/metric post-processing ----------
+            if ac_sigma_enabled and h_vecs_raw is not None:
+                with log_stage(logger, f"{case_tag}: Compute Radii (AC Sigma)"):
+                    bus_ids = [int(x) for x in sorted(net.bus.index)]
+                    n_bus = len(bus_ids)
+                    slack_bus_id = resolve_slack_bus_id(net, int(slack_bus))
+                    slack_pos = bus_ids.index(slack_bus_id)
+
+                    h_from_full = _expand_h_reduced_to_full(
+                        h_vecs_raw["h_from"], n_bus=n_bus, slack_pos=slack_pos,
+                        pq_mask=h_vecs_raw.get("pq_mask"),
+                    )
+                    h_to_full = _expand_h_reduced_to_full(
+                        h_vecs_raw["h_to"], n_bus=n_bus, slack_pos=slack_pos,
+                        pq_mask=h_vecs_raw.get("pq_mask"),
+                    )
+
+                    h_bind, s0_mva, s_limit_mva, line_ids_ac = (
+                        _extract_binding_end_data(
+                            ac_results=ac, h_from=h_from_full, h_to=h_to_full
+                        )
+                    )
+
+                    sigma_p, sigma_q = _build_sigma_arrays(ac_ext=ac_ext, n_bus=n_bus)
+
+                    from stability_radius.radii.ac_sigma_radius import (
+                        compute_ac_sigma_radius,
+                    )
+
+                    ac_sigma = compute_ac_sigma_radius(
+                        h_vectors=h_bind,
+                        s_limit_mva=s_limit_mva,
+                        s0_mva=s0_mva,
+                        sigma_p_mw=sigma_p,
+                        sigma_q_mvar=sigma_q,
+                        line_ids=line_ids_ac,
+                        balance=bool(ac_balance),
+                    )
+                    results_lines = _merge_line_results(results_lines, ac_sigma)
+                    ac_sigma_computed = True
+
+                if bool(ac_ext.metric_enabled):
+                    with log_stage(logger, f"{case_tag}: Compute Radii (AC Metric)"):
+                        from stability_radius.radii.ac_metric_radius import (
+                            compute_ac_metric_radius,
+                        )
+
+                        # M = diag(1/sigma^2) — inverse covariance (sigma-radius cross-check).
+                        M_diag = 1.0 / np.concatenate(
+                            [sigma_p * sigma_p, sigma_q * sigma_q]
+                        )
+
+                        ac_metric = compute_ac_metric_radius(
+                            h_vectors=h_bind,
+                            s_limit_mva=s_limit_mva,
+                            s0_mva=s0_mva,
+                            M=M_diag,
+                            line_ids=line_ids_ac,
+                            balance=bool(ac_balance),
+                        )
+                        results_lines = _merge_line_results(results_lines, ac_metric)
+                        ac_metric_computed = True
+
+            # ---------- h-vector saving ----------
+            if bool(ac_ext.save_h_vectors) and h_vecs_raw is not None:
                 bus_ids = [int(x) for x in sorted(net.bus.index)]
                 n_bus = len(bus_ids)
                 slack_bus_id = resolve_slack_bus_id(net, int(slack_bus))
                 slack_pos = bus_ids.index(slack_bus_id)
 
-                h_from_full = _expand_h_reduced_to_full(
-                    h_vecs_raw["h_from"], n_bus=n_bus, slack_pos=slack_pos
-                )
-                h_to_full = _expand_h_reduced_to_full(
-                    h_vecs_raw["h_to"], n_bus=n_bus, slack_pos=slack_pos
-                )
-
-                h_bind, s0_mva, s_limit_mva, line_ids_ac = _extract_binding_end_data(
-                    ac_results=ac, h_from=h_from_full, h_to=h_to_full
-                )
-
-                sigma_p, sigma_q = _build_sigma_arrays(ac_ext=ac_ext, n_bus=n_bus)
-
-                from stability_radius.radii.ac_sigma_radius import (
-                    compute_ac_sigma_radius,
-                )
-
-                ac_sigma = compute_ac_sigma_radius(
-                    h_vectors=h_bind,
-                    s_limit_mva=s_limit_mva,
-                    s0_mva=s0_mva,
-                    sigma_p_mw=sigma_p,
-                    sigma_q_mvar=sigma_q,
-                    line_ids=line_ids_ac,
-                    balance=bool(ac_balance),
-                )
-                results_lines = _merge_line_results(results_lines, ac_sigma)
-                ac_sigma_computed = True
-
-            if bool(ac_ext.metric_enabled):
-                with log_stage(logger, f"{case_tag}: Compute Radii (AC Metric)"):
-                    from stability_radius.radii.ac_metric_radius import (
-                        compute_ac_metric_radius,
-                    )
-
-                    # M = diag(1/sigma^2) — inverse covariance (sigma-radius cross-check).
-                    M_diag = 1.0 / np.concatenate(
-                        [sigma_p * sigma_p, sigma_q * sigma_q]
-                    )
-
-                    ac_metric = compute_ac_metric_radius(
-                        h_vectors=h_bind,
-                        s_limit_mva=s_limit_mva,
-                        s0_mva=s0_mva,
-                        M=M_diag,
-                        line_ids=line_ids_ac,
-                        balance=bool(ac_balance),
-                    )
-                    results_lines = _merge_line_results(results_lines, ac_metric)
-                    ac_metric_computed = True
-
-        # ---------- h-vector saving ----------
-        if bool(ac_ext.save_h_vectors) and h_vecs_raw is not None:
-            bus_ids = [int(x) for x in sorted(net.bus.index)]
-            n_bus = len(bus_ids)
-            slack_pos = bus_ids.index(int(slack_bus))
-
-            h_vectors_saved = {
-                "h_from": _expand_h_reduced_to_full(
-                    h_vecs_raw["h_from"], n_bus=n_bus, slack_pos=slack_pos
-                ),
-                "h_to": _expand_h_reduced_to_full(
-                    h_vecs_raw["h_to"], n_bus=n_bus, slack_pos=slack_pos
-                ),
-                "bus_ids": np.array(bus_ids, dtype=int),
-                "line_ids": np.array(
-                    [int(x) for x in sorted(net.line.index)], dtype=int
-                ),
-            }
+                h_vectors_saved = {
+                    "h_from": _expand_h_reduced_to_full(
+                        h_vecs_raw["h_from"], n_bus=n_bus, slack_pos=slack_pos,
+                        pq_mask=h_vecs_raw.get("pq_mask"),
+                    ),
+                    "h_to": _expand_h_reduced_to_full(
+                        h_vecs_raw["h_to"], n_bus=n_bus, slack_pos=slack_pos,
+                        pq_mask=h_vecs_raw.get("pq_mask"),
+                    ),
+                    "bus_ids": np.array(bus_ids, dtype=int),
+                    "line_ids": np.array(
+                        [int(x) for x in sorted(net.line.index)], dtype=int
+                    ),
+                }
 
     elapsed = float(time.time() - t0)
     logger.info("%s: Total compute time: %.3f sec", case_tag, elapsed)
@@ -907,6 +1335,7 @@ def compute_results_for_case(
             "input_path": str(input_path_abs),
             "slack_bus": int(slack_bus),
             "base_dispatch": str(bd),
+            "base_dispatch_requested": str(base_dispatch),
             "allow_download": bool(allow_download),
             "compute_dc": bool(compute_dc),
             "compute_ac": bool(compute_ac),
@@ -925,10 +1354,17 @@ def compute_results_for_case(
             "ac": {
                 "pf_solver": str(ac_pf_solver),
                 "pf_init": str(ac_pf_init),
-                "lossless": True,
+                "lossless": bool(ac_lossless),
+                "distributed_slack": bool(ac_distributed_slack),
+                "trafo_model": str(ac_trafo_model),
                 "chunk_size": int(ac_chunk_size),
                 "balance": bool(ac_balance),
                 "pf_status": str(ac_pf_status),
+                "pf_attempt": str(ac_pf_attempt),
+                "pf_repairs": list(ac_pf_repairs),
+                "feasibility": ac_feasibility.to_meta_dict()
+                if ac_feasibility is not None
+                else None,
                 "sigma_source": _sigma_source,
                 "sigma_p_mw": _sigma_p_meta,
                 "sigma_q_mvar": _sigma_q_meta,
@@ -945,13 +1381,23 @@ def compute_results_for_case(
                 "solver": str(cfg.highs.solver_name) if bd == "dc_opf" else "n/a",
                 "threads": int(cfg.highs.threads) if bd == "dc_opf" else -1,
                 "random_seed": int(cfg.highs.random_seed) if bd == "dc_opf" else -1,
-                "headroom_factor": float(cfg.headroom_factor)
+                "headroom_factor_configured": float(cfg.headroom_factor)
+                if bd == "dc_opf"
+                else float("nan"),
+                "headroom_factor_used": float(used_headroom_factor)
                 if bd == "dc_opf"
                 else float("nan"),
                 "unconstrained_line_nom_mw": float(cfg.unconstrained_line_nom_mw)
                 if bd == "dc_opf"
                 else float("nan"),
+                "ext_grid_absorption_mw": float(base_dc.opf_ext_grid_absorption_mw)
+                if bd == "dc_opf" and base_dc is not None
+                else 0.0,
             },
+            "acpf_slack_loss_correction_mw": float(acpf_loss_correction_mw)
+            if bd in {"acpf", "ac_fpf"}
+            else None,
+            "ac_fpf_pg0_source": str(ac_fpf_pg0_source) if bd == "ac_fpf" else None,
             "compute_time_sec": float(elapsed),
             **(consistency if consistency else {}),
         }

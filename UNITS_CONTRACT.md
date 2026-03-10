@@ -48,6 +48,10 @@
 - **ACOperator** — оператор Якобиана (разреженный) и LU для решения адъюнктных систем при AC сертификате.
 - **Certificate soundness** — корректность сертификата: “внутри шара нарушений нет”.
 - **Usefulness** — полезность: сертификат может быть “логически верным, но тривиальным” (например, `r* = 0`).
+- **AC FPF (Feasible Power Flow)** — OPF-задача, минимизирующая отклонение генераторов от начальной диспетчеризации при соблюдении AC ограничений. Решается `pandapower.runopp`.
+- **Metric radius** — L2-радиус в пространстве с метрикой M: `||Δu||_M = sqrt(Δuᵀ M Δu)`. При M = I совпадает с обычным L2-радиусом.
+- **Sigma radius (σ-radius)** — безразмерное расстояние от базового потока до лимита, нормированное по σ потока: `r_σ = margin / σ_flow`.
+- **Worst-case verification** — проверка направления worst-case при нелинейном AC PF: применяется возмущение `Δu = r · d*` и решается полный PF для проверки реального |S|.
 
 ---
 
@@ -132,6 +136,44 @@
 - При `base_dispatch=dc_opf` активная мощность генераторов из OPF применяется к `pandapower net` (только `net.gen.p_mw`), затем решается AC PF.
 
 **Контракт:** AC сертификат вычисляется вокруг найденного AC PF режима (Vm, Va), и эти значения сохраняются в `__meta__.base_point_ac` для воспроизводимости и проверок.
+
+### 4.3. AC FPF base point (CURRENT)
+Альтернативный метод получения AC базовой точки через **AC OPF feasibility** (`pandapower.runopp`).
+
+#### Когда используется
+Когда обычный AC PF (runpp) не сходится на диспетчеризации из DC OPF, или когда нужна базовая точка, гарантированно удовлетворяющая тепловые ограничения линий.
+
+#### Математическая формулировка
+```
+min  Σ_i (P_{g,i} − P_{g,i}⁰)²
+s.t. AC power flow equations           (equality)
+     P_g^min ≤ P_g ≤ P_g^max          (generator limits)
+     Q_g^min ≤ Q_g ≤ Q_g^max          (reactive limits)
+     V^min   ≤ V   ≤ V^max            (voltage bounds)
+     |S_ij|  ≤ S_ij^max               (thermal limits)
+```
+
+Цель — найти ближайший к P⁰ допустимый режим (минимальное отклонение от начального диспетча).
+
+#### Конфигурация (`ACFPFConfig`)
+| Параметр               | По умолчанию | Описание |
+|------------------------|:------:|-----|
+| `pg0_source`           | `"case"` | Источник P⁰: `"case"` (net.gen.p_mw) или `"midpoint"` ((min+max)/2) |
+| `vm_min_pu / vm_max_pu`| 0.9 / 1.1 | Допустимые границы |V| для OPF |
+| `max_iteration`        | 300    | Максимальное число итераций PDIPM |
+| `max_loading_percent`  | 99.0   | Лимит загрузки линий (99% компенсирует допуски PIPS) |
+| `max_attempts`         | 1      | Число попыток с расширением границ (до 3) |
+| `per_attempt_timeout`  | 0      | Тайм-аут на одну попытку runopp (0 = без ограничения) |
+
+#### Post-OPP PF validation
+После OPP (interior-point) выполняется повторный PF (`runpp`) с найденной диспетчеризацией, чтобы Якобиан AC сертификата линейризовался в точке Newton-Raphson, а не PIPS. Это критично, т.к. верификация (MC, worst-case) также использует `runpp`.
+
+#### Реализация
+- Модуль: `stability_radius.base_point.pandapower_opp`
+- Entrypoint: `solve_ac_fpf()`
+- Обёртка: `stability_radius.base_point.ac.solve_ac_fpf_base_point()`
+
+**Контракт:** AC FPF возвращает `PyPSAAPFResult` (тот же тип, что AC PF), поэтому downstream-код (AC сертификат, DC base point from ACPF) работает без изменений.
 
 ---
 
@@ -269,6 +311,90 @@ Unified поля per line (используются в таблицах и AC MC
 - `1ᵀ ΔQ = 0`
 
 Норма чувствительности учитывает проектирование отдельно для P и Q блоков.
+
+### 8.5. AC Metric Radius (CURRENT)
+Обобщение L2-радиуса на пространство с метрикой M (SPD):
+
+```
+r_M = margin / ||h||_M⁻¹
+```
+
+где: `||h||_M⁻¹ = sqrt(hᵀ M⁻¹ h)`.
+
+При `M = I` это обычный L2-радиус. При `M = diag(1/σ²)` это совпадает с σ-радиусом (cross-check).
+
+#### Реализация
+- Модуль: `stability_radius.radii.ac_metric_radius`
+- Функция: `compute_ac_metric_radius()`
+- Поддерживаемые режимы M:
+  - `diag`: одномерный массив `d`, M = diag(d), быстрый путь
+  - `dense`: произвольная SPD матрица, факторизация Холецкого
+- Валидация: M должна быть SPD (positive definite), иначе — `ValueError`
+
+### 8.6. AC Sigma Radius (CURRENT)
+Безразмерная метрика "сколько σ от базового потока до лимита":
+
+```
+r_σ = margin_mva / σ_flow_mva
+```
+
+где:
+- `margin_mva = s_limit − s_binding` — запас по связывающему концу (MVA)
+- `σ_flow_mva = ||h||_{diag(σ²)} = sqrt(hᵀ diag(σ²) h)` — standard deviation потока при гауссовых возмущениях (Σ = diag(σ²))
+
+#### Вероятность перегрузки (Gaussian)
+```
+P(|S| ≥ limit) ≈ Φ(−r_σ)
+```
+
+где Φ — функция стандартного нормального распределения. Точна при σ потока достаточно мал (линеаризация точна).
+
+#### Источники σ
+| Значение `sigma_p_mw_source` | Описание |
+|------|------|
+| `"uniform"` | Одно скалярное значение σ на все шины (broadcast) |
+| `"uc_jl"` | Per-bus массив из UnitCommitment.jl instance (population std) |
+| `""` (пусто) | σ-radius не вычисляется |
+
+#### Реализация
+- Модуль: `stability_radius.radii.ac_sigma_radius`
+- Функция: `compute_ac_sigma_radius()`
+- Worst-case direction: `d* = Σ h / ||Σ h||₂ · r_σ` (масштабированная проекция)
+
+### 8.7. Worst-Case Verification (CURRENT)
+Проверка сертификата путём применения worst-case возмущения к нелинейному AC PF:
+
+1. Берётся направление `d*` (worst-case из линейного сертификата)
+2. Масштабируется до `scale · r* · d*` (scale ∈ {0.5, 0.8, 0.9, 1.0, 1.05, 1.1, 1.2})
+3. Добавляются `sgen` с `(ΔP, ΔQ)` на каждую шину
+4. Решается полный AC PF (`pandapower.runpp`)
+5. Измеряется фактический `|S|` на связывающем конце
+6. Сравнивается с лимитом: violation = `|S_actual| > s_limit`
+
+#### Ожидаемый результат
+- При `scale ≤ 1.0`: violation не ожидается (сертификат гарантирует)
+- При `scale > 1.0`: violation может быть (тест tightness сертификата)
+- При PF non-convergence: результат — NaN (diverged)
+
+#### Реализация
+- Модуль: `stability_radius.verification.verify_worst_case`
+- Функция: `verify_worst_case()`
+- Тип результата: `WorstCaseVerificationResult`
+
+### 8.8. AC Sigma Monte Carlo (CURRENT)
+Monte Carlo верификация σ-радиуса: сэмплирование гауссовых возмущений и проверка нелинейным PF.
+
+- Сэмплы: `Δu ~ N(0, Σ)`, масштабированные до шара радиуса `r_σ`
+- Для каждого сэмпла: AC PF → фактический `|S|` → violation yes/no
+- Результат:
+  - `empirical_feasible_fraction`: доля безопасных сэмплов
+  - `per_line_overload_fractions`: per-line эмпирическая вероятность перегрузки
+  - `pf_failure_fraction`: доля несходимостей PF
+
+#### Реализация
+- Модуль: `stability_radius.verification.ac_monte_carlo_sigma`
+- Функция: `run_ac_monte_carlo_sigma()`
+- Тип результата: `ACSigmaMCResult`
 
 ---
 
@@ -431,6 +557,24 @@ Sigma-radius поля (если `ac.sigma_computed=true`):
   - отчёт не должен печатать `nan%` (только `n/a`)
 - `test_opf_dc_consistency.py`:
   - OPF и DCOperator должны давать согласованные потоки (в пределах tol)
+- `test_ac_metric_radius.py`:
+  - диагональная M, плотная M, M=I → L2, валидация SPD, нулевой знаменатель → inf
+- `test_ac_sigma_radius.py`:
+  - формула margin/σ_flow, баланс, worst-case point, overload probability
+- `test_verify_worst_case.py`:
+  - violation при boundary-scale, отсутствие violation при half-scale, PF divergence → NaN
+- `test_ac_mc_sigma.py`:
+  - soundness внутри σ-шара, per-line overload probabilities, валидация входов
+- `test_pp_helpers.py`:
+  - `is_in_service` (dict/Series/fallback), `bus_vn_kv` (5 ветвей), `resolve_slack_pos` (id/position/error)
+- `test_verification_status.py`:
+  - `summarize_status`: 6 статусов (OK, TRIVIAL, INFEASIBLE, UNSOUND, INCONCLUSIVE, NOT_COMPUTED)
+- `test_statistics_table.py`:
+  - ASCII/CSV форматирование, column inference (DC/AC/both/neither), radius summary
+- `test_metrics_analysis.py`:
+  - unified DataFrame, rank correlations (negation для radii), precision-at-k
+- `test_workflows_helpers.py`:
+  - `_merge_line_results` (merging, overwrites, numeric sort), `_build_sigma_arrays` (uniform/uc_jl/validation)
 
 ---
 
@@ -438,8 +582,10 @@ Sigma-radius поля (если `ac.sigma_computed=true`):
 
 **CURRENT contracts**:
 - DC сертификаты и вероятностные метрики основаны на балансированной L2‑геометрии и DCOperator.
-- AC сертификат строится вокруг AC PF базовой точки и использует адъюнктные решения Якобиана.
-- Верификация Monte Carlo проверяет именно те режимы и поля, которые записаны в `results.json`.
+- AC сертификат строится вокруг AC PF (или AC FPF) базовой точки и использует адъюнктные решения Якобиана.
+- AC metric radius обобщает L2-радиус на метрику M (SPD); при M = diag(1/σ²) совпадает с σ-radius.
+- AC σ-radius и worst-case verification документированы в секциях 8.5–8.8.
+- Верификация Monte Carlo (DC/AC/AC-sigma) проверяет именно те режимы и поля, которые записаны в `results.json`.
 - Проект придерживается детерминизма, стабильного порядка и fail-fast поведения.
 
 Если вы меняете:

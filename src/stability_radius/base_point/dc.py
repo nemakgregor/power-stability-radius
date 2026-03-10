@@ -147,7 +147,7 @@ def build_dc_base_point_case(
         raise ValueError("DCOperator returned unexpected flow shape.")
 
     p0_abs = np.abs(flows)
-    margins = np.maximum(limits - p0_abs, 0.0)
+    margins = limits - p0_abs
 
     base = LineBaseQuantities(
         line_indices=line_ids,
@@ -173,6 +173,121 @@ def build_dc_base_point_case(
         line_flows_mw=flows,
         line_limits_mw=limits,
         status="case",
+        objective=float("nan"),
+        gen_dispatch_mw_by_name=(),
+    )
+    return bp, base, op
+
+
+def build_dc_base_point_from_acpf(
+    *,
+    net: Any,
+    slack_bus: int,
+    acpf_bus_p_mw: np.ndarray,
+    acpf_bus_ids: list[int] | tuple[int, ...],
+    dc_op: DCOperator | None = None,
+    limit_factor: float = 1.0,
+) -> tuple[BasePointDC, LineBaseQuantities, DCOperator]:
+    """
+    Build DC base point from AC PF bus injections.
+
+    The AC PF bus injections are adjusted at the slack bus to enforce
+    exact active power balance (sum = 0), as required by the lossless DC model.
+    Non-slack bus injections remain unchanged, preserving the AC PF operating regime.
+
+    Parameters
+    ----------
+    acpf_bus_p_mw
+        Net active power injection per bus from AC PF (MW), aligned with acpf_bus_ids.
+    acpf_bus_ids
+        Bus IDs corresponding to acpf_bus_p_mw.
+
+    Returns
+    -------
+    (bp_dc, base_quantities, dc_operator)
+    """
+    if float(limit_factor) <= 0.0:
+        raise ValueError("limit_factor must be positive.")
+
+    bus_ids = [int(x) for x in sorted(net.bus.index)]
+    if not bus_ids:
+        raise ValueError("Network has no buses.")
+
+    slack_bus_id = _resolve_slack_bus_id(bus_ids=bus_ids, slack_bus=int(slack_bus))
+
+    # Validate and map AC PF bus injections to sorted bus ordering.
+    acpf_bus_ids_int = [int(b) for b in acpf_bus_ids]
+    if len(acpf_bus_ids_int) != len(acpf_bus_p_mw):
+        raise ValueError(
+            "Length mismatch between acpf_bus_ids and acpf_bus_p_mw: "
+            f"{len(acpf_bus_ids_int)} vs {len(acpf_bus_p_mw)}"
+        )
+    acpf_map = {bid: float(p) for bid, p in zip(acpf_bus_ids_int, acpf_bus_p_mw)}
+    bus_pos = {int(b): i for i, b in enumerate(bus_ids)}
+    injections = np.zeros(len(bus_ids), dtype=float)
+    for b in bus_ids:
+        injections[bus_pos[b]] = acpf_map.get(b, 0.0)
+
+    # Enforce balance: adjust slack to absorb residual (= AC losses).
+    slack_pos = int(bus_pos[int(slack_bus_id)])
+    imbalance = float(np.sum(injections))
+    injections[slack_pos] -= imbalance
+
+    logger.debug(
+        "ACPF injections: imbalance_before_slack_adj=%.6g MW (AC losses), "
+        "sum_after=%.6g MW, slack_bus_id=%d",
+        float(imbalance),
+        float(np.sum(injections)),
+        int(slack_bus_id),
+    )
+
+    op = (
+        dc_op if dc_op is not None else build_dc_operator(net, slack_bus=int(slack_bus))
+    )
+
+    # Line limits (MW assumed from MVA under PF=1 convention).
+    line_ids = [int(x) for x in sorted(net.line.index)]
+    limits = np.empty(len(line_ids), dtype=float)
+    is_unconstrained = np.zeros(len(line_ids), dtype=bool)
+
+    for pos, lid in enumerate(line_ids):
+        lim, is_uc = estimate_line_limit_mva_with_flag(net, net.line.loc[lid])
+        limits[pos] = float(lim) * float(limit_factor)
+        is_unconstrained[pos] = bool(is_uc)
+
+    flows = np.asarray(
+        op.flows_from_bus_injections_mw(injections), dtype=float
+    ).reshape(-1)
+    if flows.shape != (len(line_ids),):
+        raise ValueError("DCOperator returned unexpected flow shape.")
+
+    p0_abs = np.abs(flows)
+    margins = limits - p0_abs
+
+    base = LineBaseQuantities(
+        line_indices=line_ids,
+        flow0_mw=flows,
+        p0_abs_mw=p0_abs,
+        limit_mva_assumed_mw=limits,
+        margin_mw=margins,
+        is_unconstrained=is_unconstrained,
+        opf_status="acpf",
+        opf_objective=float("nan"),
+        bus_ids=bus_ids,
+        bus_injections_mw=injections,
+        opf_limits_mw=None,
+        opf_gen_dispatch_mw_by_name=None,
+    )
+
+    bp = BasePointDC(
+        source="acpf",
+        slack_bus=int(slack_bus),
+        bus_ids=tuple(bus_ids),
+        bus_injections_mw=injections,
+        line_ids=tuple(line_ids),
+        line_flows_mw=flows,
+        line_limits_mw=limits,
+        status="acpf",
         objective=float("nan"),
         gen_dispatch_mw_by_name=(),
     )

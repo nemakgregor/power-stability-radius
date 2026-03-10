@@ -113,8 +113,18 @@ def _compute_ac_radius_and_sigma(net, slack_bus: int, sigma_val: float):
     n_bus = len(bus_ids)
     slack_pos = bus_ids.index(int(slack_bus))
 
-    h_from_full = _expand_h_reduced_to_full(h_from, n_bus=n_bus, slack_pos=slack_pos)
-    h_to_full = _expand_h_reduced_to_full(h_to, n_bus=n_bus, slack_pos=slack_pos)
+    h_from_full = _expand_h_reduced_to_full(
+        h_from,
+        n_bus=n_bus,
+        slack_pos=slack_pos,
+        pq_mask=h_vecs_raw.get("pq_mask"),
+    )
+    h_to_full = _expand_h_reduced_to_full(
+        h_to,
+        n_bus=n_bus,
+        slack_pos=slack_pos,
+        pq_mask=h_vecs_raw.get("pq_mask"),
+    )
 
     # Select binding h-vector per line
     line_ids = [int(x) for x in sorted(net.line.index)]

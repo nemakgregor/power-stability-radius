@@ -1,8 +1,8 @@
-# Experiment 2 config: sigma-radius with UC.jl-derived per-bus injection σ.
+# Experiment 2 config: multi-hour AC sigma-radius with UC.jl data + topology plot.
 #
-# This experiment uses a UnitCommitment.jl instance for case118 to extract
-# realistic per-bus injection standard deviations, then computes the AC
-# sigma-radius certificate.
+# Runs AC OPF for each hourly timestep in the UC.jl instance, computes
+# AC sigma-radius at each operating point, aggregates across hours,
+# and produces a network topology visualization.
 
 case:
   name: case118
@@ -13,24 +13,39 @@ uc_jl:
   case_name: case118
   date: "2017-01-01"       # UC.jl time-series date
   dest_dir: data/uc_jl     # where to store downloaded UC.jl JSON
-  power_factor: 0.9        # for σ_Q estimation from σ_P
+  power_factor: 0.9        # for sigma_Q estimation from sigma_P
 
 compute:
-  base_dispatch: case
-  dc:
-    mode: materialize
-    chunk_size: 64
-    dtype: float64
-    inj_std_mw: 10.0
   ac:
     chunk_size: 64
     balance: true
-    pf_init: flat
-    pf_solver: pandapower
     lossless: true
-    sigma:
-      source: uc_jl          # "uniform" | "uc_jl"
+    fpf:
+      pg0_source: case
+      vm_min_pu: 0.9
+      vm_max_pu: 1.1
+      max_iteration: 300
+      max_loading_percent: 99.0
+      init: dc
+      max_attempts: 2
+      per_attempt_timeout: 180
+
+verification:
+  top_k: 10                 # number of tightest lines to verify via nonlinear PF
+  scales: [0.5, 0.8, 0.9, 0.95, 1.0, 1.05, 1.1, 1.2, 1.5]  # multi-scale sweep
+
+monte_carlo:
+  enabled: true
+  n_samples: 5000           # increase to 50000 for paper
+  seed: 42
+
+plot:
+  top_k_critical: 10        # number of critical lines for bus threat computation
+  figsize: [16, 12]
+  dpi: 200
+  scatter_dpi: 300
+  heatmap_dpi: 300
 
 allow_download: true
 data_dir: data/input
-output_dir: experiments/output/sigma_radius
+output_dir: experiments/output/sigma_radius_hourly

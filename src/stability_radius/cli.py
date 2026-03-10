@@ -279,7 +279,7 @@ def build_parser(cfg: Any) -> argparse.ArgumentParser:
         "--base-dispatch",
         type=str,
         default=str(_cfg_get(cfg, "compute.base_dispatch", "case")),
-        choices=("case", "dc_opf"),
+        choices=("case", "dc_opf", "acpf", "ac_fpf"),
     )
 
     # DC
@@ -365,6 +365,12 @@ def build_parser(cfg: Any) -> argparse.ArgumentParser:
     )
     p_compute.add_argument(
         "--ac-lossless", type=int, default=int(_cfg_get(cfg, "ac.lossless", 1))
+    )
+    p_compute.add_argument(
+        "--ac-fpf-pg0-source",
+        type=str,
+        default=str(_cfg_get(cfg, "compute.ac_fpf.pg0_source", "case")),
+        choices=("case", "midpoint"),
     )
 
     # AC extensions (sigma-radius, metric-radius, h-vector saving)
@@ -738,6 +744,9 @@ def run_compute(
                 },
                 "save_h_vectors": int(args.ac_save_h_vectors),
             },
+            "ac_fpf": {
+                "pg0_source": str(args.ac_fpf_pg0_source),
+            },
             "output": {
                 "export_results": str(args.export_results),
                 "save_csv": int(args.save_csv),
@@ -784,6 +793,7 @@ def run_compute(
         ac_pf_init=str(args.ac_pf_init),
         ac_pf_solver=str(args.ac_pf_solver),
         ac_lossless=bool(int(args.ac_lossless)),
+        ac_fpf_pg0_source=str(args.ac_fpf_pg0_source),
         ac_extensions=ac_ext,
         opf_cfg=opf_cfg,
         opf_dc_flow_consistency_tol_mw=float(args.opf_dc_flow_consistency_tol_mw),

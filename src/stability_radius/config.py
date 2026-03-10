@@ -56,7 +56,7 @@ class HiGHSConfig:
     """HiGHS solver configuration for deterministic OPF."""
 
     solver_name: str = "highs"
-    threads: int = 1
+    threads: int = 14
     random_seed: int = 42
     user_objective_scale: int = -1
     user_bound_scale: int = -10

@@ -43,6 +43,7 @@ project's lossless policy:
 import copy
 import logging
 import math
+import time as _time
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
@@ -91,6 +92,12 @@ class PyPSAAPFResult:
     line_q1_mvar: np.ndarray  # (m_line,)
 
     status: str
+    pf_attempt: str = "primary"  # "primary" | "alt_init" | "relaxed"
+    pf_repairs: list[str] | None = None  # list of repair actions applied
+    bus_p_mw: np.ndarray | None = None  # (n_bus,) net P injection per bus from AC PF
+    bus_q_mvar: np.ndarray | None = None  # (n_bus,) net Q injection per bus from AC PF
+    opp_gen_dispatch: dict[str, float] | None = None  # gen_id -> P_mw from OPP
+    opp_vm_pu: dict[int, float] | None = None  # bus_id -> Vm from OPP
 
 
 def _is_in_service(row: Any) -> bool:
@@ -216,6 +223,48 @@ def _trafo_series_rx_pu_from_pp_row(trafo_row: Any) -> tuple[float, float]:
     return r_pu, x_pu
 
 
+def _apply_distributed_slack_weights(nn: Any) -> None:
+    """Set ``slack_weight`` on generators and ext_grid proportionally to headroom.
+
+    Headroom for each generator is ``max_p_mw - p_mw`` (clamped to >= 0).
+    For ``ext_grid`` entries (which lack explicit bounds in pandapower), a
+    participation weight equal to the average headroom of normal generators
+    is assigned so that the slack bus absorbs a moderate share of losses
+    rather than all of them.
+
+    This function modifies ``nn`` **in-place**.
+    """
+    gen_headroom_sum = 0.0
+    gen_count_positive = 0
+
+    if hasattr(nn, "gen") and nn.gen is not None and len(nn.gen):
+        max_p = nn.gen["max_p_mw"].fillna(0.0)
+        p_set = nn.gen["p_mw"].fillna(0.0)
+        headroom = (max_p - p_set).clip(lower=0.0)
+        nn.gen["slack_weight"] = headroom
+
+        gen_headroom_sum = float(headroom.sum())
+        gen_count_positive = int((headroom > 0).sum())
+
+        logger.info(
+            "Distributed slack: gen headroom sum=%.4f MW, participating gens=%d/%d",
+            gen_headroom_sum,
+            gen_count_positive,
+            int(len(nn.gen)),
+        )
+
+    if hasattr(nn, "ext_grid") and nn.ext_grid is not None and len(nn.ext_grid):
+        if gen_count_positive > 0 and gen_headroom_sum > 0:
+            avg_headroom = gen_headroom_sum / gen_count_positive
+        else:
+            avg_headroom = 100.0  # reasonable default (MW)
+        nn.ext_grid["slack_weight"] = avg_headroom
+        logger.info(
+            "Distributed slack: ext_grid slack_weight=%.4f MW (avg gen headroom)",
+            avg_headroom,
+        )
+
+
 def _solve_ac_pf_with_pandapower(
     *,
     net: Any,
@@ -224,8 +273,21 @@ def _solve_ac_pf_with_pandapower(
     gen_dispatch_mw_by_name: Mapping[str, float] | None,
     lossless: bool,
     init: str,
+    distributed_slack: bool = False,
+    trafo_model: str = "pi",
 ) -> PyPSAAPFResult:
-    """Solve PF using pandapower.runpp and return PyPSAAPFResult."""
+    """Solve PF using pandapower.runpp and return PyPSAAPFResult.
+
+    Parameters
+    ----------
+    distributed_slack:
+        When True, distribute the active-power slack among generators
+        proportionally to their headroom (P_max - P_set).  This avoids
+        dumping all loss-compensation onto a single slack bus and keeps
+        generator outputs within bounds.  Requires pandapower >= 2.10.
+    trafo_model:
+        Transformer equivalent circuit model: ``"pi"`` (recommended) or ``"t"``.
+    """
     try:
         import pandapower as pp  # type: ignore
     except ImportError as e:
@@ -245,30 +307,161 @@ def _solve_ac_pf_with_pandapower(
     )
     apply_gen_dispatch_to_pandapower_net(nn, gen_dispatch_mw_by_name)
 
+    # ---- Distributed slack: set participation weights based on headroom ----
+    if bool(distributed_slack):
+        _apply_distributed_slack_weights(nn)
+
     init_eff = str(init).strip().lower()
     if init_eff not in {"flat", "dc", "pp"}:
         raise ValueError("init must be flat|dc|pp for pandapower solver as well.")
-    if init_eff in {"dc", "pp"}:
+    # Allow "dc" init (DC power flow warmstart) — it provides a much better
+    # starting point for Newton-Raphson on difficult networks (e.g. case57).
+    if init_eff == "pp":
         init_eff = "flat"
 
+    trafo_model_eff = str(trafo_model).strip().lower()
+    if trafo_model_eff not in {"pi", "t"}:
+        raise ValueError("trafo_model must be pi|t")
+
     logger.info(
-        "Solving AC PF with pandapower.runpp: buses=%d lines=%d lossless=%s init=%s",
+        "Solving AC PF with pandapower.runpp: buses=%d lines=%d lossless=%s init=%s "
+        "distributed_slack=%s trafo_model=%s",
         int(len(nn.bus)),
         int(len(nn.line)) if hasattr(nn, "line") and nn.line is not None else 0,
         bool(lossless),
         init_eff,
+        bool(distributed_slack),
+        trafo_model_eff,
     )
 
-    try:
-        pp.runpp(
-            nn,
-            calculate_voltage_angles=True,
-            enforce_q_lims=True,
-            init=str(init_eff),
+    max_iter = 300
+
+    # Track which solver attempt succeeded for repair metadata.
+    pf_attempt: str = "primary"  # "primary" | "alt_init" | "relaxed"
+    pf_repairs: list[str] = []
+
+    # Guard against pandapower realloc corruption with distributed_slack on
+    # large networks.  Known bug: the distributed_slack Newton-Raphson path
+    # triggers C-level memory corruption (realloc: invalid next size -> SIGABRT)
+    # on networks with ~300+ buses, killing the entire process.  Python
+    # exception handlers cannot catch this.
+    _DISTRIBUTED_SLACK_MAX_BUSES = 300
+    if bool(distributed_slack) and n_buses >= _DISTRIBUTED_SLACK_MAX_BUSES:
+        logger.warning(
+            "Auto-disabling distributed_slack for %d-bus network to prevent "
+            "pandapower realloc corruption (threshold=%d buses). "
+            "Loss compensation will be assigned to the slack bus only.",
+            n_buses,
+            _DISTRIBUTED_SLACK_MAX_BUSES,
         )
-    except Exception as e:  # noqa: BLE001
-        logger.exception("pandapower.runpp failed: %s", e)
-        raise RuntimeError("pandapower.runpp failed.") from e
+        distributed_slack = False
+        pf_repairs.append("distributed_slack_auto_disabled_large_network")
+
+    runpp_kwargs: dict[str, Any] = dict(
+        calculate_voltage_angles=True,
+        enforce_q_lims=True,
+        init=str(init_eff),
+        max_iteration=max_iter,
+        trafo_model=str(trafo_model_eff),
+    )
+    if bool(distributed_slack):
+        runpp_kwargs["distributed_slack"] = True
+
+    try:
+        logger.info(
+            "pp.runpp attempt 1/3 (primary): init='%s' max_iter=%d distributed_slack=%s",
+            init_eff,
+            max_iter,
+            bool(distributed_slack),
+        )
+        t_pf = _time.perf_counter()
+        pp.runpp(nn, **runpp_kwargs)
+        logger.info(
+            "pp.runpp attempt 1/3 (primary) completed in %.2f sec",
+            _time.perf_counter() - t_pf,
+        )
+    except Exception as e_first:
+        elapsed_pf = _time.perf_counter() - t_pf
+        logger.warning(
+            "pp.runpp attempt 1/3 (primary) FAILED after %.2f sec with init='%s': %s",
+            elapsed_pf,
+            init_eff,
+            e_first,
+        )
+        # Retry with the opposite initialisation strategy.
+        alt_init = "dc" if init_eff == "flat" else "flat"
+        logger.warning(
+            "pandapower.runpp failed with init='%s', retrying with init='%s' (%d iterations)",
+            init_eff,
+            alt_init,
+            max_iter,
+        )
+        runpp_kwargs["init"] = alt_init
+        try:
+            logger.info(
+                "pp.runpp attempt 2/3 (alt_init): init='%s' max_iter=%d",
+                alt_init,
+                max_iter,
+            )
+            t_pf2 = _time.perf_counter()
+            pp.runpp(nn, **runpp_kwargs)
+            logger.info(
+                "pp.runpp attempt 2/3 (alt_init) completed in %.2f sec",
+                _time.perf_counter() - t_pf2,
+            )
+            pf_attempt = "alt_init"
+            pf_repairs.append(f"init_changed_to_{alt_init}")
+        except Exception as e_alt:
+            elapsed_pf2 = _time.perf_counter() - t_pf2
+            logger.warning(
+                "pp.runpp attempt 2/3 (alt_init) FAILED after %.2f sec: %s",
+                elapsed_pf2,
+                e_alt,
+            )
+            # Final fallback: relax settings (no Q limits, no distributed slack).
+            logger.warning(
+                "pandapower.runpp failed with both init strategies; "
+                "retrying with relaxed settings (enforce_q_lims=False, "
+                "distributed_slack=False, init='flat', max_iteration=%d)",
+                max_iter,
+            )
+            relaxed_kwargs: dict[str, Any] = dict(
+                calculate_voltage_angles=True,
+                enforce_q_lims=False,
+                init="flat",
+                max_iteration=max_iter,
+                trafo_model=str(trafo_model_eff),
+            )
+            try:
+                logger.info(
+                    "pp.runpp attempt 3/3 (relaxed): init='flat' max_iter=%d "
+                    "enforce_q_lims=False distributed_slack=False",
+                    max_iter,
+                )
+                t_pf3 = _time.perf_counter()
+                pp.runpp(nn, **relaxed_kwargs)
+                logger.info(
+                    "pp.runpp attempt 3/3 (relaxed) completed in %.2f sec",
+                    _time.perf_counter() - t_pf3,
+                )
+                pf_attempt = "relaxed"
+                pf_repairs.extend(
+                    [
+                        "enforce_q_lims_disabled",
+                        "distributed_slack_disabled",
+                        "init_flat",
+                    ]
+                )
+            except Exception as e_relaxed:
+                elapsed_pf3 = _time.perf_counter() - t_pf3
+                logger.exception(
+                    "pp.runpp attempt 3/3 (relaxed) FAILED after %.2f sec: %s",
+                    elapsed_pf3,
+                    e_relaxed,
+                )
+                raise RuntimeError(
+                    "pandapower.runpp failed (all 3 attempts exhausted)."
+                ) from e_relaxed
 
     converged = bool(getattr(nn, "converged", True))
     if not converged:
@@ -284,6 +477,20 @@ def _solve_ac_pf_with_pandapower(
         [float(nn.res_bus.loc[bid, "va_degree"]) for bid in bus_ids], dtype=float
     )
     v_ang = (va_deg * math.pi / 180.0).astype(float, copy=False)
+
+    # Extract net active power injection per bus (gen - load, MW) for ACPF mode.
+    bus_p_mw_arr: np.ndarray | None = None
+    if "p_mw" in nn.res_bus.columns:
+        bus_p_mw_arr = np.asarray(
+            [float(nn.res_bus.loc[bid, "p_mw"]) for bid in bus_ids], dtype=float
+        )
+
+    # Extract net reactive power injection per bus (gen - load, MVAr).
+    bus_q_mvar_arr: np.ndarray | None = None
+    if "q_mvar" in nn.res_bus.columns:
+        bus_q_mvar_arr = np.asarray(
+            [float(nn.res_bus.loc[bid, "q_mvar"]) for bid in bus_ids], dtype=float
+        )
 
     if not hasattr(nn, "res_line") or nn.res_line is None or len(nn.res_line) == 0:
         raise RuntimeError("pandapower did not produce res_line results.")
@@ -330,6 +537,10 @@ def _solve_ac_pf_with_pandapower(
         line_p1_mw=p1,
         line_q1_mvar=q1,
         status=status,
+        pf_attempt=pf_attempt,
+        pf_repairs=list(pf_repairs),
+        bus_p_mw=bus_p_mw_arr,
+        bus_q_mvar=bus_q_mvar_arr,
     )
 
 
@@ -345,6 +556,8 @@ def solve_ac_pf_base_point_from_pandapower(
     init: str = "flat",
     dc_init_vm_pu: np.ndarray | None = None,
     dc_init_va_rad: np.ndarray | None = None,
+    distributed_slack: bool = False,
+    trafo_model: str = "pi",
 ) -> PyPSAAPFResult:
     """
     Solve AC PF and return base voltages + per-line P/Q flows.
@@ -379,6 +592,8 @@ def solve_ac_pf_base_point_from_pandapower(
             gen_dispatch_mw_by_name=gen_dispatch_mw_by_name,
             lossless=bool(lossless),
             init=init_eff,
+            distributed_slack=bool(distributed_slack),
+            trafo_model=str(trafo_model),
         )
 
     pp_init: PyPSAAPFResult | None = None
@@ -390,6 +605,8 @@ def solve_ac_pf_base_point_from_pandapower(
             gen_dispatch_mw_by_name=gen_dispatch_mw_by_name,
             lossless=bool(lossless),
             init="flat",
+            distributed_slack=bool(distributed_slack),
+            trafo_model=str(trafo_model),
         )
         logger.info(
             "AC PF init='pp': obtained pandapower base point for initial guess."
@@ -416,6 +633,8 @@ def solve_ac_pf_base_point_from_pandapower(
         raise ValueError(
             f"slack_bus must be a valid bus id or position. Got {slack_bus!r}."
         )
+
+    ensure_ext_grid_at_slack(net, int(slack_bus_id))
 
     n = pypsa.Network()
     n.set_snapshots(pd.Index([0]))
@@ -554,6 +773,63 @@ def solve_ac_pf_base_point_from_pandapower(
                 skipped[:20],
             )
 
+    # ---- sgen entries (additional generators at same bus from MATPOWER) ----
+    if hasattr(net, "sgen") and net.sgen is not None and len(net.sgen):
+        skipped_sgen: list[int] = []
+        for sid in [int(x) for x in sorted(net.sgen.index)]:
+            row = net.sgen.loc[sid]
+            if not _is_in_service(row):
+                continue
+            bus = int(row.get("bus", -1))
+            if bus not in bus_id_set:
+                raise ValueError(f"pandapower sgen {sid} refers to missing bus {bus}")
+
+            p_max = float(row.get("max_p_mw", np.nan))
+            if not math.isfinite(p_max) or p_max <= 0.0:
+                skipped_sgen.append(int(sid))
+                continue
+
+            name = f"sgen_{sid}"
+            p_nom = float(p_max)
+
+            if gen_dispatch_mw_by_name and name in gen_dispatch_mw_by_name:
+                p_set = float(gen_dispatch_mw_by_name[name])
+            else:
+                p_set = float(row.get("p_mw", 0.0))
+            if not math.isfinite(p_set):
+                p_set = 0.0
+
+            v_set = float(row.get("vm_pu", 1.0)) if "vm_pu" in row else 1.0
+
+            sgen_kwargs: dict[str, Any] = dict(
+                bus=str(bus),
+                p_nom=float(p_nom),
+                p_set=float(p_set),
+                q_set=0.0,
+                control="PV",
+                v_set=float(v_set),
+            )
+
+            if "min_q_mvar" in row and "max_q_mvar" in row:
+                try:
+                    qmin = float(row.get("min_q_mvar", float("nan")))
+                    qmax = float(row.get("max_q_mvar", float("nan")))
+                except (TypeError, ValueError):
+                    qmin, qmax = float("nan"), float("nan")
+                if math.isfinite(qmin):
+                    sgen_kwargs["q_min"] = float(qmin)
+                if math.isfinite(qmax):
+                    sgen_kwargs["q_max"] = float(qmax)
+
+            n.add("Generator", name, **sgen_kwargs)
+
+        if skipped_sgen:
+            logger.warning(
+                "AC PF: skipped %d pandapower sgen(s) with non-positive/invalid max_p_mw. First: %s",
+                int(len(skipped_sgen)),
+                skipped_sgen[:20],
+            )
+
     if slack_gen_name is None:
         logger.error(
             "AC PF requires an ext_grid at the requested slack_bus=%s. "
@@ -635,7 +911,7 @@ def solve_ac_pf_base_point_from_pandapower(
                 f"trafo_{tid}",
                 bus0=str(hv),
                 bus1=str(lv),
-                model="t",
+                model="pi",
                 s_nom=float(sn_trafo),
                 r=0.0 if bool(lossless) else float(r_pu),
                 x=float(x_pu),

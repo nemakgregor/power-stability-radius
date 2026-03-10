@@ -35,6 +35,7 @@ class PyPSAOPFResult:
     status: str
     objective: float
     gen_dispatch_mw_by_name: tuple[tuple[str, float], ...] = ()
+    ext_grid_absorption_mw: float = 0.0  # total ext_grid absorption (MW), 0 if not used
 
 
 def _line_r_x_ohm_from_pp(
@@ -263,8 +264,66 @@ def solve_dc_opf_base_flows_from_pandapower(
             skipped_nonpositive_pmax[:20],
         )
 
+    # ---- sgen entries (additional generators at same bus from MATPOWER) ----
+    # pandapower's from_ppc creates one gen/ext_grid per bus and puts
+    # additional generators at the same bus into net.sgen with proper
+    # min_p_mw / max_p_mw bounds.  These must be included as dispatchable
+    # generators so the OPF sees the full generation capacity.
+    skipped_sgen_nonpositive: list[int] = []
+    if hasattr(net, "sgen") and net.sgen is not None and len(net.sgen):
+        bus_id_set = set(bus_ids)
+        for sid in [int(x) for x in sorted(net.sgen.index)]:
+            row = net.sgen.loc[sid]
+            if not _is_in_service(row):
+                continue
+            bus = int(row.get("bus", -1))
+            if bus not in bus_id_set:
+                raise ValueError(f"pandapower sgen {sid} refers to missing bus {bus}")
+
+            p_min = float(row.get("min_p_mw", 0.0))
+            p_max = float(row.get("max_p_mw", np.nan))
+            if not math.isfinite(p_min):
+                p_min = 0.0
+            if not math.isfinite(p_max):
+                # sgen without bounds: skip (not dispatchable)
+                continue
+
+            bounds = _pp_gen_p_bounds_to_pypsa(gid=sid, p_min_mw=p_min, p_max_mw=p_max)
+            if bounds is None:
+                skipped_sgen_nonpositive.append(int(sid))
+                continue
+
+            p_nom, p_min_pu = bounds
+            gen_rank += 1
+            n.add(
+                "Generator",
+                f"sgen_{sid}",
+                bus=str(bus),
+                p_nom=float(p_nom),
+                p_min_pu=float(p_min_pu),
+                p_max_pu=1.0,
+                marginal_cost=float(gen_rank),
+            )
+
+    if skipped_sgen_nonpositive:
+        logger.warning(
+            "Skipped %d in-service pandapower sgen(s) with non-positive max_p_mw. First ids: %s",
+            int(len(skipped_sgen_nonpositive)),
+            skipped_sgen_nonpositive[:20],
+        )
+
     if hasattr(net, "ext_grid") and net.ext_grid is not None and len(net.ext_grid):
-        p_nom_ext = max(float(total_load), 1.0)
+        # ext_grid represents the slack bus (generator of last resort).
+        # Capacity is set to unconstrained_nom to ensure feasibility even
+        # when other generators have minimum output constraints.
+        #
+        # Two components per ext_grid:
+        #   ext_{eid}        — generation (sign=+1, injection into bus)
+        #   ext_{eid}_absorb — absorption (sign=-1, consumption from bus)
+        # Both have high marginal cost so the LP only uses them as last resort.
+        # Absorption uses sign=-1 so that positive dispatch means consumption;
+        # the LP objective still penalises it (marginal_cost * p > 0 when p > 0).
+        p_nom_ext = float(unconstrained_nom)
         bus_id_set = set(bus_ids)
         for eid in [int(x) for x in sorted(net.ext_grid.index)]:
             row = net.ext_grid.loc[eid]
@@ -278,6 +337,7 @@ def solve_dc_opf_base_flows_from_pandapower(
 
             gen_rank += 1
             mc = float(ext_grid_cost_base + gen_rank)
+            # Generation component (positive injection).
             n.add(
                 "Generator",
                 f"ext_{eid}",
@@ -287,10 +347,23 @@ def solve_dc_opf_base_flows_from_pandapower(
                 p_max_pu=1.0,
                 marginal_cost=float(mc),
             )
+            # Absorption component (negative injection via sign=-1).
+            # Only used when total generation exceeds demand (e.g. due to
+            # generator min-output constraints in the network).
+            n.add(
+                "Generator",
+                f"ext_{eid}_absorb",
+                bus=str(bus),
+                p_nom=float(p_nom_ext),
+                p_min_pu=0.0,
+                p_max_pu=1.0,
+                marginal_cost=float(mc + 1),  # slightly more expensive than generation
+                sign=-1,
+            )
 
     if len(n.generators.index) == 0:
         raise RuntimeError(
-            "No generators found in pandapower net (gen/ext_grid). Cannot solve OPF."
+            "No generators found in pandapower net (gen/sgen/ext_grid). Cannot solve OPF."
         )
 
     in_service_flags: dict[int, bool] = {}
@@ -355,12 +428,18 @@ def solve_dc_opf_base_flows_from_pandapower(
             _r_pu, x_pu = _trafo_series_rx_pu_from_pp_row(row)
             x_pu_scaled = float(x_pu * scale)
 
+            # MATPOWER DC convention: b = 1/(x·τ).
+            # Absorb tap into reactance so the T-model (with τ=1) reduces
+            # to the same symmetric series model used by DCOperator:
+            #   Y_ff = Y_tt = 1/x_dc = 1/(x·τ) = b/τ
+            x_pu_dc = float(x_pu_scaled * tap)
+
             n.add(
                 "Transformer",
                 f"trafo_{tid}",
                 bus0=str(hv),
                 bus1=str(lv),
-                model="t",
+                model="pi",
                 s_nom=float(s_nom),
                 r=0.0,
                 x=float(x_pu_scaled),
@@ -386,8 +465,29 @@ def solve_dc_opf_base_flows_from_pandapower(
 
     res = n.optimize(solver_name=solver_name, solver_options=cfg.highs.solver_options())
 
-    objective = float(getattr(n, "objective", float("nan")))
-    status = str(getattr(res, "status", "ok")) if res is not None else "ok"
+    # PyPSA returns (status_str, termination_condition_str) tuple
+    # or an object with .status attribute depending on version.
+    if isinstance(res, tuple) and len(res) >= 2:
+        status = str(res[0])
+        termination = str(res[1])
+    else:
+        status = str(getattr(res, "status", "ok")) if res is not None else "ok"
+        termination = str(getattr(res, "termination_condition", "unknown"))
+
+    # Handle infeasible / failed optimization before accessing results.
+    obj_raw = getattr(n, "objective", None)
+    if (
+        obj_raw is None
+        or status not in {"ok", "optimal"}
+        or termination == "infeasible"
+    ):
+        raise RuntimeError(
+            f"DC OPF failed: status={status!r}, termination={termination!r}, "
+            f"objective={obj_raw!r}. "
+            "The problem may be infeasible (check line limits, headroom_factor, "
+            "and generator bounds)."
+        )
+    objective = float(obj_raw)
 
     snap = n.snapshots[0]
 
@@ -401,7 +501,12 @@ def solve_dc_opf_base_flows_from_pandapower(
     bus_names = [str(b) for b in bus_ids]
     gen_p = n.generators_t.p.loc[snap, :]
     gen_bus = n.generators.bus
-    gen_by_bus = gen_p.groupby(gen_bus).sum()
+    gen_sign = n.generators.sign  # +1 for injection, -1 for absorption
+
+    # Compute signed generation: sign * p gives actual injection (MW).
+    # For absorption generators (sign=-1), positive p → negative injection.
+    gen_p_signed = gen_p * gen_sign
+    gen_by_bus = gen_p_signed.groupby(gen_bus).sum()
 
     load_by_bus2 = (
         n.loads.p_set.groupby(n.loads.bus).sum()
@@ -416,8 +521,26 @@ def solve_dc_opf_base_flows_from_pandapower(
         [float(inj_by_bus.get(str(b), 0.0)) for b in bus_ids], dtype=float
     )
 
+    # Track ext_grid absorption usage.
+    ext_absorb_mw = 0.0
+    for gen_name in gen_p.index:
+        if str(gen_name).endswith("_absorb"):
+            p_abs = float(gen_p.loc[gen_name])
+            if p_abs > 1e-3:
+                ext_absorb_mw += p_abs
+
+    if ext_absorb_mw > 1e-3:
+        logger.info(
+            "DC OPF used ext_grid absorption: %.4f MW "
+            "(generator min-output constraints required slack absorption)",
+            ext_absorb_mw,
+        )
+
+    # Exclude absorption generators from dispatch passed to AC PF.
     gen_dispatch_pairs = tuple(
-        (str(name), float(gen_p.loc[name])) for name in sorted(gen_p.index)
+        (str(name), float(gen_p.loc[name]))
+        for name in sorted(gen_p.index)
+        if not str(name).endswith("_absorb")
     )
 
     out = PyPSAOPFResult(
@@ -427,12 +550,14 @@ def solve_dc_opf_base_flows_from_pandapower(
         status=str(status),
         objective=float(objective),
         gen_dispatch_mw_by_name=gen_dispatch_pairs,
+        ext_grid_absorption_mw=float(ext_absorb_mw),
     )
 
     logger.info(
-        "PyPSA OPF done: status=%s, objective=%s, gens=%d",
+        "PyPSA OPF done: status=%s, objective=%s, gens=%d, ext_absorb=%.4f MW",
         out.status,
         f"{out.objective:.6g}" if math.isfinite(out.objective) else "n/a",
         int(len(out.gen_dispatch_mw_by_name)),
+        float(ext_absorb_mw),
     )
     return out
