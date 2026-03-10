@@ -359,7 +359,7 @@ def solve_ac_fpf(
         raise ImportError("pandapower is required for AC FPF solver.") from e
 
     cfg = fpf_cfg if fpf_cfg is not None else ACFPFConfig()
-    _opf_cfg = opf_cfg if opf_cfg is not None else DEFAULT_OPF
+    opf_cfg = opf_cfg if opf_cfg is not None else DEFAULT_OPF
 
     pg0_source = str(cfg.pg0_source).strip().lower()
     if pg0_source not in {"case", "midpoint"}:

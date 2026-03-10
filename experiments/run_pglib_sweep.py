@@ -215,9 +215,7 @@ def _run_case_isolated(
     checkpoint_path: str | None = None
     if checkpoint_dir:
         case_stem = Path(case_name).stem
-        checkpoint_path = str(
-            Path(checkpoint_dir) / f".{case_stem}.dc_checkpoint.json"
-        )
+        checkpoint_path = str(Path(checkpoint_dir) / f".{case_stem}.dc_checkpoint.json")
 
     proc = mp.Process(
         target=_case_worker,
@@ -235,13 +233,15 @@ def _run_case_isolated(
     # internal pipe buffer is full — the feeder thread blocks and the
     # child cannot exit.  Reading the queue first avoids this.
     result_tuple: tuple | None = None
+    effective_timeout = timeout if timeout > 0 else None  # 0 means no timeout
     try:
-        result_tuple = result_queue.get(timeout=timeout)
+        result_tuple = result_queue.get(timeout=effective_timeout)
     except Exception:
         pass
 
     # Now safe to join (queue is drained).
-    proc.join(timeout=30)
+    join_timeout = 30 if timeout > 0 else None
+    proc.join(timeout=join_timeout)
 
     if proc.exitcode is None:
         logger.error(
@@ -258,9 +258,7 @@ def _run_case_isolated(
                 with open(checkpoint_path, "r", encoding="utf-8") as fh:
                     dc_result = json.load(fh)
                 dc_result.setdefault("__meta__", {})["ac_timeout"] = True
-                logger.info(
-                    "Recovered DC checkpoint for %s after timeout.", case_name
-                )
+                logger.info("Recovered DC checkpoint for %s after timeout.", case_name)
                 return dc_result
             except Exception:
                 logger.warning(
@@ -450,9 +448,7 @@ def _extract_summary_row(name: str, combined: dict, time_total: float) -> dict:
     }
 
 
-def _update_summary_and_plot(
-    summary_rows: list[dict], output_dir: Path
-) -> None:
+def _update_summary_and_plot(summary_rows: list[dict], output_dir: Path) -> None:
     """Write summary.json and regenerate the plot with rows sorted by n_buses."""
     sorted_rows = sorted(summary_rows, key=lambda r: (r["n_buses"], r["case"]))
     summary_path = output_dir / "summary.json"
@@ -501,9 +497,11 @@ def _print_table(rows: list[dict]) -> None:
         # Handle failed cases (n_buses/n_lines may be 0, radii may be NaN).
         # Statuses with data: ok, ac_infeasible, dc_negative, dc_only, dc_only_timeout
         # Statuses without data: timeout, crashed, dc_opf_infeasible, error
-        has_data = status_str in (
-            "ok", "ac_infeasible", "dc_negative", "dc_only", "dc_only_timeout"
-        ) and r.get("n_buses", 0) > 0
+        has_data = (
+            status_str
+            in ("ok", "ac_infeasible", "dc_negative", "dc_only", "dc_only_timeout")
+            and r.get("n_buses", 0) > 0
+        )
         if not has_data:
             dc_str = "n/a"
             ac_str = "n/a"
@@ -554,15 +552,20 @@ def _plot_bar_chart(rows: list[dict], output_dir: Path) -> Path:
 
     # Plot ALL cases that have at least some data (DC or AC radii).
     plot_rows = [
-        r for r in rows
-        if (np.isfinite(r.get("dc_r_star", float("nan")))
-            or np.isfinite(r.get("ac_r_star", float("nan"))))
+        r
+        for r in rows
+        if (
+            np.isfinite(r.get("dc_r_star", float("nan")))
+            or np.isfinite(r.get("ac_r_star", float("nan")))
+        )
     ]
     if not plot_rows:
         plot_rows = rows  # fallback: plot everything
 
     # Sort by n_buses for readability.
-    plot_rows = sorted(plot_rows, key=lambda r: (r.get("n_buses", 0), r.get("case", "")))
+    plot_rows = sorted(
+        plot_rows, key=lambda r: (r.get("n_buses", 0), r.get("case", ""))
+    )
 
     labels = [r["case"].replace("pglib_opf_", "") for r in plot_rows]
 
@@ -618,13 +621,21 @@ def _plot_bar_chart(rows: list[dict], output_dir: Path) -> Path:
     # Draw bars one at a time to support per-bar colors and hatching.
     for i in range(len(labels)):
         ax.bar(
-            x[i] - width / 2, dc_vals[i], width,
-            color=dc_colors[i], edgecolor="black", linewidth=0.5,
+            x[i] - width / 2,
+            dc_vals[i],
+            width,
+            color=dc_colors[i],
+            edgecolor="black",
+            linewidth=0.5,
             hatch=dc_hatches[i],
         )
         ax.bar(
-            x[i] + width / 2, ac_vals[i], width,
-            color=ac_colors[i], edgecolor="black", linewidth=0.5,
+            x[i] + width / 2,
+            ac_vals[i],
+            width,
+            color=ac_colors[i],
+            edgecolor="black",
+            linewidth=0.5,
             hatch=ac_hatches[i],
         )
 
@@ -634,7 +645,10 @@ def _plot_bar_chart(rows: list[dict], output_dir: Path) -> Path:
         ax.scatter(
             [x[i] + width / 2 for i in ac_missing_indices],
             [y_offset] * len(ac_missing_indices),
-            marker="x", color=COLOR_MISSING, s=40, zorder=5,
+            marker="x",
+            color=COLOR_MISSING,
+            s=40,
+            zorder=5,
         )
 
     # Legend with proxy artists.
@@ -647,15 +661,21 @@ def _plot_bar_chart(rows: list[dict], output_dir: Path) -> Path:
     if has_negative:
         legend_elements.append(
             Patch(
-                facecolor=COLOR_NEGATIVE, edgecolor="black", hatch="//",
+                facecolor=COLOR_NEGATIVE,
+                edgecolor="black",
+                hatch="//",
                 label="Negative (infeasible)",
             )
         )
     if ac_missing_indices:
         legend_elements.append(
             Line2D(
-                [0], [0], marker="x", color="w",
-                markeredgecolor=COLOR_MISSING, markersize=8,
+                [0],
+                [0],
+                marker="x",
+                color="w",
+                markeredgecolor=COLOR_MISSING,
+                markersize=8,
                 label="AC unavailable",
             )
         )
@@ -757,8 +777,11 @@ def run(config_path: Path, reuse_dir: Path | None = None) -> None:
                     summary_rows.append(row)
                     logger.info(
                         "%s: REUSED from %s (n_buses=%d, dc_r*=%.4f, ac_r*=%.4f)",
-                        name, reuse_path, row["n_buses"],
-                        row["dc_r_star"], row["ac_r_star"],
+                        name,
+                        reuse_path,
+                        row["n_buses"],
+                        row["dc_r_star"],
+                        row["ac_r_star"],
                     )
                     # Copy JSON into output_dir so it is self-contained.
                     dest = output_dir / f"{name}.json"
@@ -769,7 +792,9 @@ def run(config_path: Path, reuse_dir: Path | None = None) -> None:
                 except Exception:
                     logger.warning(
                         "%s: could not reuse %s, will recompute",
-                        name, reuse_path, exc_info=True,
+                        name,
+                        reuse_path,
+                        exc_info=True,
                     )
 
         # ---- Per-case OPFConfig override (headroom_factor) ----
@@ -799,7 +824,9 @@ def run(config_path: Path, reuse_dir: Path | None = None) -> None:
         case_ac_fpf_overrides = case.get("ac_fpf", {})
         if case_ac_fpf_overrides:
             case_ac_fpf_cfg = {**ac_fpf_cfg, **case_ac_fpf_overrides}
-            logger.info("%s: per-case AC FPF overrides: %s", name, case_ac_fpf_overrides)
+            logger.info(
+                "%s: per-case AC FPF overrides: %s", name, case_ac_fpf_overrides
+            )
         else:
             case_ac_fpf_cfg = ac_fpf_cfg
 
@@ -943,7 +970,9 @@ def run(config_path: Path, reuse_dir: Path | None = None) -> None:
         ):
             logger.info(
                 "%s: Adaptive headroom: configured=%.4f, used=%.4f",
-                name, hf_configured, hf_used,
+                name,
+                hf_configured,
+                hf_used,
             )
         consistency_max_diff = meta.get("opf_dc_flow_max_abs_diff_mw", float("nan"))
         if np.isfinite(consistency_max_diff):

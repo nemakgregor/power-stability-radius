@@ -215,8 +215,14 @@ def build_dc_base_point_from_acpf(
 
     slack_bus_id = _resolve_slack_bus_id(bus_ids=bus_ids, slack_bus=int(slack_bus))
 
-    # Map AC PF bus injections to sorted bus ordering.
-    acpf_map = {int(bid): float(p) for bid, p in zip(acpf_bus_ids, acpf_bus_p_mw)}
+    # Validate and map AC PF bus injections to sorted bus ordering.
+    acpf_bus_ids_int = [int(b) for b in acpf_bus_ids]
+    if len(acpf_bus_ids_int) != len(acpf_bus_p_mw):
+        raise ValueError(
+            "Length mismatch between acpf_bus_ids and acpf_bus_p_mw: "
+            f"{len(acpf_bus_ids_int)} vs {len(acpf_bus_p_mw)}"
+        )
+    acpf_map = {bid: float(p) for bid, p in zip(acpf_bus_ids_int, acpf_bus_p_mw)}
     bus_pos = {int(b): i for i, b in enumerate(bus_ids)}
     injections = np.zeros(len(bus_ids), dtype=float)
     for b in bus_ids:
