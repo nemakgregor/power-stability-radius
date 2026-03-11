@@ -5,7 +5,8 @@
 `python -m stability_radius.n1_stability_demo` compares three operating regimes
 on the same MATPOWER case:
 
-1. `Cost OPF` - validated AC cost-minimizing OPF.
+1. `Cost OPF` - AC cost-minimizing OPF, then replayed with AC PF for a
+   physically consistent base point.
 2. `Radius OPF` - the same AC cost OPF with stability-radius-driven line-limit tightening.
 3. `SCOPF` - a screening-based SCOPF proxy that iteratively tightens pre-contingency
    line limits using the worst AC N-1 screening overloads.
@@ -70,15 +71,18 @@ Useful flags:
 headroom_proxy = S_limit_proxy - |S|
 ```
 
-This is not exactly the same quantity as pandapower's AC OPF thermal constraint.
-The AC OPF is enforced through pandapower's **current/loading** limits
-(`loading_percent`), while the radius workflow uses an **MVA proxy** derived from
-the line rating metadata. Because of that mismatch:
+This is not exactly the same quantity as pandapower's AC OPF branch constraint in
+this demo. `runopp` is configured with `OPF_FLOW_LIM=0`, so the solver enforces
+an **apparent-power** branch limit model. The summary also reports a separate
+post-PF **current/loading** diagnostic (`loading_percent`), while the radius
+workflow uses its own **MVA proxy** derived from the line rating metadata.
+Because of those mismatches:
 
 - a feasible AC OPF point can still show slightly negative `min_headroom_mva`;
-- the authoritative feasibility numbers for the OPF are the
-  `max_line_loading_pct` and `min_line_loading_headroom_pct` values in the
-  `AC OPF Constraints (current-based)` section.
+- a converged AC OPF point can also show slightly negative
+  `min_line_loading_headroom_pct` in the post-PF diagnostic table;
+- the current-loading numbers should be interpreted as replay diagnostics, not as
+  the exact branch metric used inside `runopp`.
 
 ## SCOPF Caveat
 
@@ -86,7 +90,7 @@ The demo's `SCOPF` regime is intentionally labeled as a **screening-based SCOPF
 proxy**. The repository stack does not expose a native full AC SCOPF solver
 through pandapower, so the demo uses an iterative tighten-screen-resolve loop:
 
-1. solve validated AC cost OPF;
+1. solve AC cost OPF and replay it with AC PF;
 2. run brute-force AC N-1 screening;
 3. tighten pre-contingency limits on the lines with the worst post-contingency overloads;
 4. repeat until the screening stops requesting tighter limits or the iteration budget is exhausted.

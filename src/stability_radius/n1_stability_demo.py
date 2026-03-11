@@ -200,58 +200,6 @@ def _add_matpower_costs(nn, input_path: str) -> int:
     logger.info("[costs] Added %d poly_cost entries from %s", added, input_path)
     return added
 
-    gen_rows = _parse("gen")
-    cost_rows = _parse("gencost")
-    if not gen_rows or not cost_rows:
-        logger.warning("[costs] No gencost data in %s", input_path)
-        return 0
-
-    # Build bus -> (c2, c1, c0) mapping from MATPOWER
-    bus_costs: dict[int, tuple[float, float, float]] = {}
-    for gr, cr in zip(gen_rows, cost_rows):
-        bus = int(gr[0])
-        ncost = int(cr[3]) if len(cr) > 3 else 3
-        if ncost == 3 and len(cr) >= 7:
-            c2, c1, c0 = cr[4], cr[5], cr[6]
-        elif ncost >= 2 and len(cr) >= 6:
-            c2, c1, c0 = 0.0, cr[4], cr[5]
-        else:
-            c2, c1, c0 = 0.0, 0.0, 0.0
-        if bus in bus_costs:           # multiple generators at same bus – sum
-            old = bus_costs[bus]
-            bus_costs[bus] = (old[0] + c2, old[1] + c1, old[2] + c0)
-        else:
-            bus_costs[bus] = (c2, c1, c0)
-
-    # Drop any existing poly costs
-    if hasattr(nn, "poly_cost") and len(nn.poly_cost):
-        nn.poly_cost.drop(nn.poly_cost.index, inplace=True)
-
-    added = 0
-    # Generators
-    for gidx in nn.gen.index:
-        bus = int(nn.gen.at[gidx, "bus"])
-        c2, c1, c0 = bus_costs.get(bus, (0.0, 0.0, 0.0))
-        if c1 > 0 or c2 > 0:
-            pp.create_poly_cost(
-                nn, gidx, "gen",
-                cp1_eur_per_mw=c1, cp2_eur_per_mw2=c2, cp0_eur=c0,
-            )
-            added += 1
-    # Ext_grid (slack generator)
-    for egidx in nn.ext_grid.index:
-        bus = int(nn.ext_grid.at[egidx, "bus"])
-        c2, c1, c0 = bus_costs.get(bus, (0.0, 0.0, 0.0))
-        if c1 > 0 or c2 > 0:
-            pp.create_poly_cost(
-                nn, egidx, "ext_grid",
-                cp1_eur_per_mw=c1, cp2_eur_per_mw2=c2, cp0_eur=c0,
-            )
-            added += 1
-
-    logger.info("[costs] Added %d poly_cost entries from %s", added, input_path)
-    return added
-
 
 def _set_default_voltage_bounds(nn) -> None:
     """Set bus voltage bounds for OPF, preserving existing values and clipping to safe range."""
@@ -327,6 +275,21 @@ def _extract_opp_state(nn) -> tuple[dict[str, float], dict[int, float]]:
 
 
 def _validate_opf_with_pf(nn, label: str) -> tuple[bool, float]:
+    """Replay the solved OPF point with AC PF.
+
+    Returns
+    -------
+    (pf_converged, max_current_loading_gap_pct)
+        ``pf_converged`` is the actual acceptance criterion.
+        ``max_current_loading_gap_pct`` is diagnostic-only and compares
+        post-PF ``loading_percent`` against ``max_loading_percent``.
+
+    Notes
+    -----
+    ``runopp`` is configured with ``OPF_FLOW_LIM=0``, i.e. apparent-power branch
+    limits. The post-PF current-loading gap is therefore informative, but not
+    the branch-feasibility criterion used by the solver.
+    """
     import pandapower as pp
 
     from stability_radius.base_point.pandapower_tools import (
@@ -376,11 +339,12 @@ def _validate_opf_with_pf(nn, label: str) -> tuple[bool, float]:
 
     if max_loading_violation_pct > 0.25:
         logger.warning(
-            "[%s] Post-OPF PF validation exceeds loading targets by %.3f%%.",
+            "[%s] Post-OPF PF replay shows current-based loading above "
+            "max_loading_percent by %.3f%%. Diagnostic only: runopp here "
+            "enforces apparent-power branch limits (OPF_FLOW_LIM=0).",
             label,
             max_loading_violation_pct,
         )
-        return False, max_loading_violation_pct
 
     return True, max_loading_violation_pct
 
@@ -481,53 +445,24 @@ def _solve_cost_opf(
         )
         t0 = time.time()
         total_cost = _run_cost_opf(nn, label=label)
-        valid_pf, max_violation_pct = _validate_opf_with_pf(nn, label=label)
+        pf_replayed, max_violation_pct = _validate_opf_with_pf(nn, label=label)
         logger.info(
-            "[%s] Done in %.1fs, cost=%.2f $/h, pf_validated=%s",
+            "[%s] Done in %.1fs, cost=%.2f $/h, pf_replayed=%s, current_gap=%.3f%%",
             label,
             time.time() - t0,
             total_cost,
-            valid_pf,
+            pf_replayed,
+            max_violation_pct,
         )
-        if valid_pf:
+        if pf_replayed:
             base_pf = _extract_pypsa_result_from_pp(nn, line_indices)
             return nn, base_pf, total_cost
         logger.warning(
-            "[%s] Retrying with tighter loading limits after PF validation gap %.3f%%.",
+            "[%s] Retrying with tighter loading limits after PF replay failure.",
             label,
-            max_violation_pct,
         )
 
     raise RuntimeError(f"[{label}] AC cost OPF could not be PF-validated.")
-
-    nn = copy.deepcopy(net_lossless)
-
-    n_added = _add_matpower_costs(nn, input_path)
-    if n_added == 0:
-        logger.warning(
-            "[%s] No cost data found – falling back to unit costs.", label
-        )
-        import pandapower as pp
-        for gidx in nn.gen.index:
-            if float(nn.gen.at[gidx, "max_p_mw"]) > 0:
-                pp.create_poly_cost(nn, gidx, "gen", cp1_eur_per_mw=1.0)
-
-    # Thermal limits
-    nn.line["max_loading_percent"] = (
-        nn.line["max_loading_percent"].fillna(max_loading_percent).clip(upper=max_loading_percent)
-        if "max_loading_percent" in nn.line.columns
-        else max_loading_percent
-    )
-
-    _set_default_voltage_bounds(nn)
-
-    logger.info("[%s] Solving true cost-minimising AC OPF...", label)
-    t0 = time.time()
-    total_cost = _run_cost_opf(nn, label=label)
-    logger.info("[%s] Done in %.1fs, cost=%.2f $/h", label, time.time() - t0, total_cost)
-
-    base_pf = _extract_pypsa_result_from_pp(nn, line_indices)
-    return nn, base_pf, total_cost
 
 
 # ---------------------------------------------------------------------------
@@ -2130,7 +2065,7 @@ def _build_comparison_text(
     )
     _append_metric_table(
         lines,
-        title="AC OPF Constraints (current-based)",
+        title="Post-PF Loading Diagnostics (current-based)",
         regime_order=regime_order,
         summaries=constraint_summaries,
         metrics=[
@@ -2234,14 +2169,21 @@ def _build_comparison_text(
 
     if any(
         float(sigma_summaries.get(regime_key, {}).get("min_headroom_mva", float("nan"))) < 0.0
+        or float(
+            constraint_summaries.get(regime_key, {}).get(
+                "min_line_loading_headroom_pct", float("nan")
+            )
+        )
+        < 0.0
         for regime_key, _ in regime_order
     ):
         lines += [
             "",
             "Note:",
             "  `min_headroom_mva` is the stability-radius MVA proxy margin (`S_limit_proxy - |S|`).",
-            "  AC OPF feasibility is enforced via pandapower current/loading constraints instead.",
-            "  Negative proxy headroom can therefore coexist with a feasible AC OPF point.",
+            "  Pandapower AC OPF in this demo uses apparent-power branch limits (`OPF_FLOW_LIM=0`).",
+            "  The loading table above is a post-PF current-based diagnostic (`loading_percent`).",
+            "  Negative proxy headroom or slightly negative loading headroom can therefore coexist with a converged AC OPF point.",
         ]
 
     lines += ["", "=" * 70, ""]
@@ -2815,225 +2757,6 @@ def main() -> None:
         screen_summaries=screen_summaries,
         ac_n1_radius_summaries=ac_n1_radius_summaries,
         output_path=out_dir / "plot_cost_security_tradeoff.png",
-    )
-
-    logger.info("Done. All outputs in: %s", out_dir.resolve())
-    return
-
-    # Phase 1: Load
-    net_lossless, slack_bus, line_indices = _load_and_prepare(
-        args.input, args.slack_bus
-    )
-
-    # Phase 2: True cost-minimising AC OPF (baseline)
-    nn_cost, base_pf_cost, cost_opf_eur_h = _solve_cost_opf(
-        net_lossless,
-        line_indices,
-        input_path=args.input,
-        max_loading_percent=99.0,
-        label="cost_opf",
-    )
-
-    # Phase 3: Radii for cost OPF
-    cost_results, cost_h_vectors = _compute_radii(
-        net_lossless, base_pf_cost, slack_bus, label="cost_opf"
-    )
-
-    # Phase 4: Verify worst-case perturbation
-    logger.info("Verifying worst-case perturbation...")
-    verify_result = _verify_worst_case_perturbation(
-        net_lossless,
-        base_pf_cost,
-        cost_results,
-        cost_h_vectors,
-        slack_bus,
-        line_indices,
-    )
-    logger.info("Verification: %s", verify_result)
-
-    # Log lines with negative radius (already infeasible at cost OPF point)
-    neg_radius_lines = [
-        k for k, v in cost_results.items()
-        if not v.get("is_unconstrained", False)
-        and float(v.get("radius_ac_l2", 0.0)) < 0
-    ]
-    if neg_radius_lines:
-        logger.warning(
-            "[cost_opf] %d lines have NEGATIVE radius (flow exceeds AC limit): %s",
-            len(neg_radius_lines),
-            neg_radius_lines[:5],
-        )
-
-    # Auto r_target: if 0, scale to 10x the minimum POSITIVE constrained radius
-    r_target = float(args.r_target)
-    if r_target <= 0.0:
-        positive_radii = [
-            v["radius_ac_l2"] for v in cost_results.values()
-            if not v.get("is_unconstrained", False)
-            and math.isfinite(v.get("radius_ac_l2", float("nan")))
-            and v["radius_ac_l2"] > 0
-        ]
-        if positive_radii:
-            r_target = 10.0 * float(min(positive_radii))
-            logger.info("Auto r_target = 10 * min_positive_radius = %.4f MW", r_target)
-        else:
-            r_target = 5.0
-
-    # Phase 5: Stability-constrained cost OPF (same costs, tighter limits)
-    nn_radius, base_pf_radius, radius_results, radius_h_vectors, radius_opf_eur_h = (
-        _solve_radius_opf(
-            net_lossless,
-            slack_bus,
-            line_indices,
-            cost_results,
-            r_target=r_target,
-            n_iter=args.n_iter,
-            input_path=args.input,
-        )
-    )
-
-    # Fallback: if radius OPF never ran (all lines already safe / convergence skipped),
-    # use cost OPF results so downstream phases don't crash on None.
-    if base_pf_radius is None:
-        logger.warning(
-            "Radius OPF produced no result; falling back to cost OPF base point."
-        )
-        nn_radius = nn_cost
-        base_pf_radius = base_pf_cost
-        radius_results = cost_results
-        radius_h_vectors = cost_h_vectors
-        radius_opf_eur_h = cost_opf_eur_h
-
-    cost_increase_pct = (
-        100.0 * (radius_opf_eur_h - cost_opf_eur_h) / max(cost_opf_eur_h, 1.0)
-        if math.isfinite(radius_opf_eur_h) and math.isfinite(cost_opf_eur_h)
-        else float("nan")
-    )
-    logger.info(
-        "Cost OPF: %.2f $/h | Stability OPF: %.2f $/h | increase: %.3f%%",
-        cost_opf_eur_h, radius_opf_eur_h, cost_increase_pct,
-    )
-
-    # Phase 6: DC N-1 radii
-    cost_dc_n1_results = {}
-    radius_dc_n1_results = {}
-    if not args.skip_dc_n1:
-        cost_dc_n1_results = _dc_n1_radii(
-            net_lossless, base_pf_cost, slack_bus, line_indices, "cost_opf"
-        )
-        radius_dc_n1_results = _dc_n1_radii(
-            net_lossless, base_pf_radius, slack_bus, line_indices, "radius_opf"
-        )
-        if cost_dc_n1_results:
-            _save_csv(
-                _dc_n1_to_df(cost_dc_n1_results),
-                out_dir / "dc_n1_cost_opf.csv",
-                "DC N-1 (cost)",
-            )
-        if radius_dc_n1_results:
-            _save_csv(
-                _dc_n1_to_df(radius_dc_n1_results),
-                out_dir / "dc_n1_radius_opf.csv",
-                "DC N-1 (radius)",
-            )
-
-    # Phase 6b: AC N-1 stability radius
-    cost_ac_n1_radii = {}
-    radius_ac_n1_radii = {}
-    if not args.skip_ac_n1_radius:
-        cost_ac_n1_radii = _compute_ac_n1_radii(
-            net_lossless, nn_cost, slack_bus, line_indices, "cost_opf"
-        )
-        radius_ac_n1_radii = _compute_ac_n1_radii(
-            net_lossless, nn_radius, slack_bus, line_indices, "radius_opf"
-        )
-        # Save AC N-1 radii CSVs
-        import pandas as pd
-        if cost_ac_n1_radii:
-            pd.DataFrame(
-                [{"line_id": k, "ac_n1_radius": v} for k, v in cost_ac_n1_radii.items()]
-            ).set_index("line_id").sort_index().to_csv(
-                out_dir / "ac_n1_radii_cost.csv"
-            )
-        if radius_ac_n1_radii:
-            pd.DataFrame(
-                [{"line_id": k, "ac_n1_radius": v} for k, v in radius_ac_n1_radii.items()]
-            ).set_index("line_id").sort_index().to_csv(
-                out_dir / "ac_n1_radii_radius.csv"
-            )
-
-    # Phase 7: AC N-1 screening
-    cost_n1_records = []
-    radius_n1_records = []
-    if not args.skip_n1_screening:
-        cost_n1_records = _ac_n1_screen(nn_cost, "cost_opf")
-        radius_n1_records = _ac_n1_screen(nn_radius, "radius_opf")
-        _save_n1_csv(cost_n1_records, out_dir / "n1_screening_cost.csv", "AC N-1 cost")
-        _save_n1_csv(
-            radius_n1_records, out_dir / "n1_screening_radius.csv", "AC N-1 radius"
-        )
-
-    # Save per-line radii
-    _save_csv(_radii_to_df(cost_results), out_dir / "cost_opf_radii.csv", "cost radii")
-    _save_csv(
-        _radii_to_df(radius_results), out_dir / "radius_opf_radii.csv", "radius radii"
-    )
-
-    # Phase 8: AC Sigma-radius + Baseline metrics
-    sigma_p_mw = float(args.sigma_p)
-    sigma_q_mvar = float(args.sigma_q)
-    cost_sigma = _compute_sigma_and_baselines(
-        cost_results, cost_h_vectors, line_indices,
-        sigma_p_mw=sigma_p_mw, sigma_q_mvar=sigma_q_mvar, label="cost_opf",
-    )
-    radius_sigma = _compute_sigma_and_baselines(
-        radius_results, radius_h_vectors, line_indices,
-        sigma_p_mw=sigma_p_mw, sigma_q_mvar=sigma_q_mvar, label="radius_opf",
-    )
-
-    # Summary
-    cost_sum = _summary_stats(cost_results, "cost_opf")
-    radius_sum = _summary_stats(radius_results, "radius_opf")
-    cost_n1_sum = _n1_summary(cost_n1_records, "cost_opf")
-    radius_n1_sum = _n1_summary(radius_n1_records, "radius_opf")
-    cost_dc_n1_sum = _dc_n1_summary(cost_dc_n1_results, "cost_opf")
-    radius_dc_n1_sum = _dc_n1_summary(radius_dc_n1_results, "radius_opf")
-    cost_ac_n1_sum = _ac_n1_radius_summary(cost_ac_n1_radii, "cost_opf")
-    radius_ac_n1_sum = _ac_n1_radius_summary(radius_ac_n1_radii, "radius_opf")
-
-    _print_comparison(
-        cost_sum,
-        radius_sum,
-        cost_n1_sum,
-        radius_n1_sum,
-        cost_dc_n1_sum,
-        radius_dc_n1_sum,
-        cost_ac_n1_sum,
-        radius_ac_n1_sum,
-        cost_sigma,
-        radius_sigma,
-        verify_result,
-        r_target=r_target,
-        sigma_p_mw=sigma_p_mw,
-        sigma_q_mvar=sigma_q_mvar,
-        cost_opf_eur_h=cost_opf_eur_h,
-        radius_opf_eur_h=radius_opf_eur_h,
-        cost_increase_pct=cost_increase_pct,
-        cost_gen_mw=float(nn_cost.res_gen.p_mw.sum()) if nn_cost is not None else float("nan"),
-        radius_gen_mw=float(nn_radius.res_gen.p_mw.sum()) if nn_radius is not None else float("nan"),
-        output_path=out_dir / "comparison_summary.txt",
-    )
-
-    # Plots
-    _plot_radius_cdf(cost_results, radius_results, out_dir / "plot_radius_cdf.png")
-    _plot_n1_overloads(
-        cost_n1_records, radius_n1_records, out_dir / "plot_n1_overloads.png"
-    )
-    _plot_radius_scatter(
-        cost_results, radius_results, out_dir / "plot_radius_scatter.png"
-    )
-    _plot_ac_n1_radius_cdf(
-        cost_ac_n1_radii, radius_ac_n1_radii, out_dir / "plot_ac_n1_radius_cdf.png"
     )
 
     logger.info("Done. All outputs in: %s", out_dir.resolve())

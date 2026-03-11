@@ -5,11 +5,13 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
+from stability_radius import n1_stability_demo as demo
 from stability_radius.n1_stability_demo import (
     _build_comparison_text,
     _opf_constraint_summary,
     _plot_cost_security_tradeoff,
     _resolve_output_dir,
+    _solve_cost_opf,
     _total_generation_dispatch_mw,
     _update_scopf_line_limits,
 )
@@ -184,7 +186,43 @@ def test_build_comparison_text_includes_scopf_and_proxy_headroom_note() -> None:
 
     assert "SCOPF" in text
     assert "Min headroom vs MVA proxy" in text
-    assert "Negative proxy headroom can therefore coexist" in text
+    assert "apparent-power branch limits" in text
+    assert "post-PF current-based diagnostic" in text
+
+
+def test_solve_cost_opf_accepts_pf_replay_with_current_gap(monkeypatch) -> None:
+    calls = {"run_cost_opf": 0, "validate": 0}
+
+    monkeypatch.setattr(demo, "_prepare_cost_opf_network", lambda nn: None)
+    monkeypatch.setattr(demo, "_apply_loading_limits", lambda nn, **kwargs: None)
+    monkeypatch.setattr(demo, "_set_default_voltage_bounds", lambda nn: None)
+    monkeypatch.setattr(demo, "_add_matpower_costs", lambda nn, input_path: 1)
+    monkeypatch.setattr(demo, "_extract_pypsa_result_from_pp", lambda nn, line_indices: "base_pf")
+
+    def fake_run_cost_opf(nn, label: str = "cost_opf") -> float:
+        calls["run_cost_opf"] += 1
+        return 123.4
+
+    def fake_validate_opf_with_pf(nn, label: str) -> tuple[bool, float]:
+        calls["validate"] += 1
+        return True, 2.5
+
+    monkeypatch.setattr(demo, "_run_cost_opf", fake_run_cost_opf)
+    monkeypatch.setattr(demo, "_validate_opf_with_pf", fake_validate_opf_with_pf)
+
+    nn, base_pf, total_cost = _solve_cost_opf(
+        SimpleNamespace(),
+        [1, 2],
+        input_path="case118.m",
+        max_loading_percent=99.0,
+        label="cost_opf",
+    )
+
+    assert isinstance(nn, SimpleNamespace)
+    assert base_pf == "base_pf"
+    assert total_cost == pytest.approx(123.4)
+    assert calls["run_cost_opf"] == 1
+    assert calls["validate"] == 1
 
 
 def test_plot_cost_security_tradeoff_writes_png(tmp_path) -> None:

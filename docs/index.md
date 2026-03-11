@@ -125,4 +125,5 @@ python -m stability_radius.n1_stability_demo \
 
 Artifacts are written to `runs/n1_stability_demo/n1_demo_case118/`. See
 [n1_demo.md](n1_demo.md) for the output files, plots, and the interpretation of
-proxy headroom versus pandapower's current-based OPF constraints.
+proxy headroom, post-PF current-loading diagnostics, and pandapower's
+apparent-power OPF branch constraints in this demo.
