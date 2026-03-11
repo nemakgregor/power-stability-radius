@@ -3,21 +3,21 @@
 Pipeline
 --------
 1. Load MATPOWER network.
-2. Solve Cost OPF (AC FPF minimising deviation from case dispatch, nominal limits).
+2. Solve validated cost-minimising AC OPF.
 3. Compute AC L2 stability radii + h-vectors for cost-OPF regime.
 4. Verify worst-case perturbation causes a thermal overload (proof of concept).
 5. Iteratively solve Radius OPF (same objective but tightened limits from h-norms).
 6. Compute AC L2 radii for radius-OPF regime.
-7. DC-based N-1 effective radii for both regimes.
-8. Brute-force AC N-1 screening for both regimes (disconnect each line, run PF).
-9. Compare regimes; save CSV tables, summary text, and plots.
+7. Solve a screening-based SCOPF proxy and compare all three regimes.
+8. DC/AC N-1 post-processing and brute-force AC N-1 screening.
+9. Save CSV tables, summary text, and plots under `runs/`.
 
 Usage
 -----
 python -m stability_radius.n1_stability_demo \\
     --input data/input/pglib_opf_case118_ieee.m \\
-    --r-target 0.5 --n-iter 2 \\
-    --output-dir analysis_output/n1_demo_case118
+    --r-target 0.5 --n-iter 2 --scopf-iter 2 \\
+    --output-dir n1_demo_case118
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ import logging
 import math
 import sys
 import time
+from collections.abc import Mapping
 from pathlib import Path
 
 import numpy as np
@@ -41,25 +42,36 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def _setup_logging(verbose: bool) -> None:
+def _setup_logging(verbose: bool, *, log_file: Path | None = None) -> None:
     level = logging.DEBUG if verbose else logging.INFO
     fmt = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
-    # Force UTF-8 output to avoid Windows cp1252 issues with special chars
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setStream(sys.stdout)
+    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
+    if log_file is not None:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        handlers.append(logging.FileHandler(log_file, encoding="utf-8"))
     try:
         sys.stdout.reconfigure(encoding="utf-8")
     except AttributeError:
         pass
-    logging.basicConfig(format=fmt, datefmt="%H:%M:%S", level=level, stream=sys.stdout)
+    logging.basicConfig(
+        format=fmt,
+        datefmt="%H:%M:%S",
+        level=level,
+        handlers=handlers,
+        force=True,
+    )
     for name in ("pandapower", "numba", "urllib3", "matplotlib"):
         logging.getLogger(name).setLevel(logging.WARNING)
 
 
-def _make_output_dir(path: str) -> Path:
-    p = Path(path)
-    p.mkdir(parents=True, exist_ok=True)
-    return p
+def _resolve_output_dir(requested_output_dir: str | None) -> Path:
+    from stability_radius.utils import create_module_output_dir
+
+    return create_module_output_dir(
+        module_name="n1_stability_demo",
+        runs_dir="runs",
+        requested_output_dir=requested_output_dir,
+    )
 
 
 def _lid_int(key: str) -> int:
@@ -102,46 +114,420 @@ def _load_and_prepare(input_path: str, slack_bus_override: int | None):
 
 
 # ---------------------------------------------------------------------------
-# Phase 2: Solve AC FPF OPF
+# Phase 2: True cost-minimising AC OPF
 # ---------------------------------------------------------------------------
 
 
-def _solve_fpf(
-    net,
-    slack_bus: int,
-    line_indices: list[int],
-    max_loading_percent: float = 99.0,
-    label: str = "OPF",
-):
-    """Returns (BasePointAC, PyPSAAPFResult)."""
-    from stability_radius.base_point import solve_ac_fpf_base_point
-    from stability_radius.base_point.pandapower_opp import ACFPFConfig
+def _add_matpower_costs(nn, input_path: str) -> int:
+    """Parse MATPOWER gencost and add poly_cost entries to pandapower network.
 
-    fpf_cfg = ACFPFConfig(
-        pg0_source="case",
-        max_loading_percent=max_loading_percent,
-        max_iteration=300,
-        pdipm_feastol=1e-4,
-        pdipm_gradtol=1e-4,
-        pdipm_comptol=1e-4,
-        init="dc",
-        max_attempts=2,
+    Returns the number of generators that received a non-zero cost.
+    Matches generators by bus number (robust to ordering differences).
+    Also assigns cost to ext_grid (slack) when the reference bus has costs.
+    """
+    import re
+    import pandapower as pp
+
+    with open(input_path, encoding="utf-8", errors="replace") as _f:
+        txt = _f.read()
+
+    def _parse(name):
+        m = re.search(rf"mpc\.{name}\s*=\s*\[(.*?)\];", txt, re.DOTALL)
+        if not m:
+            return []
+        rows = []
+        for line in m.group(1).strip().split("\n"):
+            line = line.strip().split("%")[0].strip().rstrip(";").strip()
+            if not line:
+                continue
+            rows.append([float(x) for x in line.split()])
+        return rows
+
+    gen_rows = _parse("gen")
+    cost_rows = _parse("gencost")
+    if not gen_rows or not cost_rows:
+        logger.warning("[costs] No gencost data in %s", input_path)
+        return 0
+
+    bus_costs: dict[int, list[tuple[float, float, float]]] = {}
+    for gr, cr in zip(gen_rows, cost_rows):
+        bus = int(gr[0])
+        ncost = int(cr[3]) if len(cr) > 3 else 3
+        if ncost == 3 and len(cr) >= 7:
+            c2, c1, c0 = cr[4], cr[5], cr[6]
+        elif ncost >= 2 and len(cr) >= 6:
+            c2, c1, c0 = 0.0, cr[4], cr[5]
+        else:
+            c2, c1, c0 = 0.0, 0.0, 0.0
+        bus_costs.setdefault(bus, []).append((float(c2), float(c1), float(c0)))
+
+    _clear_existing_costs(nn)
+
+    elements_by_bus: dict[int, list[tuple[str, int]]] = {}
+    for element_type, idx, bus in _iter_dispatchable_elements(nn):
+        elements_by_bus.setdefault(int(bus), []).append((element_type, int(idx)))
+
+    added = 0
+    for bus, elements in elements_by_bus.items():
+        costs = list(bus_costs.get(int(bus), []))
+        if not costs:
+            continue
+        if len(costs) != len(elements):
+            agg = np.sum(np.asarray(costs, dtype=float), axis=0) / float(len(elements))
+            logger.warning(
+                "[costs] Bus %d has %d MATPOWER cost rows but %d pandapower elements; using equal-share fallback.",
+                int(bus),
+                len(costs),
+                len(elements),
+            )
+            assigned_costs = [tuple(float(x) for x in agg)] * len(elements)
+        else:
+            assigned_costs = costs
+
+        for (element_type, idx), (c2, c1, c0) in zip(elements, assigned_costs):
+            if c0 == 0.0 and c1 == 0.0 and c2 == 0.0:
+                continue
+            pp.create_poly_cost(
+                nn,
+                idx,
+                element_type,
+                cp1_eur_per_mw=c1,
+                cp2_eur_per_mw2=c2,
+                cp0_eur=c0,
+            )
+            added += 1
+
+    logger.info("[costs] Added %d poly_cost entries from %s", added, input_path)
+    return added
+
+    gen_rows = _parse("gen")
+    cost_rows = _parse("gencost")
+    if not gen_rows or not cost_rows:
+        logger.warning("[costs] No gencost data in %s", input_path)
+        return 0
+
+    # Build bus -> (c2, c1, c0) mapping from MATPOWER
+    bus_costs: dict[int, tuple[float, float, float]] = {}
+    for gr, cr in zip(gen_rows, cost_rows):
+        bus = int(gr[0])
+        ncost = int(cr[3]) if len(cr) > 3 else 3
+        if ncost == 3 and len(cr) >= 7:
+            c2, c1, c0 = cr[4], cr[5], cr[6]
+        elif ncost >= 2 and len(cr) >= 6:
+            c2, c1, c0 = 0.0, cr[4], cr[5]
+        else:
+            c2, c1, c0 = 0.0, 0.0, 0.0
+        if bus in bus_costs:           # multiple generators at same bus – sum
+            old = bus_costs[bus]
+            bus_costs[bus] = (old[0] + c2, old[1] + c1, old[2] + c0)
+        else:
+            bus_costs[bus] = (c2, c1, c0)
+
+    # Drop any existing poly costs
+    if hasattr(nn, "poly_cost") and len(nn.poly_cost):
+        nn.poly_cost.drop(nn.poly_cost.index, inplace=True)
+
+    added = 0
+    # Generators
+    for gidx in nn.gen.index:
+        bus = int(nn.gen.at[gidx, "bus"])
+        c2, c1, c0 = bus_costs.get(bus, (0.0, 0.0, 0.0))
+        if c1 > 0 or c2 > 0:
+            pp.create_poly_cost(
+                nn, gidx, "gen",
+                cp1_eur_per_mw=c1, cp2_eur_per_mw2=c2, cp0_eur=c0,
+            )
+            added += 1
+    # Ext_grid (slack generator)
+    for egidx in nn.ext_grid.index:
+        bus = int(nn.ext_grid.at[egidx, "bus"])
+        c2, c1, c0 = bus_costs.get(bus, (0.0, 0.0, 0.0))
+        if c1 > 0 or c2 > 0:
+            pp.create_poly_cost(
+                nn, egidx, "ext_grid",
+                cp1_eur_per_mw=c1, cp2_eur_per_mw2=c2, cp0_eur=c0,
+            )
+            added += 1
+
+    logger.info("[costs] Added %d poly_cost entries from %s", added, input_path)
+    return added
+
+
+def _set_default_voltage_bounds(nn) -> None:
+    """Set bus voltage bounds for OPF, preserving existing values and clipping to safe range."""
+    nn.bus["min_vm_pu"] = nn.bus.get("min_vm_pu", 0.9).fillna(0.9).clip(lower=0.85)
+    nn.bus["max_vm_pu"] = nn.bus.get("max_vm_pu", 1.1).fillna(1.1).clip(upper=1.15)
+
+
+def _clear_existing_costs(nn) -> None:
+    if hasattr(nn, "poly_cost") and nn.poly_cost is not None and len(nn.poly_cost):
+        nn.poly_cost.drop(nn.poly_cost.index, inplace=True)
+    if hasattr(nn, "pwl_cost") and nn.pwl_cost is not None and len(nn.pwl_cost):
+        nn.pwl_cost.drop(nn.pwl_cost.index, inplace=True)
+
+
+def _iter_dispatchable_elements(nn):
+    for table_name, element_type in (
+        ("ext_grid", "ext_grid"),
+        ("gen", "gen"),
+        ("sgen", "sgen"),
+    ):
+        table = getattr(nn, table_name, None)
+        if table is None or len(table) == 0:
+            continue
+        for idx in sorted(int(x) for x in table.index):
+            row = table.loc[idx]
+            if "in_service" in row and not bool(row.get("in_service", True)):
+                continue
+            yield element_type, int(idx), int(row["bus"])
+
+
+def _prepare_cost_opf_network(nn) -> None:
+    from stability_radius.base_point.pandapower_opp import (
+        _set_line_thermal_limits,
+        _setup_gen_for_opp,
     )
-    logger.info(
-        "[%s] Solving AC FPF (max_loading=%.1f%%)...", label, max_loading_percent
+
+    _clear_existing_costs(nn)
+    _set_line_thermal_limits(nn)
+    _setup_gen_for_opp(nn, pg0_source="case")
+    _clear_existing_costs(nn)
+
+
+def _apply_loading_limits(
+    nn,
+    *,
+    default_loading_percent: float,
+    per_line_loading_limits_pct: Mapping[int, float] | None = None,
+) -> None:
+    default_pct = float(default_loading_percent)
+    if hasattr(nn, "line") and nn.line is not None and len(nn.line):
+        nn.line["max_loading_percent"] = default_pct
+        if per_line_loading_limits_pct:
+            for lid, pct in per_line_loading_limits_pct.items():
+                if int(lid) in nn.line.index:
+                    nn.line.at[int(lid), "max_loading_percent"] = float(pct)
+    if hasattr(nn, "trafo") and nn.trafo is not None and len(nn.trafo):
+        nn.trafo["max_loading_percent"] = default_pct
+
+
+def _extract_opp_state(nn) -> tuple[dict[str, float], dict[int, float]]:
+    opp_dispatch: dict[str, float] = {}
+    if hasattr(nn, "res_gen") and nn.res_gen is not None and len(nn.res_gen):
+        for gid in sorted(int(x) for x in nn.res_gen.index):
+            opp_dispatch[f"gen_{gid}"] = float(nn.res_gen.loc[gid, "p_mw"])
+    if hasattr(nn, "res_sgen") and nn.res_sgen is not None and len(nn.res_sgen):
+        for sid in sorted(int(x) for x in nn.res_sgen.index):
+            opp_dispatch[f"sgen_{sid}"] = float(nn.res_sgen.loc[sid, "p_mw"])
+    opp_vm_pu = {
+        int(bid): float(nn.res_bus.loc[bid, "vm_pu"])
+        for bid in sorted(int(x) for x in nn.res_bus.index)
+    }
+    return opp_dispatch, opp_vm_pu
+
+
+def _validate_opf_with_pf(nn, label: str) -> tuple[bool, float]:
+    import pandapower as pp
+
+    from stability_radius.base_point.pandapower_tools import (
+        apply_opp_result_to_pandapower_net,
     )
+
+    opp_dispatch, opp_vm_pu = _extract_opp_state(nn)
+    apply_opp_result_to_pandapower_net(
+        nn,
+        opp_gen_dispatch=opp_dispatch,
+        opp_vm_pu=opp_vm_pu,
+    )
+
+    pf_ok = False
+    for init, enforce_q_lims in (("results", True), ("dc", True), ("flat", False)):
+        try:
+            pp.runpp(
+                nn,
+                calculate_voltage_angles=True,
+                init=init,
+                enforce_q_lims=enforce_q_lims,
+                numba=False,
+                max_iteration=100,
+                tolerance_mva=1e-8,
+            )
+            if bool(getattr(nn, "converged", False)):
+                pf_ok = True
+                break
+        except Exception as exc:
+            logger.debug("[%s] Post-OPF PF attempt (init=%s) failed: %s", label, init, exc)
+
+    if not pf_ok:
+        logger.warning("[%s] Post-OPF PF validation failed to converge.", label)
+        return False, float("inf")
+
+    max_loading_violation_pct = 0.0
+    if hasattr(nn, "res_line") and nn.res_line is not None and len(nn.res_line):
+        for lid in nn.res_line.index:
+            target = float(nn.line.at[lid, "max_loading_percent"])
+            actual = float(nn.res_line.at[lid, "loading_percent"])
+            max_loading_violation_pct = max(max_loading_violation_pct, actual - target)
+    if hasattr(nn, "res_trafo") and nn.res_trafo is not None and len(nn.res_trafo):
+        for tid in nn.res_trafo.index:
+            target = float(nn.trafo.at[tid, "max_loading_percent"])
+            actual = float(nn.res_trafo.at[tid, "loading_percent"])
+            max_loading_violation_pct = max(max_loading_violation_pct, actual - target)
+
+    if max_loading_violation_pct > 0.25:
+        logger.warning(
+            "[%s] Post-OPF PF validation exceeds loading targets by %.3f%%.",
+            label,
+            max_loading_violation_pct,
+        )
+        return False, max_loading_violation_pct
+
+    return True, max_loading_violation_pct
+
+
+def _run_cost_opf(nn, label: str = "opf") -> float:
+    """Run pandapower runopp on an already-configured network.
+
+    Assumes poly_cost, line limits, and voltage bounds are set.
+    Returns total generation cost ($/h).
+    Raises RuntimeError if OPF does not converge.
+    """
+    import pandapower as pp
+    import warnings
+
+    for init in ("dc", "flat"):
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                pp.runopp(
+                    nn,
+                    calculate_voltage_angles=True,
+                    OPF_FLOW_LIM=0,
+                    OPF_VIOLATION=1e-4,
+                    init=init,
+                    max_iteration=300,
+                    numba=False,
+                )
+            logger.info(
+                "[%s] OPF converged (init=%s): cost=%.2f $/h, "
+                "max_loading=%.1f%%",
+                label, init,
+                float(nn.res_cost),
+                float(nn.res_line.loading_percent.max()),
+            )
+            return float(nn.res_cost)
+        except Exception as exc:
+            logger.warning("[%s] OPF attempt (init=%s) failed: %s", label, init, exc)
+
+    raise RuntimeError(f"[{label}] AC cost OPF did not converge with any init strategy.")
+
+
+def _solve_cost_opf(
+    net_lossless,
+    line_indices: list[int],
+    input_path: str,
+    max_loading_percent: float = 99.0,
+    per_line_loading_limits_pct: Mapping[int, float] | None = None,
+    label: str = "cost_opf",
+):
+    """Solve true cost-minimising AC OPF.
+
+    Uses actual generator cost curves from the MATPOWER file, not the
+    feasibility (min-deviation) objective.
+
+    Returns
+    -------
+    (nn_solved, base_pf, total_cost_eur_h)
+        nn_solved      : pandapower network with res_* populated
+        base_pf        : PyPSAAPFResult extracted from res_*
+        total_cost     : total generation cost in $/h
+    """
+    import pandapower as pp
+
+    for attempt_idx, scale in enumerate((1.0, 0.995, 0.99), start=1):
+        nn = copy.deepcopy(net_lossless)
+        _prepare_cost_opf_network(nn)
+        _apply_loading_limits(
+            nn,
+            default_loading_percent=float(max_loading_percent) * float(scale),
+            per_line_loading_limits_pct=(
+                {
+                    int(lid): float(pct) * float(scale)
+                    for lid, pct in per_line_loading_limits_pct.items()
+                }
+                if per_line_loading_limits_pct
+                else None
+            ),
+        )
+        _set_default_voltage_bounds(nn)
+
+        n_added = _add_matpower_costs(nn, input_path)
+        if n_added == 0:
+            logger.warning("[%s] No cost data found; falling back to unit costs.", label)
+            for element_type, idx, _ in _iter_dispatchable_elements(nn):
+                if element_type == "ext_grid":
+                    pp.create_poly_cost(nn, idx, element_type, cp1_eur_per_mw=1.0)
+                    continue
+                table_name = "gen" if element_type == "gen" else "sgen"
+                p_max = float(getattr(nn, table_name).at[idx, "max_p_mw"])
+                if p_max > 0:
+                    pp.create_poly_cost(nn, idx, element_type, cp1_eur_per_mw=1.0)
+
+        logger.info(
+            "[%s] Solving true cost-minimising AC OPF (attempt=%d, loading_scale=%.3f)...",
+            label,
+            attempt_idx,
+            scale,
+        )
+        t0 = time.time()
+        total_cost = _run_cost_opf(nn, label=label)
+        valid_pf, max_violation_pct = _validate_opf_with_pf(nn, label=label)
+        logger.info(
+            "[%s] Done in %.1fs, cost=%.2f $/h, pf_validated=%s",
+            label,
+            time.time() - t0,
+            total_cost,
+            valid_pf,
+        )
+        if valid_pf:
+            base_pf = _extract_pypsa_result_from_pp(nn, line_indices)
+            return nn, base_pf, total_cost
+        logger.warning(
+            "[%s] Retrying with tighter loading limits after PF validation gap %.3f%%.",
+            label,
+            max_violation_pct,
+        )
+
+    raise RuntimeError(f"[{label}] AC cost OPF could not be PF-validated.")
+
+    nn = copy.deepcopy(net_lossless)
+
+    n_added = _add_matpower_costs(nn, input_path)
+    if n_added == 0:
+        logger.warning(
+            "[%s] No cost data found – falling back to unit costs.", label
+        )
+        import pandapower as pp
+        for gidx in nn.gen.index:
+            if float(nn.gen.at[gidx, "max_p_mw"]) > 0:
+                pp.create_poly_cost(nn, gidx, "gen", cp1_eur_per_mw=1.0)
+
+    # Thermal limits
+    nn.line["max_loading_percent"] = (
+        nn.line["max_loading_percent"].fillna(max_loading_percent).clip(upper=max_loading_percent)
+        if "max_loading_percent" in nn.line.columns
+        else max_loading_percent
+    )
+
+    _set_default_voltage_bounds(nn)
+
+    logger.info("[%s] Solving true cost-minimising AC OPF...", label)
     t0 = time.time()
-    bp, base_pf = solve_ac_fpf_base_point(
-        net=net,
-        slack_bus=slack_bus,
-        lossless=True,
-        fpf_cfg=fpf_cfg,
-        line_indices=line_indices,
-    )
-    logger.info(
-        "[%s] OPF done in %.1fs, status=%s", label, time.time() - t0, base_pf.status
-    )
-    return bp, base_pf
+    total_cost = _run_cost_opf(nn, label=label)
+    logger.info("[%s] Done in %.1fs, cost=%.2f $/h", label, time.time() - t0, total_cost)
+
+    base_pf = _extract_pypsa_result_from_pp(nn, line_indices)
+    return nn, base_pf, total_cost
 
 
 # ---------------------------------------------------------------------------
@@ -362,60 +748,66 @@ def _solve_radius_opf(
     slack_bus: int,
     line_indices: list[int],
     cost_results: dict,
-    cost_h_vectors: dict,
     r_target: float,
     n_iter: int,
+    input_path: str,
 ):
-    """Returns (bp, base_pf, results, h_vectors) for radius OPF regime.
+    """Cost-minimising OPF with stability-radius-guided thermal tightening.
 
-    Tightening strategy: only tighten lines whose current AC L2 radius is
-    *below* r_target. Lines already safe (radius >= r_target) keep their
-    original limits. This avoids over-constraining the OPF.
+    Uses the SAME generator cost curves as the cost OPF — the only
+    difference from the cost OPF is that lines with radius < r_target
+    have their thermal limits tightened by r_target * ||h_l||.
+    Iterates n_iter times, updating h-norms after each round.
+
+    Returns
+    -------
+    (nn_solved, base_pf, results, h_vectors, total_cost)
     """
     from stability_radius.radii.common import estimate_line_limit_mva
 
     current_results = cost_results
+    nn_radius = None
     base_pf_radius = None
-    bp_radius = None
     radius_results = cost_results
-    radius_h_vectors = cost_h_vectors
+    radius_h_vectors = {}
+    total_cost = float("nan")
 
     for iteration in range(n_iter):
         logger.info("[radius_opf] Iteration %d/%d", iteration + 1, n_iter)
 
-        net_tight = copy.deepcopy(net_lossless)
-
+        # Tighten limits only for vulnerable lines (radius < r_target)
+        tight_limits_pct: dict[int, float] = {}
         tightened = 0
         skipped_safe = 0
         for lid in line_indices:
             key = _lid_str(lid)
             res = current_results.get(key, {})
-            if res.get("is_unconstrained", False):
-                continue
             current_radius = float(res.get("radius_ac_l2", float("inf")))
-            # Only tighten lines that are actually vulnerable
-            if math.isfinite(current_radius) and current_radius >= r_target:
+            base_pct = 99.0
+            if res.get("is_unconstrained", False) or not math.isfinite(current_radius):
+                tight_limits_pct[int(lid)] = base_pct
+                continue
+            if current_radius >= r_target:
                 skipped_safe += 1
+                tight_limits_pct[int(lid)] = base_pct
                 continue
             h_norm = float(res.get("||h||2", 0.0))
             if h_norm < 1e-10:
+                tight_limits_pct[int(lid)] = base_pct
                 continue
             s_limit = float(
                 estimate_line_limit_mva(net_lossless, net_lossless.line.loc[lid])
             )
             new_limit_mva = max(0.10 * s_limit, s_limit - r_target * h_norm)
-            new_loading_pct = 100.0 * new_limit_mva / s_limit
-            net_tight.line.at[lid, "max_loading_percent"] = new_loading_pct
+            tight_limits_pct[int(lid)] = 100.0 * new_limit_mva / s_limit
             tightened += 1
 
-        tight_pcts = net_tight.line.max_loading_percent.values
+        tight_pcts = np.asarray(list(tight_limits_pct.values()), dtype=float)
         logger.info(
-            "[radius_opf] Tightened %d lines (skipped %d safe) | "
-            "min_loading_pct=%.1f%% mean=%.1f%%",
-            tightened,
-            skipped_safe,
-            float(np.min(tight_pcts)),
-            float(np.mean(tight_pcts)),
+            "[radius_opf] Tightened %d lines (skipped %d already safe) | "
+            "min_pct=%.1f%% mean_pct=%.1f%%",
+            tightened, skipped_safe,
+            float(np.min(tight_pcts)), float(np.mean(tight_pcts)),
         )
 
         if tightened == 0:
@@ -425,32 +817,31 @@ def _solve_radius_opf(
             break
 
         try:
-            # Pass max_loading_percent=100.0 so ACFPFConfig does NOT override the
-            # per-line max_loading_percent values we set above on net_tight.
-            # (ACFPFConfig only overwrites per-line limits when its value < 100.0.)
-            bp_radius, base_pf_radius = _solve_fpf(
-                net_tight,
-                slack_bus,
+            nn_radius, base_pf_radius, total_cost = _solve_cost_opf(
+                net_lossless,
                 line_indices,
-                max_loading_percent=100.0,
+                input_path=input_path,
+                max_loading_percent=99.0,
+                per_line_loading_limits_pct=tight_limits_pct,
                 label=f"radius_opf_iter{iteration + 1}",
             )
         except Exception as exc:
             logger.error("[radius_opf] OPF failed on iter %d: %s", iteration + 1, exc)
             if iteration == 0:
-                raise
-            logger.warning("[radius_opf] Using previous iteration result.")
+                logger.warning(
+                    "[radius_opf] First tightened solve failed; falling back to cost OPF baseline."
+                )
+                break
+            logger.warning("[radius_opf] Keeping previous iteration result.")
             break
 
         radius_results, radius_h_vectors = _compute_radii(
-            net_lossless,
-            base_pf_radius,
-            slack_bus,
+            net_lossless, base_pf_radius, slack_bus,
             label=f"radius_opf_iter{iteration + 1}",
         )
         current_results = radius_results
 
-    return bp_radius, base_pf_radius, radius_results, radius_h_vectors
+    return nn_radius, base_pf_radius, radius_results, radius_h_vectors, total_cost
 
 
 # ---------------------------------------------------------------------------
@@ -719,22 +1110,26 @@ def _dc_n1_radii(
 # ---------------------------------------------------------------------------
 
 
-def _ac_n1_screen(net_lossless, base_pf, slack_bus: int, label: str) -> list[dict]:
+def _ac_n1_screen(
+    nn_solved,
+    label: str,
+    *,
+    return_peak_loadings: bool = False,
+) -> list[dict] | tuple[list[dict], dict[int, float]]:
+    """Brute-force AC N-1 screening from a solved pandapower network.
+
+    nn_solved must have res_gen and res_bus populated (from runopp or runpp).
+    Generator dispatch and voltage setpoints are read from the OPF result so
+    the contingency PF starts from the correct operating point.
+    """
     import pandapower as pp
-    from stability_radius.base_point.pandapower_tools import (
-        apply_opp_result_to_pandapower_net,
-    )
 
-    net_base = copy.deepcopy(net_lossless)
-    opp_dispatch = getattr(base_pf, "opp_gen_dispatch", None) or {}
-    opp_vm = getattr(base_pf, "opp_vm_pu", None) or {}
-    if opp_dispatch or opp_vm:
-        apply_opp_result_to_pandapower_net(
-            net_base, opp_gen_dispatch=opp_dispatch, opp_vm_pu=opp_vm
-        )
+    # Build base network at the OPF operating point.
+    # Deep copy already carries all res_* tables and dispatch values.
+    net_base = copy.deepcopy(nn_solved)
 
-    # Run base PF to store as initial guess
-    for init in ("dc", "flat"):
+    # Run base PF with results init (uses OPF voltages as warm start)
+    for init in ("results", "dc", "flat"):
         try:
             pp.runpp(
                 net_base,
@@ -749,8 +1144,9 @@ def _ac_n1_screen(net_lossless, base_pf, slack_bus: int, label: str) -> list[dic
         except Exception:
             pass
 
-    line_ids = sorted(net_lossless.line.index.tolist())
+    line_ids = sorted(net_base.line.index.tolist())
     records = []
+    peak_loading_pct_by_line = {int(lid): 0.0 for lid in line_ids}
     logger.info("[%s] AC N-1 screening: %d contingencies...", label, len(line_ids))
 
     for i, lid in enumerate(line_ids):
@@ -777,6 +1173,26 @@ def _ac_n1_screen(net_lossless, base_pf, slack_bus: int, label: str) -> list[dic
 
         if converged and hasattr(nn, "res_line") and nn.res_line is not None:
             n_overloads = int((nn.res_line.loading_percent > 100).sum())
+            if len(nn.res_line):
+                max_loading_pct = float(nn.res_line.loading_percent.max())
+                worst_line = int(nn.res_line.loading_percent.idxmax())
+                overloaded_line_ids = [
+                    int(x)
+                    for x in nn.res_line.loading_percent[nn.res_line.loading_percent > 100].index
+                ]
+                for line_id, loading_pct in nn.res_line.loading_percent.items():
+                    peak_loading_pct_by_line[int(line_id)] = max(
+                        peak_loading_pct_by_line.get(int(line_id), 0.0),
+                        float(loading_pct),
+                    )
+            else:
+                max_loading_pct = float("nan")
+                worst_line = None
+                overloaded_line_ids = []
+        else:
+            max_loading_pct = float("nan")
+            worst_line = None
+            overloaded_line_ids = []
 
         records.append(
             {
@@ -784,6 +1200,9 @@ def _ac_n1_screen(net_lossless, base_pf, slack_bus: int, label: str) -> list[dic
                 "pf_converged": converged,
                 "n1_feasible": converged and n_overloads == 0,
                 "n_overloads": n_overloads,
+                "max_loading_percent": max_loading_pct,
+                "worst_line": worst_line,
+                "overloaded_line_ids": overloaded_line_ids,
             }
         )
 
@@ -807,7 +1226,133 @@ def _ac_n1_screen(net_lossless, base_pf, slack_bus: int, label: str) -> list[dic
         total,
         100.0 * passed / total if total else 0.0,
     )
+    if return_peak_loadings:
+        return records, peak_loading_pct_by_line
     return records
+
+
+def _update_scopf_line_limits(
+    current_limits_pct: Mapping[int, float],
+    peak_loading_pct_by_line: Mapping[int, float],
+    *,
+    security_target_pct: float = 99.0,
+    min_limit_pct: float = 40.0,
+) -> tuple[dict[int, float], list[int]]:
+    updated = {int(lid): float(pct) for lid, pct in current_limits_pct.items()}
+    changed: list[int] = []
+    for lid, peak_pct in peak_loading_pct_by_line.items():
+        peak = float(peak_pct)
+        if not math.isfinite(peak) or peak <= 100.0:
+            continue
+        current = float(updated.get(int(lid), security_target_pct))
+        tightened = max(float(min_limit_pct), current * float(security_target_pct) / peak)
+        if tightened < current - 1e-6:
+            updated[int(lid)] = float(tightened)
+            changed.append(int(lid))
+    return updated, changed
+
+
+def _total_generation_dispatch_mw(nn) -> float:
+    total = 0.0
+    for table_name in ("res_gen", "res_sgen", "res_ext_grid"):
+        table = getattr(nn, table_name, None)
+        if table is None or len(table) == 0 or "p_mw" not in table.columns:
+            continue
+        total += float(table["p_mw"].sum())
+    return total
+
+
+def _opf_constraint_summary(nn, label: str) -> dict:
+    max_line_loading_pct = float("nan")
+    min_line_loading_headroom_pct = float("nan")
+    if hasattr(nn, "res_line") and nn.res_line is not None and len(nn.res_line):
+        actual = np.asarray(nn.res_line.loading_percent.values, dtype=float)
+        target = np.asarray(nn.line.loc[nn.res_line.index, "max_loading_percent"].values, dtype=float)
+        max_line_loading_pct = float(np.max(actual))
+        min_line_loading_headroom_pct = float(np.min(target - actual))
+
+    max_trafo_loading_pct = float("nan")
+    min_trafo_loading_headroom_pct = float("nan")
+    if hasattr(nn, "res_trafo") and nn.res_trafo is not None and len(nn.res_trafo):
+        actual = np.asarray(nn.res_trafo.loading_percent.values, dtype=float)
+        target = np.asarray(
+            nn.trafo.loc[nn.res_trafo.index, "max_loading_percent"].values, dtype=float
+        )
+        max_trafo_loading_pct = float(np.max(actual))
+        min_trafo_loading_headroom_pct = float(np.min(target - actual))
+
+    return {
+        "label": label,
+        "max_line_loading_pct": max_line_loading_pct,
+        "min_line_loading_headroom_pct": min_line_loading_headroom_pct,
+        "max_trafo_loading_pct": max_trafo_loading_pct,
+        "min_trafo_loading_headroom_pct": min_trafo_loading_headroom_pct,
+    }
+
+
+def _solve_scopf(
+    net_lossless,
+    slack_bus: int,
+    line_indices: list[int],
+    input_path: str,
+    n_iter: int,
+):
+    current_limits_pct = {int(lid): 99.0 for lid in line_indices}
+    nn_scopf = None
+    base_pf_scopf = None
+    total_cost = float("nan")
+    final_records: list[dict] = []
+
+    for iteration in range(max(int(n_iter), 1)):
+        logger.info("[scopf] Iteration %d/%d", iteration + 1, max(int(n_iter), 1))
+        nn_scopf, base_pf_scopf, total_cost = _solve_cost_opf(
+            net_lossless,
+            line_indices,
+            input_path=input_path,
+            max_loading_percent=99.0,
+            per_line_loading_limits_pct=current_limits_pct,
+            label=f"scopf_iter{iteration + 1}",
+        )
+        final_records, peak_loading_pct_by_line = _ac_n1_screen(
+            nn_scopf,
+            f"scopf_iter{iteration + 1}",
+            return_peak_loadings=True,
+        )
+        diverged = sum(1 for rec in final_records if not rec.get("pf_converged"))
+        if diverged:
+            logger.warning(
+                "[scopf] %d contingencies diverged during screening; keeping current tightened limits.",
+                diverged,
+            )
+
+        worst_peak = max(peak_loading_pct_by_line.values(), default=float("nan"))
+        logger.info("[scopf] Worst post-contingency loading = %.2f%%", worst_peak)
+        updated_limits_pct, changed_lines = _update_scopf_line_limits(
+            current_limits_pct,
+            peak_loading_pct_by_line,
+            security_target_pct=99.0,
+        )
+        if not changed_lines:
+            logger.info("[scopf] AC contingency screening is satisfied. Converged.")
+            break
+
+        current_limits_pct = updated_limits_pct
+        logger.info(
+            "[scopf] Tightened %d lines; new min pre-contingency limit = %.2f%%",
+            len(changed_lines),
+            min(current_limits_pct.values()),
+        )
+
+    if nn_scopf is None or base_pf_scopf is None:
+        raise RuntimeError("[scopf] No feasible SCOPF operating point was produced.")
+
+    scopf_results, scopf_h_vectors = _compute_radii(
+        net_lossless,
+        base_pf_scopf,
+        slack_bus,
+        label="scopf",
+    )
+    return nn_scopf, base_pf_scopf, scopf_results, scopf_h_vectors, total_cost, final_records
 
 
 # ---------------------------------------------------------------------------
@@ -962,6 +1507,11 @@ def _print_comparison(
     r_target,
     sigma_p_mw,
     sigma_q_mvar,
+    cost_opf_eur_h,
+    radius_opf_eur_h,
+    cost_increase_pct,
+    cost_gen_mw,
+    radius_gen_mw,
     output_path,
 ):
 
@@ -975,8 +1525,15 @@ def _print_comparison(
         "N-1 STABILITY DEMO - COMPARISON SUMMARY",
         "=" * 70,
         "",
-        f"  r_target (tightening parameter): {r_target}",
+        f"  r_target (tightening parameter): {r_target:.4f} MW",
         f"  sigma_p = {sigma_p_mw} MW, sigma_q = {sigma_q_mvar} MVAr",
+        "",
+        "--- Generation Cost (true cost-minimising AC OPF) ---",
+        f"  {'Metric':<35} {'Cost OPF':>12} {'Radius OPF':>12}",
+        "  " + "-" * 60,
+        f"  {'Total generation cost ($/h)':<35} {_fmt(cost_opf_eur_h, '.2f'):>12} {_fmt(radius_opf_eur_h, '.2f'):>12}",
+        f"  {'Total generation dispatch (MW)':<35} {_fmt(cost_gen_mw, '.2f'):>12} {_fmt(radius_gen_mw, '.2f'):>12}",
+        f"  {'Cost increase (%)':<35} {'baseline':>12} {_fmt(cost_increase_pct, '.3f'):>12}",
         "",
         "--- AC L2 Stability Radius (constrained lines only) ---",
         f"  {'Metric':<35} {'Cost OPF':>12} {'Radius OPF':>12}",
@@ -1280,20 +1837,43 @@ def _extract_pypsa_result_from_pp(nn, line_indices: list[int]):
 # ---------------------------------------------------------------------------
 
 
+def _apply_dispatch_from_solved(net_base, nn_solved) -> None:
+    """Apply generator dispatch and voltage setpoints from a solved OPF network."""
+    if hasattr(nn_solved, "res_gen") and nn_solved.res_gen is not None:
+        common = net_base.gen.index.intersection(nn_solved.res_gen.index)
+        net_base.gen.loc[common, "p_mw"] = nn_solved.res_gen.loc[common, "p_mw"].values
+    if hasattr(nn_solved, "res_sgen") and nn_solved.res_sgen is not None:
+        common = net_base.sgen.index.intersection(nn_solved.res_sgen.index)
+        net_base.sgen.loc[common, "p_mw"] = nn_solved.res_sgen.loc[common, "p_mw"].values
+    if hasattr(nn_solved, "res_bus") and nn_solved.res_bus is not None:
+        gen_bus_idx = net_base.gen.bus.unique()
+        for bidx in gen_bus_idx:
+            if bidx in nn_solved.res_bus.index:
+                vm = float(nn_solved.res_bus.at[bidx, "vm_pu"])
+                net_base.gen.loc[net_base.gen.bus == bidx, "vm_pu"] = vm
+        if hasattr(net_base, "ext_grid") and net_base.ext_grid is not None and len(net_base.ext_grid):
+            for egidx in net_base.ext_grid.index:
+                bus = int(net_base.ext_grid.at[egidx, "bus"])
+                if bus in nn_solved.res_bus.index:
+                    net_base.ext_grid.at[egidx, "vm_pu"] = float(
+                        nn_solved.res_bus.at[bus, "vm_pu"]
+                    )
+
+
 def _compute_ac_n1_radii(
-    net_lossless, base_pf, slack_bus: int, line_indices: list[int], label: str
+    net_lossless, nn_solved, slack_bus: int, line_indices: list[int], label: str
 ) -> dict:
     """Compute per-line AC N-1 stability radius.
 
     For each line l: AC N-1 radius = min over contingencies k != l of
     (AC L2 radius of line l when line k is disconnected at the existing dispatch).
 
+    nn_solved: the solved pandapower network (from runopp) — used to apply
+               the correct dispatch; base_pf is used for AC L2 at base case.
+
     Returns dict: line_id (int) -> min_n1_radius (float).
     """
     import pandapower as pp
-    from stability_radius.base_point.pandapower_tools import (
-        apply_opp_result_to_pandapower_net,
-    )
     from stability_radius.radii.ac_l2 import compute_ac_l2_radius
 
     logger.info(
@@ -1305,15 +1885,10 @@ def _compute_ac_n1_radii(
 
     # Prepare base network at OPF operating point
     net_base = copy.deepcopy(net_lossless)
-    opp_dispatch = getattr(base_pf, "opp_gen_dispatch", None) or {}
-    opp_vm = getattr(base_pf, "opp_vm_pu", None) or {}
-    if opp_dispatch or opp_vm:
-        apply_opp_result_to_pandapower_net(
-            net_base, opp_gen_dispatch=opp_dispatch, opp_vm_pu=opp_vm
-        )
+    _apply_dispatch_from_solved(net_base, nn_solved)
 
-    # Run base PF to set res_* tables for use as initial guess
-    for init in ("dc", "flat"):
+    # Run base PF with results warm start
+    for init in ("results", "dc", "flat"):
         try:
             pp.runpp(
                 net_base,
@@ -1479,14 +2054,431 @@ def _plot_ac_n1_radius_cdf(cost_n1: dict, radius_n1: dict, output_path: Path) ->
     logger.info("Saved: %s", output_path)
 
 
+def _append_metric_table(
+    lines: list[str],
+    *,
+    title: str,
+    regime_order: list[tuple[str, str]],
+    summaries: Mapping[str, Mapping[str, object]],
+    metrics: list[tuple[str, str, str]],
+) -> None:
+    def _fmt(value: object, fmt: str) -> str:
+        if value is None:
+            return "N/A"
+        if isinstance(value, str):
+            return value
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return str(value)
+        if not math.isfinite(numeric):
+            return "nan"
+        if fmt == "d":
+            return str(int(round(numeric)))
+        return format(numeric, fmt)
+
+    lines.extend(
+        [
+            "",
+            f"--- {title} ---",
+            f"  {'Metric':<35}" + "".join(f" {name:>12}" for _, name in regime_order),
+            "  " + "-" * (35 + 13 * len(regime_order)),
+        ]
+    )
+    for key, label, fmt in metrics:
+        row = [f"  {label:<35}"]
+        for regime_key, _ in regime_order:
+            value = summaries.get(regime_key, {}).get(key, "N/A")
+            row.append(f" {_fmt(value, fmt):>12}")
+        lines.append("".join(row))
+
+
+def _build_comparison_text(
+    *,
+    regime_order: list[tuple[str, str]],
+    dispatch_summaries: Mapping[str, Mapping[str, object]],
+    constraint_summaries: Mapping[str, Mapping[str, object]],
+    radius_summaries: Mapping[str, Mapping[str, object]],
+    ac_n1_radius_summaries: Mapping[str, Mapping[str, object]],
+    sigma_summaries: Mapping[str, Mapping[str, object]],
+    dc_n1_summaries: Mapping[str, Mapping[str, object]],
+    screen_summaries: Mapping[str, Mapping[str, object]],
+    verify: Mapping[str, object],
+    r_target: float,
+    sigma_p_mw: float,
+    sigma_q_mvar: float,
+) -> str:
+    lines = [
+        "=" * 70,
+        "N-1 STABILITY DEMO - COMPARISON SUMMARY",
+        "=" * 70,
+        "",
+        f"  r_target (tightening parameter): {r_target:.4f} MW",
+        f"  sigma_p = {sigma_p_mw:.3f} MW, sigma_q = {sigma_q_mvar:.3f} MVAr",
+    ]
+
+    _append_metric_table(
+        lines,
+        title="Generation Cost",
+        regime_order=regime_order,
+        summaries=dispatch_summaries,
+        metrics=[
+            ("total_cost_eur_h", "Total generation cost ($/h)", ".2f"),
+            ("generation_dispatch_mw", "Net generation dispatch (MW)", ".2f"),
+            ("cost_increase_pct", "Cost increase vs Cost OPF (%)", ".3f"),
+        ],
+    )
+    _append_metric_table(
+        lines,
+        title="AC OPF Constraints (current-based)",
+        regime_order=regime_order,
+        summaries=constraint_summaries,
+        metrics=[
+            ("max_line_loading_pct", "Max line loading (%)", ".2f"),
+            ("min_line_loading_headroom_pct", "Min line loading headroom (%)", ".2f"),
+            ("max_trafo_loading_pct", "Max trafo loading (%)", ".2f"),
+            ("min_trafo_loading_headroom_pct", "Min trafo loading headroom (%)", ".2f"),
+        ],
+    )
+    _append_metric_table(
+        lines,
+        title="AC L2 Stability Radius (constrained lines only)",
+        regime_order=regime_order,
+        summaries=radius_summaries,
+        metrics=[
+            ("n_constrained", "Constrained lines", "d"),
+            ("radius_min", "Min radius", ".4f"),
+            ("radius_median", "Median radius", ".4f"),
+            ("radius_mean", "Mean radius", ".4f"),
+            ("loading_ratio_mean", "Mean loading ratio", ".4f"),
+            ("loading_ratio_max", "Max loading ratio", ".4f"),
+        ],
+    )
+    _append_metric_table(
+        lines,
+        title="AC N-1 Stability Radius (min over contingencies)",
+        regime_order=regime_order,
+        summaries=ac_n1_radius_summaries,
+        metrics=[
+            ("n_lines", "Lines with N-1 radius", "d"),
+            ("n_already_n1_infeasible", "Lines already N-1 infeasible", "d"),
+            ("ac_n1_radius_min", "Min AC N-1 radius (MW)", ".4f"),
+            ("ac_n1_radius_median", "Median AC N-1 radius (MW)", ".4f"),
+            ("ac_n1_radius_p10", "P10 AC N-1 radius (MW)", ".4f"),
+        ],
+    )
+    _append_metric_table(
+        lines,
+        title="AC Sigma-Radius and Proxy Headroom",
+        regime_order=regime_order,
+        summaries=sigma_summaries,
+        metrics=[
+            ("sigma_radius_min", "Min sigma-radius", ".4f"),
+            ("sigma_radius_median", "Median sigma-radius", ".4f"),
+            ("sigma_radius_p10", "P10 sigma-radius", ".4f"),
+            ("max_overload_prob", "Max overload probability", ".6f"),
+            ("mean_overload_prob", "Mean overload probability", ".6f"),
+            ("n_prob_above_1pct", "Lines with P(overload) > 1%", "d"),
+            ("n_prob_above_5pct", "Lines with P(overload) > 5%", "d"),
+            ("max_cantelli_ub", "Max Cantelli upper bound", ".6f"),
+            ("pi_system", "System performance index", ".4f"),
+            ("pi_max", "Max line performance index", ".4f"),
+            ("min_headroom_mva", "Min headroom vs MVA proxy", ".4f"),
+        ],
+    )
+    _append_metric_table(
+        lines,
+        title="DC N-1 Effective Radius",
+        regime_order=regime_order,
+        summaries=dc_n1_summaries,
+        metrics=[
+            ("dc_n1_radius_min", "Min N-1 effective radius", ".4f"),
+            ("dc_n1_radius_median", "Median N-1 effective radius", ".4f"),
+        ],
+    )
+    _append_metric_table(
+        lines,
+        title="AC N-1 Screening",
+        regime_order=regime_order,
+        summaries=screen_summaries,
+        metrics=[
+            ("n1_pass", "N-1 passed", "d"),
+            ("n1_fail", "N-1 failed (overloads)", "d"),
+            ("n1_diverged", "N-1 diverged", "d"),
+            ("n1_pass_rate_pct", "N-1 pass rate (%)", ".2f"),
+            ("max_overloads_in_contingency", "Max overloads in any N-1", "d"),
+        ],
+    )
+
+    lines += ["", "--- Worst-Case Perturbation Verification (Cost OPF) ---"]
+    if verify.get("verified"):
+        lines += [
+            f"  Worst constrained line:    {verify.get('worst_line')}",
+            f"  Stability radius:          {float(verify.get('radius', float('nan'))):.4f}",
+            f"  PF converged after perturbation: {verify.get('pf_converged')}",
+            f"  Target line loading:       {verify.get('target_line_loading_pct', 'N/A')}%",
+            f"  Total overloaded lines:    {verify.get('total_overloaded_lines', 'N/A')}",
+            "  => VERIFIED: stability radius h* perturbation triggers overload.",
+        ]
+    elif verify.get("reason"):
+        lines += [f"  Not verified: {verify['reason']}"]
+    else:
+        loading = verify.get("target_line_loading_pct")
+        lines += [
+            f"  Worst constrained line:    {verify.get('worst_line')}",
+            f"  Stability radius:          {float(verify.get('radius', float('nan'))):.4f}",
+            f"  Target line loading after perturbation: "
+            f"{f'{float(loading):.1f}%' if loading is not None else 'N/A'}",
+            "  => NOTE: balanced-norm h* direction did not trigger target overload.",
+        ]
+
+    if any(
+        float(sigma_summaries.get(regime_key, {}).get("min_headroom_mva", float("nan"))) < 0.0
+        for regime_key, _ in regime_order
+    ):
+        lines += [
+            "",
+            "Note:",
+            "  `min_headroom_mva` is the stability-radius MVA proxy margin (`S_limit_proxy - |S|`).",
+            "  AC OPF feasibility is enforced via pandapower current/loading constraints instead.",
+            "  Negative proxy headroom can therefore coexist with a feasible AC OPF point.",
+        ]
+
+    lines += ["", "=" * 70, ""]
+    return "\n".join(lines)
+
+
+def _write_comparison(
+    *,
+    output_path: Path,
+    regime_order: list[tuple[str, str]],
+    dispatch_summaries: Mapping[str, Mapping[str, object]],
+    constraint_summaries: Mapping[str, Mapping[str, object]],
+    radius_summaries: Mapping[str, Mapping[str, object]],
+    ac_n1_radius_summaries: Mapping[str, Mapping[str, object]],
+    sigma_summaries: Mapping[str, Mapping[str, object]],
+    dc_n1_summaries: Mapping[str, Mapping[str, object]],
+    screen_summaries: Mapping[str, Mapping[str, object]],
+    verify: Mapping[str, object],
+    r_target: float,
+    sigma_p_mw: float,
+    sigma_q_mvar: float,
+) -> None:
+    text = _build_comparison_text(
+        regime_order=regime_order,
+        dispatch_summaries=dispatch_summaries,
+        constraint_summaries=constraint_summaries,
+        radius_summaries=radius_summaries,
+        ac_n1_radius_summaries=ac_n1_radius_summaries,
+        sigma_summaries=sigma_summaries,
+        dc_n1_summaries=dc_n1_summaries,
+        screen_summaries=screen_summaries,
+        verify=verify,
+        r_target=r_target,
+        sigma_p_mw=sigma_p_mw,
+        sigma_q_mvar=sigma_q_mvar,
+    )
+    print(text)
+    output_path.write_text(text, encoding="utf-8")
+    logger.info("Summary saved: %s", output_path)
+
+
+def _plot_multi_regime_radius_cdf(
+    regime_results: Mapping[str, tuple[str, dict]],
+    output_path: Path,
+) -> None:
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        logger.warning("matplotlib is not available; skipping %s", output_path.name)
+        return
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    plotted = False
+    for color_idx, (regime_key, (display_name, results)) in enumerate(regime_results.items()):
+        radii = sorted(
+            float(v["radius_ac_l2"])
+            for v in results.values()
+            if not v.get("is_unconstrained", False)
+            and math.isfinite(v.get("radius_ac_l2", float("nan")))
+        )
+        if not radii:
+            continue
+        plotted = True
+        ax.plot(
+            radii,
+            np.arange(1, len(radii) + 1) / len(radii),
+            label=display_name,
+            linewidth=2,
+            color=f"C{color_idx}",
+        )
+    if not plotted:
+        logger.warning("No AC L2 radius data available for %s", output_path.name)
+        plt.close(fig)
+        return
+
+    ax.set_xlabel("AC L2 Stability Radius")
+    ax.set_ylabel("CDF")
+    ax.set_title("Cumulative Distribution of AC L2 Stability Radius")
+    ax.legend(fontsize=10)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("Saved: %s", output_path)
+
+
+def _plot_multi_regime_ac_n1_radius_cdf(
+    regime_n1_radii: Mapping[str, tuple[str, dict[int, float]]],
+    output_path: Path,
+) -> None:
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        logger.warning("matplotlib is not available; skipping %s", output_path.name)
+        return
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    plotted = False
+    for color_idx, (_, (display_name, n1_radii)) in enumerate(regime_n1_radii.items()):
+        radii = sorted(float(v) for v in n1_radii.values() if math.isfinite(v))
+        if not radii:
+            continue
+        plotted = True
+        ax.plot(
+            radii,
+            np.arange(1, len(radii) + 1) / len(radii),
+            label=display_name,
+            linewidth=2,
+            color=f"C{color_idx}",
+        )
+    if not plotted:
+        logger.warning("No AC N-1 radius data available for %s", output_path.name)
+        plt.close(fig)
+        return
+
+    ax.set_xlabel("AC N-1 Stability Radius (MW)")
+    ax.set_ylabel("CDF")
+    ax.set_title("CDF of AC N-1 Stability Radius per Line")
+    ax.legend(fontsize=10)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("Saved: %s", output_path)
+
+
+def _plot_multi_regime_n1_overloads(
+    regime_records: Mapping[str, tuple[str, list[dict]]],
+    output_path: Path,
+) -> None:
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import pandas as pd
+    except ImportError:
+        logger.warning("matplotlib is not available; skipping %s", output_path.name)
+        return
+
+    frames: list[tuple[str, str, "DataFrame"]] = []
+    for regime_key, (display_name, records) in regime_records.items():
+        if not records:
+            continue
+        frames.append((regime_key, display_name, pd.DataFrame(records).set_index("contingency_line")))
+    if not frames:
+        logger.warning("No AC N-1 screening data available for %s", output_path.name)
+        return
+
+    common = sorted(set.intersection(*(set(frame.index) for _, _, frame in frames)))
+    if not common:
+        logger.warning("No common contingencies available for %s", output_path.name)
+        return
+
+    x = np.arange(len(common))
+    width = 0.8 / len(frames)
+    fig, ax = plt.subplots(figsize=(12, 5))
+    for idx, (_, display_name, frame) in enumerate(frames):
+        values = frame.loc[common, "n_overloads"].clip(lower=0).values
+        offset = (idx - (len(frames) - 1) / 2.0) * width
+        ax.bar(x + offset, values, width, label=display_name, alpha=0.85)
+
+    ax.set_xlabel("Contingency line index")
+    ax.set_ylabel("Overloaded lines")
+    ax.set_title("AC N-1 Screening: Overloads per Contingency")
+    ax.legend(fontsize=10)
+    step = max(1, len(common) // 20)
+    ax.set_xticks(x[::step])
+    ax.set_xticklabels([str(common[i]) for i in range(0, len(common), step)], rotation=45, ha="right", fontsize=8)
+    ax.grid(True, axis="y", alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("Saved: %s", output_path)
+
+
+def _plot_cost_security_tradeoff(
+    *,
+    regime_order: list[tuple[str, str]],
+    dispatch_summaries: Mapping[str, Mapping[str, object]],
+    screen_summaries: Mapping[str, Mapping[str, object]],
+    ac_n1_radius_summaries: Mapping[str, Mapping[str, object]],
+    output_path: Path,
+) -> None:
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        logger.warning("matplotlib is not available; skipping %s", output_path.name)
+        return
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    for color_idx, (regime_key, display_name) in enumerate(regime_order):
+        cost_increase = float(dispatch_summaries.get(regime_key, {}).get("cost_increase_pct", float("nan")))
+        pass_rate = float(screen_summaries.get(regime_key, {}).get("n1_pass_rate_pct", float("nan")))
+        min_n1_radius = float(
+            ac_n1_radius_summaries.get(regime_key, {}).get("ac_n1_radius_min", float("nan"))
+        )
+        axes[0].scatter(cost_increase, pass_rate, s=90, color=f"C{color_idx}")
+        axes[0].annotate(display_name, (cost_increase, pass_rate), textcoords="offset points", xytext=(5, 5))
+        axes[1].scatter(cost_increase, min_n1_radius, s=90, color=f"C{color_idx}")
+        axes[1].annotate(display_name, (cost_increase, min_n1_radius), textcoords="offset points", xytext=(5, 5))
+
+    axes[0].set_title("Cost Increase vs AC N-1 Pass Rate")
+    axes[0].set_xlabel("Cost increase vs Cost OPF (%)")
+    axes[0].set_ylabel("AC N-1 pass rate (%)")
+    axes[0].grid(True, alpha=0.3)
+
+    axes[1].set_title("Cost Increase vs Min AC N-1 Radius")
+    axes[1].set_xlabel("Cost increase vs Cost OPF (%)")
+    axes[1].set_ylabel("Min AC N-1 radius (MW)")
+    axes[1].grid(True, alpha=0.3)
+
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("Saved: %s", output_path)
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="N-1 Stability Demo: Cost OPF vs Radius OPF comparison.",
+        description="N-1 Stability Demo: Cost OPF vs Radius OPF vs SCOPF comparison.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--input", required=True, help="Path to MATPOWER .m file")
     parser.add_argument(
-        "--output-dir", default="analysis_output/n1_demo", help="Output directory"
+        "--output-dir",
+        default="n1_demo",
+        help="Artifact directory name; non-runs paths are normalized under runs/n1_stability_demo/",
     )
     parser.add_argument(
         "--slack-bus", type=int, default=None, help="Slack bus index (None = auto)"
@@ -1500,6 +2492,12 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--n-iter", type=int, default=3, help="Number of radius OPF iterations"
+    )
+    parser.add_argument(
+        "--scopf-iter",
+        type=int,
+        default=3,
+        help="Number of screening-based SCOPF tightening iterations",
     )
     parser.add_argument(
         "--sigma-p", type=float, default=5.0,
@@ -1528,21 +2526,310 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = _parse_args()
-    _setup_logging(args.verbose)
-
-    out_dir = _make_output_dir(args.output_dir)
+    out_dir = _resolve_output_dir(args.output_dir)
+    _setup_logging(args.verbose, log_file=out_dir / "run.log")
     logger.info("Output directory: %s", out_dir.resolve())
+
+    regime_order = [
+        ("cost_opf", "Cost OPF"),
+        ("radius_opf", "Radius OPF"),
+        ("scopf", "SCOPF"),
+    ]
 
     # Phase 1: Load
     net_lossless, slack_bus, line_indices = _load_and_prepare(
         args.input, args.slack_bus
     )
 
-    # Phase 2: Cost OPF
-    bp_cost, base_pf_cost = _solve_fpf(
+    # Phase 2: True cost-minimising AC OPF (baseline)
+    nn_cost, base_pf_cost, cost_opf_eur_h = _solve_cost_opf(
+        net_lossless,
+        line_indices,
+        input_path=args.input,
+        max_loading_percent=99.0,
+        label="cost_opf",
+    )
+    cost_results, cost_h_vectors = _compute_radii(
+        net_lossless, base_pf_cost, slack_bus, label="cost_opf"
+    )
+
+    logger.info("Verifying worst-case perturbation...")
+    verify_result = _verify_worst_case_perturbation(
+        net_lossless,
+        base_pf_cost,
+        cost_results,
+        cost_h_vectors,
+        slack_bus,
+        line_indices,
+    )
+    logger.info("Verification: %s", verify_result)
+
+    neg_radius_lines = [
+        k
+        for k, v in cost_results.items()
+        if not v.get("is_unconstrained", False)
+        and float(v.get("radius_ac_l2", 0.0)) < 0
+    ]
+    if neg_radius_lines:
+        logger.warning(
+            "[cost_opf] %d lines have NEGATIVE radius (proxy limit exceeded): %s",
+            len(neg_radius_lines),
+            neg_radius_lines[:5],
+        )
+
+    r_target = float(args.r_target)
+    if r_target <= 0.0:
+        positive_radii = [
+            v["radius_ac_l2"]
+            for v in cost_results.values()
+            if not v.get("is_unconstrained", False)
+            and math.isfinite(v.get("radius_ac_l2", float("nan")))
+            and v["radius_ac_l2"] > 0
+        ]
+        if positive_radii:
+            r_target = 10.0 * float(min(positive_radii))
+            logger.info("Auto r_target = 10 * min_positive_radius = %.4f MW", r_target)
+        else:
+            r_target = 5.0
+
+    # Phase 3: Stability-radius-guided OPF
+    nn_radius, base_pf_radius, radius_results, radius_h_vectors, radius_opf_eur_h = (
+        _solve_radius_opf(
+            net_lossless,
+            slack_bus,
+            line_indices,
+            cost_results,
+            r_target=r_target,
+            n_iter=args.n_iter,
+            input_path=args.input,
+        )
+    )
+    if base_pf_radius is None:
+        logger.warning(
+            "Radius OPF produced no result; falling back to cost OPF base point."
+        )
+        nn_radius = nn_cost
+        base_pf_radius = base_pf_cost
+        radius_results = cost_results
+        radius_h_vectors = cost_h_vectors
+        radius_opf_eur_h = cost_opf_eur_h
+
+    # Phase 4: Screening-based SCOPF
+    (
+        nn_scopf,
+        base_pf_scopf,
+        scopf_results,
+        scopf_h_vectors,
+        scopf_opf_eur_h,
+        scopf_n1_records,
+    ) = _solve_scopf(
         net_lossless,
         slack_bus,
         line_indices,
+        input_path=args.input,
+        n_iter=args.scopf_iter,
+    )
+
+    regimes: dict[str, dict[str, object]] = {
+        "cost_opf": {
+            "display_name": "Cost OPF",
+            "nn": nn_cost,
+            "base_pf": base_pf_cost,
+            "results": cost_results,
+            "h_vectors": cost_h_vectors,
+            "total_cost_eur_h": cost_opf_eur_h,
+            "n1_records": [],
+            "dc_n1_results": {},
+            "ac_n1_radii": {},
+        },
+        "radius_opf": {
+            "display_name": "Radius OPF",
+            "nn": nn_radius,
+            "base_pf": base_pf_radius,
+            "results": radius_results,
+            "h_vectors": radius_h_vectors,
+            "total_cost_eur_h": radius_opf_eur_h,
+            "n1_records": [],
+            "dc_n1_results": {},
+            "ac_n1_radii": {},
+        },
+        "scopf": {
+            "display_name": "SCOPF",
+            "nn": nn_scopf,
+            "base_pf": base_pf_scopf,
+            "results": scopf_results,
+            "h_vectors": scopf_h_vectors,
+            "total_cost_eur_h": scopf_opf_eur_h,
+            "n1_records": scopf_n1_records,
+            "dc_n1_results": {},
+            "ac_n1_radii": {},
+        },
+    }
+
+    # Phase 5: DC N-1 radii
+    if not args.skip_dc_n1:
+        for regime_key, _ in regime_order:
+            regime = regimes[regime_key]
+            regime["dc_n1_results"] = _dc_n1_radii(
+                net_lossless,
+                regime["base_pf"],
+                slack_bus,
+                line_indices,
+                regime_key,
+            )
+            if regime["dc_n1_results"]:
+                _save_csv(
+                    _dc_n1_to_df(regime["dc_n1_results"]),
+                    out_dir / f"dc_n1_{regime_key}.csv",
+                    f"DC N-1 ({regime_key})",
+                )
+
+    # Phase 6: AC N-1 stability radius
+    if not args.skip_ac_n1_radius:
+        import pandas as pd
+
+        for regime_key, _ in regime_order:
+            regime = regimes[regime_key]
+            regime["ac_n1_radii"] = _compute_ac_n1_radii(
+                net_lossless,
+                regime["nn"],
+                slack_bus,
+                line_indices,
+                regime_key,
+            )
+            if regime["ac_n1_radii"]:
+                pd.DataFrame(
+                    [
+                        {"line_id": lid, "ac_n1_radius": value}
+                        for lid, value in regime["ac_n1_radii"].items()
+                    ]
+                ).set_index("line_id").sort_index().to_csv(
+                    out_dir / f"ac_n1_radii_{regime_key}.csv"
+                )
+
+    # Phase 7: AC N-1 screening
+    if not args.skip_n1_screening:
+        regimes["cost_opf"]["n1_records"] = _ac_n1_screen(nn_cost, "cost_opf")
+        regimes["radius_opf"]["n1_records"] = _ac_n1_screen(nn_radius, "radius_opf")
+    for regime_key, _ in regime_order:
+        records = list(regimes[regime_key]["n1_records"])
+        if records:
+            _save_n1_csv(
+                records,
+                out_dir / f"n1_screening_{regime_key}.csv",
+                f"AC N-1 {regime_key}",
+            )
+
+    # Save per-line radii
+    for regime_key, _ in regime_order:
+        _save_csv(
+            _radii_to_df(regimes[regime_key]["results"]),
+            out_dir / f"{regime_key}_radii.csv",
+            f"{regime_key} radii",
+        )
+
+    # Phase 8: AC sigma-radius and summaries
+    sigma_p_mw = float(args.sigma_p)
+    sigma_q_mvar = float(args.sigma_q)
+    dispatch_summaries: dict[str, dict[str, object]] = {}
+    constraint_summaries: dict[str, dict[str, object]] = {}
+    radius_summaries: dict[str, dict[str, object]] = {}
+    ac_n1_radius_summaries: dict[str, dict[str, object]] = {}
+    sigma_summaries: dict[str, dict[str, object]] = {}
+    dc_n1_summaries: dict[str, dict[str, object]] = {}
+    screen_summaries: dict[str, dict[str, object]] = {}
+
+    baseline_cost = float(regimes["cost_opf"]["total_cost_eur_h"])
+    for regime_key, _ in regime_order:
+        regime = regimes[regime_key]
+        total_cost = float(regime["total_cost_eur_h"])
+        dispatch_summaries[regime_key] = {
+            "total_cost_eur_h": total_cost,
+            "generation_dispatch_mw": _total_generation_dispatch_mw(regime["nn"]),
+            "cost_increase_pct": (
+                100.0 * (total_cost - baseline_cost) / max(baseline_cost, 1.0)
+                if math.isfinite(total_cost) and math.isfinite(baseline_cost)
+                else float("nan")
+            ),
+        }
+        constraint_summaries[regime_key] = _opf_constraint_summary(
+            regime["nn"], regime_key
+        )
+        radius_summaries[regime_key] = _summary_stats(regime["results"], regime_key)
+        ac_n1_radius_summaries[regime_key] = _ac_n1_radius_summary(
+            regime["ac_n1_radii"], regime_key
+        )
+        sigma_summaries[regime_key] = _compute_sigma_and_baselines(
+            regime["results"],
+            regime["h_vectors"],
+            line_indices,
+            sigma_p_mw=sigma_p_mw,
+            sigma_q_mvar=sigma_q_mvar,
+            label=regime_key,
+        )
+        dc_n1_summaries[regime_key] = _dc_n1_summary(
+            regime["dc_n1_results"], regime_key
+        )
+        screen_summaries[regime_key] = _n1_summary(regime["n1_records"], regime_key)
+
+    _write_comparison(
+        output_path=out_dir / "comparison_summary.txt",
+        regime_order=regime_order,
+        dispatch_summaries=dispatch_summaries,
+        constraint_summaries=constraint_summaries,
+        radius_summaries=radius_summaries,
+        ac_n1_radius_summaries=ac_n1_radius_summaries,
+        sigma_summaries=sigma_summaries,
+        dc_n1_summaries=dc_n1_summaries,
+        screen_summaries=screen_summaries,
+        verify=verify_result,
+        r_target=r_target,
+        sigma_p_mw=sigma_p_mw,
+        sigma_q_mvar=sigma_q_mvar,
+    )
+
+    _plot_multi_regime_radius_cdf(
+        {
+            regime_key: (regimes[regime_key]["display_name"], regimes[regime_key]["results"])
+            for regime_key, _ in regime_order
+        },
+        out_dir / "plot_radius_cdf.png",
+    )
+    _plot_multi_regime_ac_n1_radius_cdf(
+        {
+            regime_key: (regimes[regime_key]["display_name"], regimes[regime_key]["ac_n1_radii"])
+            for regime_key, _ in regime_order
+        },
+        out_dir / "plot_ac_n1_radius_cdf.png",
+    )
+    _plot_multi_regime_n1_overloads(
+        {
+            regime_key: (regimes[regime_key]["display_name"], regimes[regime_key]["n1_records"])
+            for regime_key, _ in regime_order
+        },
+        out_dir / "plot_n1_overloads.png",
+    )
+    _plot_cost_security_tradeoff(
+        regime_order=regime_order,
+        dispatch_summaries=dispatch_summaries,
+        screen_summaries=screen_summaries,
+        ac_n1_radius_summaries=ac_n1_radius_summaries,
+        output_path=out_dir / "plot_cost_security_tradeoff.png",
+    )
+
+    logger.info("Done. All outputs in: %s", out_dir.resolve())
+    return
+
+    # Phase 1: Load
+    net_lossless, slack_bus, line_indices = _load_and_prepare(
+        args.input, args.slack_bus
+    )
+
+    # Phase 2: True cost-minimising AC OPF (baseline)
+    nn_cost, base_pf_cost, cost_opf_eur_h = _solve_cost_opf(
+        net_lossless,
+        line_indices,
+        input_path=args.input,
         max_loading_percent=99.0,
         label="cost_opf",
     )
@@ -1564,28 +2851,67 @@ def main() -> None:
     )
     logger.info("Verification: %s", verify_result)
 
-    # Auto r_target: if 0, scale to 10x the minimum constrained radius
+    # Log lines with negative radius (already infeasible at cost OPF point)
+    neg_radius_lines = [
+        k for k, v in cost_results.items()
+        if not v.get("is_unconstrained", False)
+        and float(v.get("radius_ac_l2", 0.0)) < 0
+    ]
+    if neg_radius_lines:
+        logger.warning(
+            "[cost_opf] %d lines have NEGATIVE radius (flow exceeds AC limit): %s",
+            len(neg_radius_lines),
+            neg_radius_lines[:5],
+        )
+
+    # Auto r_target: if 0, scale to 10x the minimum POSITIVE constrained radius
     r_target = float(args.r_target)
     if r_target <= 0.0:
-        constrained_radii = [
+        positive_radii = [
             v["radius_ac_l2"] for v in cost_results.values()
-            if not v.get("is_unconstrained", False) and math.isfinite(v.get("radius_ac_l2", float("nan")))
+            if not v.get("is_unconstrained", False)
+            and math.isfinite(v.get("radius_ac_l2", float("nan")))
+            and v["radius_ac_l2"] > 0
         ]
-        if constrained_radii:
-            r_target = 10.0 * float(min(constrained_radii))
-            logger.info("Auto r_target = 10 * min_radius = %.4f MW", r_target)
+        if positive_radii:
+            r_target = 10.0 * float(min(positive_radii))
+            logger.info("Auto r_target = 10 * min_positive_radius = %.4f MW", r_target)
         else:
             r_target = 5.0
 
-    # Phase 5: Radius OPF
-    bp_radius, base_pf_radius, radius_results, radius_h_vectors = _solve_radius_opf(
-        net_lossless,
-        slack_bus,
-        line_indices,
-        cost_results,
-        cost_h_vectors,
-        r_target=r_target,
-        n_iter=args.n_iter,
+    # Phase 5: Stability-constrained cost OPF (same costs, tighter limits)
+    nn_radius, base_pf_radius, radius_results, radius_h_vectors, radius_opf_eur_h = (
+        _solve_radius_opf(
+            net_lossless,
+            slack_bus,
+            line_indices,
+            cost_results,
+            r_target=r_target,
+            n_iter=args.n_iter,
+            input_path=args.input,
+        )
+    )
+
+    # Fallback: if radius OPF never ran (all lines already safe / convergence skipped),
+    # use cost OPF results so downstream phases don't crash on None.
+    if base_pf_radius is None:
+        logger.warning(
+            "Radius OPF produced no result; falling back to cost OPF base point."
+        )
+        nn_radius = nn_cost
+        base_pf_radius = base_pf_cost
+        radius_results = cost_results
+        radius_h_vectors = cost_h_vectors
+        radius_opf_eur_h = cost_opf_eur_h
+
+    cost_increase_pct = (
+        100.0 * (radius_opf_eur_h - cost_opf_eur_h) / max(cost_opf_eur_h, 1.0)
+        if math.isfinite(radius_opf_eur_h) and math.isfinite(cost_opf_eur_h)
+        else float("nan")
+    )
+    logger.info(
+        "Cost OPF: %.2f $/h | Stability OPF: %.2f $/h | increase: %.3f%%",
+        cost_opf_eur_h, radius_opf_eur_h, cost_increase_pct,
     )
 
     # Phase 6: DC N-1 radii
@@ -1616,10 +2942,10 @@ def main() -> None:
     radius_ac_n1_radii = {}
     if not args.skip_ac_n1_radius:
         cost_ac_n1_radii = _compute_ac_n1_radii(
-            net_lossless, base_pf_cost, slack_bus, line_indices, "cost_opf"
+            net_lossless, nn_cost, slack_bus, line_indices, "cost_opf"
         )
         radius_ac_n1_radii = _compute_ac_n1_radii(
-            net_lossless, base_pf_radius, slack_bus, line_indices, "radius_opf"
+            net_lossless, nn_radius, slack_bus, line_indices, "radius_opf"
         )
         # Save AC N-1 radii CSVs
         import pandas as pd
@@ -1640,12 +2966,8 @@ def main() -> None:
     cost_n1_records = []
     radius_n1_records = []
     if not args.skip_n1_screening:
-        cost_n1_records = _ac_n1_screen(
-            net_lossless, base_pf_cost, slack_bus, "cost_opf"
-        )
-        radius_n1_records = _ac_n1_screen(
-            net_lossless, base_pf_radius, slack_bus, "radius_opf"
-        )
+        cost_n1_records = _ac_n1_screen(nn_cost, "cost_opf")
+        radius_n1_records = _ac_n1_screen(nn_radius, "radius_opf")
         _save_n1_csv(cost_n1_records, out_dir / "n1_screening_cost.csv", "AC N-1 cost")
         _save_n1_csv(
             radius_n1_records, out_dir / "n1_screening_radius.csv", "AC N-1 radius"
@@ -1694,6 +3016,11 @@ def main() -> None:
         r_target=r_target,
         sigma_p_mw=sigma_p_mw,
         sigma_q_mvar=sigma_q_mvar,
+        cost_opf_eur_h=cost_opf_eur_h,
+        radius_opf_eur_h=radius_opf_eur_h,
+        cost_increase_pct=cost_increase_pct,
+        cost_gen_mw=float(nn_cost.res_gen.p_mw.sum()) if nn_cost is not None else float("nan"),
+        radius_gen_mw=float(nn_radius.res_gen.p_mw.sum()) if nn_radius is not None else float("nan"),
         output_path=out_dir / "comparison_summary.txt",
     )
 
