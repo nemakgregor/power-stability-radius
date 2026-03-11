@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import math
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
 import pytest
 
 from stability_radius.metrics_analysis import (
+    _aggregate_bus_loads_sorted,
+    _resolve_metrics_analysis_slack_bus,
     build_unified_dataframe,
     compute_precision_at_k,
     compute_rank_correlations,
@@ -221,3 +224,45 @@ class TestComputePrecisionAtK:
         assert pak.iloc[0]["k"] == 10
         expected_mean = (0.01 + 0.10) / 2
         assert pak.iloc[0]["mean_empirical_prob"] == pytest.approx(expected_mean)
+
+
+def test_metrics_analysis_slack_auto_detect_uses_smallest_ext_grid_bus() -> None:
+    import pandapower as pp
+
+    net = pp.create_empty_network()
+    b2 = pp.create_bus(net, vn_kv=110.0, index=2)
+    b0 = pp.create_bus(net, vn_kv=110.0, index=0)
+    pp.create_ext_grid(net, bus=b2)
+    pp.create_ext_grid(net, bus=b0)
+
+    assert _resolve_metrics_analysis_slack_bus(net, None) == 0
+
+
+def test_metrics_analysis_slack_auto_detect_falls_back_to_first_bus() -> None:
+    import pandapower as pp
+
+    net = pp.create_empty_network()
+    pp.create_bus(net, vn_kv=110.0, index=5)
+    pp.create_bus(net, vn_kv=110.0, index=1)
+
+    assert _resolve_metrics_analysis_slack_bus(net, None) == 1
+
+
+def test_metrics_analysis_load_aggregation_uses_sorted_bus_order() -> None:
+    net = SimpleNamespace(
+        bus=pd.DataFrame(index=pd.Index([5, 1, 3], dtype=int)),
+        load=pd.DataFrame(
+            {
+                "bus": [3, 5, 3, 1],
+                "p_mw": [30.0, 50.0, 5.0, 10.0],
+                "q_mvar": [3.0, 5.0, 0.5, 1.0],
+            }
+        ),
+    )
+
+    bus_load_p, bus_load_q = _aggregate_bus_loads_sorted(net)
+
+    assert list(bus_load_p.index) == [1, 3, 5]
+    assert list(bus_load_q.index) == [1, 3, 5]
+    assert bus_load_p.to_list() == pytest.approx([10.0, 35.0, 50.0])
+    assert bus_load_q.to_list() == pytest.approx([1.0, 3.5, 5.0])

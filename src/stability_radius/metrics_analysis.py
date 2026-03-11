@@ -43,6 +43,7 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 from scipy import stats as scipy_stats  # noqa: E402
 
+from stability_radius.base_point.pandapower_tools import resolve_slack_bus_id
 from stability_radius.metrics.ac_baselines import (
     compute_baseline_metrics,
     compute_practical_metrics,
@@ -84,6 +85,35 @@ class _NumpyEncoder(json.JSONEncoder):
 # ---------------------------------------------------------------------------
 # DataFrame construction
 # ---------------------------------------------------------------------------
+
+
+def _resolve_metrics_analysis_slack_bus(net: Any, slack_bus: int | None) -> int:
+    """Resolve the slack bus using the same deterministic rule as the main workflow."""
+    if slack_bus is not None:
+        return int(slack_bus)
+    try:
+        resolved = int(resolve_slack_bus_id(net, -1))
+        logger.info(
+            "Auto-detected slack bus: %d (shared ext_grid tie-break rule)", resolved
+        )
+        return resolved
+    except ValueError:
+        resolved = int(sorted(net.bus.index)[0])
+        logger.info(
+            "Auto-detected slack bus: %d (first bus; no in-service ext_grid)",
+            resolved,
+        )
+        return resolved
+
+
+def _aggregate_bus_loads_sorted(net: Any) -> tuple[pd.Series, pd.Series]:
+    """Aggregate bus loads in the project's stable sorted bus ordering."""
+    bus_index = pd.Index([int(x) for x in sorted(net.bus.index)], dtype=int)
+    bus_load_p = net.load.groupby("bus")["p_mw"].sum().reindex(bus_index, fill_value=0.0)
+    bus_load_q = net.load.groupby("bus")["q_mvar"].sum().reindex(
+        bus_index, fill_value=0.0
+    )
+    return bus_load_p, bus_load_q
 
 
 def build_unified_dataframe(
@@ -1659,39 +1689,18 @@ def main(argv: list[str] | None = None) -> int:
     # ------------------------------------------------------------------
     # Resolve slack bus (auto-detect from ext_grid if not specified)
     # ------------------------------------------------------------------
-    if args.slack_bus is not None:
-        slack_bus = int(args.slack_bus)
-    else:
-        from stability_radius.parsers.matpower import load_network as _load_net
+    from stability_radius.parsers.matpower import load_network as _load_net
 
-        _net = _load_net(Path(args.input).expanduser().resolve())
-        if (
-            hasattr(_net, "ext_grid")
-            and _net.ext_grid is not None
-            and len(_net.ext_grid) > 0
-        ):
-            slack_bus = int(_net.ext_grid.bus.iloc[0])
-            logger.info("Auto-detected slack bus: %d (from ext_grid)", slack_bus)
-        else:
-            slack_bus = int(sorted(_net.bus.index)[0])
-            logger.info("Auto-detected slack bus: %d (first bus)", slack_bus)
-        del _net
+    _net = _load_net(Path(args.input).expanduser().resolve())
+    slack_bus = _resolve_metrics_analysis_slack_bus(_net, args.slack_bus)
 
     # ------------------------------------------------------------------
     # Build per-bus sigma arrays (uniform or load-proportional)
     # ------------------------------------------------------------------
-    from stability_radius.parsers.matpower import load_network as _load_net_sigma
-
-    _net_sigma = _load_net_sigma(Path(args.input).expanduser().resolve())
-    n_bus_total = int(len(_net_sigma.bus))
+    n_bus_total = int(len(_net.bus))
 
     # Sum load at each bus once (used for both P and Q scale modes)
-    bus_load_p = _net_sigma.load.groupby("bus")["p_mw"].sum().reindex(
-        _net_sigma.bus.index, fill_value=0.0
-    )
-    bus_load_q = _net_sigma.load.groupby("bus")["q_mvar"].sum().reindex(
-        _net_sigma.bus.index, fill_value=0.0
-    )
+    bus_load_p, bus_load_q = _aggregate_bus_loads_sorted(_net)
 
     if args.sigma_p_scale is not None:
         scale_p = float(args.sigma_p_scale)
@@ -1718,9 +1727,17 @@ def main(argv: list[str] | None = None) -> int:
     else:
         sigma_q_array = None
 
-    sigma_p_for_radius = sigma_p_array if sigma_p_array is not None else np.full(n_bus_total, float(args.sigma_p))
-    sigma_q_for_radius = sigma_q_array if sigma_q_array is not None else np.full(n_bus_total, float(args.sigma_q))
-    del _net_sigma
+    sigma_p_for_radius = (
+        sigma_p_array
+        if sigma_p_array is not None
+        else np.full(n_bus_total, float(args.sigma_p))
+    )
+    sigma_q_for_radius = (
+        sigma_q_array
+        if sigma_q_array is not None
+        else np.full(n_bus_total, float(args.sigma_q))
+    )
+    del _net
 
     # ------------------------------------------------------------------
     # Step 1: Compute radii (with h-vectors for directional analysis)

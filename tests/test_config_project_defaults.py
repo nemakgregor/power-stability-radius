@@ -49,6 +49,29 @@ def test_project_yaml_opf_headroom_factor_matches_python_default() -> None:
     assert yaml_val == pytest.approx(py_val)
 
 
+def test_project_yaml_highs_defaults_match_python_defaults() -> None:
+    """
+    Reproducibility regression test for deterministic HiGHS defaults.
+    """
+    pytest.importorskip("omegaconf")
+
+    from stability_radius.config import DEFAULT_OPF, load_project_config
+
+    repo_root = Path(__file__).resolve().parents[1]
+    cfg_path = repo_root / "conf" / "config.yaml"
+
+    cfg = load_project_config(cfg_path, allow_missing=False)
+    assert cfg is not None
+
+    yaml_threads = int(cfg["opf"]["threads"])
+    py_threads = int(DEFAULT_OPF.highs.threads)
+    yaml_seed = int(cfg["opf"]["random_seed"])
+    py_seed = int(DEFAULT_OPF.highs.random_seed)
+
+    assert yaml_threads == py_threads
+    assert yaml_seed == py_seed
+
+
 def test_project_yaml_monte_carlo_seed_matches_python_default() -> None:
     """
     Reproducibility regression test for Monte Carlo seed default.

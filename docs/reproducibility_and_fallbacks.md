@@ -11,7 +11,8 @@ and surrogate values that the code applies in well-defined situations.
 |----------|----------|------|
 | Bus ordering | `dc_model.py`, `ac_model.py`, `workflows.py` | Always `sorted(net.bus.index)` |
 | Line ordering | `dc_model.py`, `ac.py`, `workflows.py` | Always `sorted(net.line.index)` |
-| Slack auto-detect with multiple `ext_grid` rows | `base_point/pandapower_tools.py` | Use the smallest in-service `ext_grid` bus id |
+| Slack auto-detect with multiple `ext_grid` rows | `base_point/pandapower_tools.py`, `metrics_analysis.py` | Use the smallest in-service `ext_grid` bus id |
+| Load-proportional sigma arrays | `metrics_analysis.py` | Reindex bus loads to `sorted(net.bus.index)` before building per-bus sigma arrays |
 | Download mirror selection | `utils/download.py` | Try candidate URLs in a stable order; env overrides replace defaults exactly |
 
 The slack-bus rule matters because MATPOWER conversions can produce multiple
@@ -19,6 +20,15 @@ The slack-bus rule matters because MATPOWER conversions can produce multiple
 than "first row wins".
 
 ## Base-Point Repair And Fallback Chains
+
+### HiGHS deterministic defaults
+
+Location: `config.py`, `conf/config_shared.yaml`
+
+The project default for `opf.threads` is `1` in both Python and YAML. This is a
+deliberate determinism contract: multi-threaded HiGHS can change pivot order and
+produce different dispatch choices on tied or weakly conditioned LPs. The
+default `random_seed=42` is aligned across the same entrypoints.
 
 ### DC OPF adaptive headroom
 
@@ -137,6 +147,19 @@ The following tests lock these behaviors:
 - `tests/test_workflows_helpers.py`
 - `tests/test_ac_pf_repair_cascade.py`
 - `tests/test_ac_fpf_base_dispatch.py`
+- `tests/test_metrics_analysis.py`
+- `tests/test_config_project_defaults.py`
 
 These tests complement the existing AC/DC pipeline tests and are intended to
 catch silent changes in repair logic, surrogate values, or metadata semantics.
+
+## Intentional Non-Result Variability
+
+Some outputs are intentionally run-dependent but do not change the computed
+certificate values:
+
+- `logging.run_dir_mode=timestamp` creates time-based run directories
+- `__meta__.compute_time_sec` records wall-clock time
+
+These fields affect artifact names and performance reporting, not the radii or
+base-point metadata.

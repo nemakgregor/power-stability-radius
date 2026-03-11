@@ -247,7 +247,10 @@ If the base point is obtained from a dispatch (e.g., DC OPF) that doesn't fully 
 
 ### 7.3 Parser Failures
 
-The MATPOWER parser has a primary path (pandapower's `from_mpc()`) and a fallback regex parser. Some non-standard .m files may fail both parsing strategies.
+The MATPOWER parser uses a single deterministic path: internal `.m` parsing to
+PPC, then pandapower `from_ppc()` conversion. Some non-standard `.m` files may
+still fail parsing or conversion, but there is no secondary runtime parser
+fallback.
 
 ---
 

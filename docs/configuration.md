@@ -227,7 +227,7 @@ class LoggingConfig:
 @dataclass(frozen=True)
 class HiGHSConfig:
     solver_name: str = "highs"
-    threads: int = 14
+    threads: int = 1
     random_seed: int = 42
     user_objective_scale: int = -1
     user_bound_scale: int = -10
@@ -345,7 +345,7 @@ The DC OPF is used only when `base_dispatch=dc_opf`.
 | Parameter | YAML key | CLI flag | Type | Default | Effect | Notes |
 |-----------|----------|----------|------|---------|--------|-------|
 | Solver name | `opf.solver_name` | `--opf-solver-name` | str | `"highs"` | Must be `"highs"`. Project policy. | Do not change. |
-| Threads | `opf.threads` | `--opf-threads` | int | `1` (YAML) / `14` (Python) | Number of HiGHS solver threads. | **[determinism-critical]** Use 1 for reproducibility. More threads can change LP pivot order. |
+| Threads | `opf.threads` | `--opf-threads` | int | `1` | Number of HiGHS solver threads. | **[determinism-critical]** Use 1 for reproducibility. More threads can change LP pivot order. |
 | Random seed | `opf.random_seed` | `--opf-random-seed` | int | `42` | HiGHS random seed for tie-breaking. | **[determinism-critical]** |
 | Headroom factor | `opf.headroom_factor` | `--opf-headroom-factor` | float | `0.98` | Fraction of thermal capacity used as OPF line constraint. `0.98` means 2% security margin. | **[determinism-critical]** Valid range: (0, 1]. Values below ~0.90 can cause OPF infeasibility on tight networks. |
 | Unconstrained line limit | `opf.unconstrained_line_nom_mw` | `--opf-unconstrained-line-nom-mw` | float | `1e5` | Surrogate finite thermal limit (MW) for lines with `rateA=0/inf/NaN`. PyPSA requires finite limits. | **[determinism-critical]** Must match `DEFAULT_UNCONSTRAINED_LINE_NOM_MW` in Python. |
