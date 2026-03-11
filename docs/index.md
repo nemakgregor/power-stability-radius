@@ -44,6 +44,7 @@ Verification is provided through:
 | [experiments_and_evaluation.md](experiments_and_evaluation.md) | Experimental pipeline, benchmark cases, metrics, and reproducibility procedures |
 | [developer_guide.md](developer_guide.md) | Extension points, coding conventions, adding new algorithms/metrics/parsers |
 | [limitations_and_assumptions.md](limitations_and_assumptions.md) | Mathematical and implementation assumptions, scalability, known limitations |
+| [metrics.md](metrics.md) | Complete reference for all metrics: formulas, inputs, predictive vs a posteriori classification |
 | [glossary.md](glossary.md) | Definitions of domain terms, abbreviations, and key variable names |
 
 ---

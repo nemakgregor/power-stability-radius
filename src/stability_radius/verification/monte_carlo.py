@@ -29,6 +29,7 @@ import numpy as np
 from stability_radius.base_point.pandapower_tools import (
     apply_gen_dispatch_to_pandapower_net,
     apply_lossless_policy_to_pandapower_net,
+    apply_opp_result_to_pandapower_net,
     ensure_ext_grid_at_slack,
     resolve_slack_bus_id,
 )
@@ -929,12 +930,40 @@ def run_monte_carlo_verification(
     slack_bus_id = resolve_slack_bus_id(nn, slack_bus)
     ensure_ext_grid_at_slack(nn, slack_bus_id)
 
-    # Apply dispatch from results meta if present (only affects net.gen p_mw)
-    bp_dc = meta.get("base_point_dc", None)
+    # Apply dispatch from results meta so MC uses the same base point as the
+    # certificate.  For AC mode prefer base_point_ac (which stores the OPP gen
+    # dispatch + vm_pu); fall back to base_point_dc for backwards compat.
     dispatch_pairs = None
-    if isinstance(bp_dc, dict):
-        dispatch_pairs = bp_dc.get("gen_dispatch_mw_by_name", None)
-    apply_gen_dispatch_to_pandapower_net(nn, dispatch_pairs)
+    vm_pu_setpoints: dict[int, float] | None = None
+    if isinstance(base_ac, dict):
+        dispatch_pairs = base_ac.get("gen_dispatch_mw_by_name", None)
+        # Reconstruct vm_pu setpoints keyed by bus id
+        bp_bus_ids = base_ac.get("bus_ids", [])
+        bp_vm_pu = base_ac.get("vm_pu", [])
+        if bp_bus_ids and bp_vm_pu and len(bp_bus_ids) == len(bp_vm_pu):
+            vm_pu_setpoints = {
+                int(bid): float(vm) for bid, vm in zip(bp_bus_ids, bp_vm_pu)
+            }
+    if not dispatch_pairs:
+        bp_dc = meta.get("base_point_dc", None)
+        if isinstance(bp_dc, dict):
+            dispatch_pairs = bp_dc.get("gen_dispatch_mw_by_name", None)
+
+    if vm_pu_setpoints:
+        # Convert dispatch_pairs (list of [name, value] or dict) to dict
+        gen_dispatch_dict: dict[str, float] | None = None
+        if dispatch_pairs:
+            if isinstance(dispatch_pairs, dict):
+                gen_dispatch_dict = dispatch_pairs
+            else:
+                gen_dispatch_dict = {str(k): float(v) for k, v in dispatch_pairs}
+        apply_opp_result_to_pandapower_net(
+            nn,
+            opp_gen_dispatch=gen_dispatch_dict,
+            opp_vm_pu=vm_pu_setpoints,
+        )
+    else:
+        apply_gen_dispatch_to_pandapower_net(nn, dispatch_pairs)
 
     # Attach deterministic per-bus perturbation elements
     if not hasattr(nn, "sgen") or nn.sgen is None:

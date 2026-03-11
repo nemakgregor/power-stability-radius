@@ -173,6 +173,11 @@ def solve_ac_fpf_base_point(
     for pos, lid in enumerate(line_ids):
         s_limit_mva[pos] = float(estimate_line_limit_mva(net, net.line.loc[lid]))
 
+    # Capture OPP gen dispatch for reproducibility (MC needs it to
+    # reconstruct the same base point from the raw case file).
+    opp_dispatch = getattr(base_pf, "opp_gen_dispatch", None) or {}
+    gen_dispatch_tuple = tuple((str(k), float(v)) for k, v in opp_dispatch.items())
+
     bp = BasePointAC(
         pf_solver="pandapower_opp",
         pf_init="n/a",
@@ -188,7 +193,7 @@ def solve_ac_fpf_base_point(
         q_to_mvar=np.asarray(base_pf.line_q1_mvar, dtype=float),
         s_limit_mva=s_limit_mva,
         status=str(base_pf.status),
-        gen_dispatch_mw_by_name=(),
+        gen_dispatch_mw_by_name=gen_dispatch_tuple,
         pf_attempt=str(getattr(base_pf, "pf_attempt", "primary")),
         pf_repairs=tuple(getattr(base_pf, "pf_repairs", None) or ()),
         bus_p_mw=np.asarray(base_pf.bus_p_mw, dtype=float)
