@@ -281,7 +281,7 @@ power-stability-radius/
 ### `experiments/configs/`
 Experiment-specific YAML configurations (case lists, sigma settings, data paths).
 
-### `experiments/output/`
+### `runs/`
 Generated experiment outputs (JSON results, plots, CSV tables, logs). Contains completed experiment runs in named subdirectories.
 
 ---

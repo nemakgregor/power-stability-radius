@@ -43,6 +43,7 @@ import pandapower.topology as pt
 import yaml
 
 from stability_radius.base_point.ac import solve_ac_fpf_base_point
+from stability_radius.utils import create_module_output_dir
 from stability_radius.base_point.pandapower_opp import ACFPFConfig
 from stability_radius.base_point.pandapower_tools import (
     apply_lossless_policy_to_pandapower_net,
@@ -1759,7 +1760,10 @@ def run(config_path: Path) -> None:
     fpf_cfg_dict = ac_cfg.get("fpf", {})
     plot_cfg = cfg.get("plot", {})
     data_dir = Path(cfg.get("data_dir", "data/input"))
-    output_dir = Path(cfg.get("output_dir", "experiments/output/sigma_radius_hourly"))
+    output_dir = create_module_output_dir(
+        module_name="run_sigma_radius",
+        requested_output_dir=cfg.get("output_dir", None),
+    )
     allow_download = bool(cfg.get("allow_download", False))
 
     lossless = bool(ac_cfg.get("lossless", True))
@@ -2187,8 +2191,9 @@ def main() -> None:
     # Pre-read config to get output_dir before run() starts
     with args.config.open(encoding="utf-8") as fh:
         _pre_cfg = yaml.safe_load(fh)
-    _out_dir = Path(
-        _pre_cfg.get("output_dir", "experiments/output/sigma_radius_hourly")
+    _out_dir = create_module_output_dir(
+        module_name="run_sigma_radius",
+        requested_output_dir=_pre_cfg.get("output_dir", None),
     )
     _setup_logging(_out_dir)
 

@@ -8,9 +8,40 @@ def test_setup_logging_creates_run_dir(tmp_path, monkeypatch):
 
     monkeypatch.chdir(tmp_path)
 
-    cfg = LoggingConfig(runs_dir="runs", level_console="INFO", level_file="DEBUG")
+    cfg = LoggingConfig(
+        runs_dir="runs",
+        module_name="compute",
+        level_console="INFO",
+        level_file="DEBUG",
+    )
     run_dir = setup_logging(cfg)
 
     assert (tmp_path / "runs").exists()
     assert (tmp_path / "runs").is_dir()
-    assert (tmp_path / "runs").joinpath(Path(run_dir).name).exists()
+    assert (tmp_path / "runs" / "compute").joinpath(Path(run_dir).name).exists()
+
+
+def test_create_module_output_dir_normalizes_external_output_under_runs(tmp_path, monkeypatch):
+    from stability_radius.utils import create_module_output_dir
+
+    monkeypatch.chdir(tmp_path)
+
+    out_dir = create_module_output_dir(
+        module_name="metrics_analysis",
+        requested_output_dir="analysis_output/case118_api",
+    )
+
+    assert out_dir == (tmp_path / "runs" / "metrics_analysis" / "case118_api").resolve()
+
+
+def test_create_module_output_dir_preserves_explicit_runs_path(tmp_path, monkeypatch):
+    from stability_radius.utils import create_module_output_dir
+
+    monkeypatch.chdir(tmp_path)
+
+    out_dir = create_module_output_dir(
+        module_name="metrics_analysis",
+        requested_output_dir="runs/custom_bucket/report_outputs",
+    )
+
+    assert out_dir == (tmp_path / "runs" / "custom_bucket" / "report_outputs").resolve()

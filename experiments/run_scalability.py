@@ -23,6 +23,7 @@ import numpy as np
 import yaml
 
 from stability_radius.parsers.matpower import load_network
+from stability_radius.utils import create_module_output_dir
 from stability_radius.workflows import (
     DCExtensionsConfig,
     compute_results_for_case,
@@ -53,9 +54,9 @@ def run(config_path: Path, *, repeats: int = 3) -> None:
     cases = cfg["cases"]
     compute_cfg = cfg.get("compute", {})
     data_dir = Path(cfg.get("data_dir", "data/input"))
-    output_dir = (
-        Path(cfg.get("output_dir", "experiments/output/pglib_sweep")).parent
-        / "scalability"
+    output_dir = create_module_output_dir(
+        module_name="run_scalability",
+        requested_output_dir=cfg.get("output_dir", None),
     )
     allow_download = bool(cfg.get("allow_download", False))
 

@@ -11,8 +11,8 @@ logging:
   level_console: INFO
   level_file: DEBUG
 
-  # timestamp  -> runs/<timestamp>/
-  # overwrite  -> runs/<run_name>/  (folder is deleted/recreated each run)
+  # timestamp  -> runs/<module>/<timestamp>/
+  # overwrite  -> runs/<module>/<run_name>/  (folder is deleted/recreated each run)
   run_dir_mode: timestamp
   run_name: latest
 
@@ -41,8 +41,8 @@ opf:
   # Project policy: must be "highs"
   solver_name: highs
 
-  # For determinism prefer 1 thread.
-  threads: 1
+  # Performance-oriented default. Set to 1 for the strictest reproducibility.
+  threads: 4
   random_seed: 42
 
   # Headroom factor for OPF line constraints (security margin).

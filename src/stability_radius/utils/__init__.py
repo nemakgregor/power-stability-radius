@@ -14,6 +14,7 @@ Logging design (deterministic, project-only)
 
 import logging
 import os
+import re
 import shutil
 import time
 from contextlib import contextmanager
@@ -22,7 +23,7 @@ from pathlib import Path
 
 from stability_radius.config import LoggingConfig
 
-__all__ = ["log_stage", "setup_logging"]
+__all__ = ["create_module_output_dir", "log_stage", "setup_logging"]
 
 _LOGGER_ROOT_NAME = "stability_radius"
 _LOGGER_FILE_ONLY_NAME = "stability_radius.fileonly"
@@ -46,6 +47,36 @@ def _close_and_clear_handlers(lg: logging.Logger) -> None:
     lg.handlers.clear()
 
 
+def _resolve_base_dir(path_value: str | Path) -> Path:
+    """Expand `~` and resolve a potentially-relative base directory."""
+    path = Path(path_value).expanduser()
+    if not path.is_absolute():
+        path = (Path(os.getcwd()) / path).resolve()
+    else:
+        path = path.resolve()
+    return path
+
+
+def _sanitize_path_component(value: str) -> str:
+    """Normalize a user/module name into a safe directory component."""
+    raw = str(value).strip()
+    if not raw:
+        return "general"
+    cleaned = re.sub(r'[\\/:*?"<>|]+', "_", raw)
+    cleaned = re.sub(r"\s+", "_", cleaned)
+    cleaned = cleaned.strip("._")
+    return cleaned or "general"
+
+
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    """Return True iff `path` is located under `parent`."""
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
 def _make_unique_run_dir(runs_dir: Path, *, prefix: str) -> Path:
     """
     Create a unique run directory under `runs_dir`.
@@ -65,6 +96,43 @@ def _make_unique_run_dir(runs_dir: Path, *, prefix: str) -> Path:
             suffixed.mkdir(parents=True, exist_ok=False)
             return suffixed
         i += 1
+
+
+def create_module_output_dir(
+    *,
+    module_name: str,
+    runs_dir: str | Path = "runs",
+    requested_output_dir: str | Path | None = None,
+) -> Path:
+    """
+    Resolve a module-specific artifact directory under `runs/`.
+
+    Rules:
+    - default: `runs/<module_name>`
+    - if `requested_output_dir` already points inside `runs/`, keep it
+    - otherwise normalize it to `runs/<module_name>/<basename>`
+    """
+    runs_root = _resolve_base_dir(runs_dir)
+    module_dir = runs_root / _sanitize_path_component(module_name)
+
+    requested_raw = "" if requested_output_dir is None else str(requested_output_dir).strip()
+    if not requested_raw:
+        module_dir.mkdir(parents=True, exist_ok=True)
+        return module_dir.resolve()
+
+    requested = Path(requested_raw).expanduser()
+    resolved_requested = (
+        requested.resolve()
+        if requested.is_absolute()
+        else (Path(os.getcwd()) / requested).resolve()
+    )
+    if _is_relative_to(resolved_requested, runs_root):
+        resolved_requested.mkdir(parents=True, exist_ok=True)
+        return resolved_requested.resolve()
+
+    target = module_dir / _sanitize_path_component(requested.name or module_name)
+    target.mkdir(parents=True, exist_ok=True)
+    return target.resolve()
 
 
 @contextmanager
@@ -105,6 +173,7 @@ def setup_logging(cfg: LoggingConfig) -> str:
     cfg:
         LoggingConfig with:
           - runs_dir (supports "~", relative paths are resolved against CWD)
+          - module_name (top-level module/pipeline group under runs_dir)
           - level_console
           - level_file
           - run_dir_mode: "timestamp" | "overwrite"
@@ -119,12 +188,8 @@ def setup_logging(cfg: LoggingConfig) -> str:
     if not runs_dir_raw:
         raise ValueError("runs_dir must be a non-empty path.")
 
-    # Expand "~" first (common CLI expectation), then resolve relative to CWD.
-    runs_dir = Path(runs_dir_raw).expanduser()
-    if not runs_dir.is_absolute():
-        runs_dir = (Path(os.getcwd()) / runs_dir).resolve()
-    else:
-        runs_dir = runs_dir.resolve()
+    runs_root = _resolve_base_dir(runs_dir_raw)
+    module_dir = runs_root / _sanitize_path_component(getattr(cfg, "module_name", "general"))
 
     mode = str(getattr(cfg, "run_dir_mode", "timestamp")).strip().lower()
     if mode not in {"timestamp", "overwrite"}:
@@ -132,13 +197,13 @@ def setup_logging(cfg: LoggingConfig) -> str:
 
     if mode == "overwrite":
         run_name = str(getattr(cfg, "run_name", "latest")).strip() or "latest"
-        run_dir = runs_dir / run_name
+        run_dir = module_dir / _sanitize_path_component(run_name)
         if run_dir.exists():
             shutil.rmtree(run_dir)
         run_dir.mkdir(parents=True, exist_ok=False)
     else:
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")
-        run_dir = _make_unique_run_dir(runs_dir, prefix=timestamp)
+        run_dir = _make_unique_run_dir(module_dir, prefix=timestamp)
 
     fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
@@ -169,7 +234,8 @@ def setup_logging(cfg: LoggingConfig) -> str:
     file_only_logger.addHandler(file_handler)
 
     project_logger.info("New run: %s", run_dir.name)
-    project_logger.info("Runs directory: %s", str(runs_dir))
+    project_logger.info("Runs root: %s", str(runs_root))
+    project_logger.info("Module directory: %s", str(module_dir))
     project_logger.info("Run directory: %s", str(run_dir))
     project_logger.info("Run directory mode: %s", mode)
     if mode == "overwrite":

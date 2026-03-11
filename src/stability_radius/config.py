@@ -45,6 +45,7 @@ class LoggingConfig:
     """Logging defaults for CLI/scripts."""
 
     runs_dir: str = "runs"
+    module_name: str = "general"
     level_console: str = "INFO"
     level_file: str = "DEBUG"
     run_dir_mode: str = "timestamp"  # "timestamp" | "overwrite"
@@ -53,11 +54,13 @@ class LoggingConfig:
 
 @dataclass(frozen=True)
 class HiGHSConfig:
-    """HiGHS solver configuration for deterministic OPF."""
+    """HiGHS solver configuration for OPF."""
 
     solver_name: str = "highs"
-    # MUST match conf/config_shared.yaml (reproducible HiGHS pivot order).
-    threads: int = 1
+    # MUST match conf/config_shared.yaml.
+    # Use >1 by default for practical runtime; set to 1 explicitly for
+    # the strictest reproducibility.
+    threads: int = 4
     random_seed: int = 42
     user_objective_scale: int = -1
     user_bound_scale: int = -10

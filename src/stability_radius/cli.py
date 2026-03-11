@@ -44,7 +44,7 @@ from stability_radius.statistics.table import (
     format_results_table_sections,
     infer_default_flat_columns,
 )
-from stability_radius.utils import log_stage, setup_logging
+from stability_radius.utils import create_module_output_dir, log_stage, setup_logging
 from stability_radius.workflows import (
     ACExtensionsConfig,
     DCExtensionsConfig,
@@ -671,10 +671,15 @@ def _make_opf_cfg(args: argparse.Namespace) -> OPFConfig:
 
 
 def _setup_run_and_logging(args: argparse.Namespace) -> Path:
+    command_name = str(getattr(args, "command", "general") or "general").strip().lower()
+    if command_name == "demo":
+        command_name = "compute"
+    command_name = command_name.replace("-", "_")
     run_dir = Path(
         setup_logging(
             LoggingConfig(
                 runs_dir=str(args.runs_dir),
+                module_name=command_name,
                 level_console=str(args.log_level),
                 level_file=str(args.log_file_level),
                 run_dir_mode=str(args.run_dir_mode),
@@ -874,7 +879,11 @@ def run_compute(
         logger.info("%s", format_radius_summary(results, radius_field=field))
 
     if str(args.export_results).strip():
-        export_path_abs = _resolve_path(str(args.export_results))
+        export_dir = create_module_output_dir(
+            module_name="compute_exports",
+            requested_output_dir=Path(str(args.export_results)).parent,
+        )
+        export_path_abs = str((export_dir / Path(str(args.export_results)).name).resolve())
         Path(export_path_abs).parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(run_dir / "results.json", export_path_abs)
 
@@ -945,7 +954,11 @@ def run_report(
         raise ValueError("report requires a loaded YAML config (report.cases).")
 
     results_dir = Path(_resolve_path(str(args.results_dir)))
-    out_path = Path(_resolve_path(str(args.out)))
+    report_dir = create_module_output_dir(
+        module_name="report",
+        requested_output_dir=Path(str(args.out)).parent,
+    )
+    out_path = report_dir / Path(str(args.out)).name
 
     base_dir = Path.cwd().resolve()
     cases_cfg = _parse_report_cases_from_cfg(

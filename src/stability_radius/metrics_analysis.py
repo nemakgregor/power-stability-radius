@@ -10,7 +10,7 @@ Usage::
         --slack-bus 0 \
         --sigma-p 1.0 --sigma-q 1.0 \
         --mc-samples 10000 \
-        --output-dir analysis_output/case30
+        --output-dir case30
 
 Pipeline:
 
@@ -49,6 +49,7 @@ from stability_radius.metrics.ac_baselines import (
     compute_practical_metrics,
     transfer_margin_linearized,
 )
+from stability_radius.utils import create_module_output_dir
 from stability_radius.verification.monte_carlo import run_monte_carlo_verification
 from stability_radius.workflows import (
     ACExtensionsConfig,
@@ -1670,7 +1671,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="3,5,10",
         help="Comma-separated k values for precision-at-k",
     )
-    parser.add_argument("--output-dir", type=str, default="analysis_output")
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="",
+        help="Optional artifact subdirectory name under runs/metrics_analysis/",
+    )
     parser.add_argument("--log-level", type=str, default="INFO")
     return parser.parse_args(argv)
 
@@ -1683,8 +1689,10 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
 
-    output_dir = Path(args.output_dir).resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = create_module_output_dir(
+        module_name="metrics_analysis",
+        requested_output_dir=args.output_dir,
+    )
 
     # ------------------------------------------------------------------
     # Resolve slack bus (auto-detect from ext_grid if not specified)

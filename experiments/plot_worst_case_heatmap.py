@@ -1,13 +1,13 @@
 """Plot worst-case verification heatmap.
 
-Reads results from ``experiments/output/worst_case_verify/`` and produces a
+Reads results from ``runs/run_worst_case_verify/`` and produces a
 heatmap showing predicted vs actual apparent power, relative error, and
 violation status across lines and perturbation scales.
 
 Usage::
 
     python -m experiments.plot_worst_case_heatmap
-    python -m experiments.plot_worst_case_heatmap --input-dir experiments/output/worst_case_verify
+    python -m experiments.plot_worst_case_heatmap --input-dir runs/run_worst_case_verify
 """
 
 from __future__ import annotations
@@ -19,11 +19,11 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+from stability_radius.utils import create_module_output_dir
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_INPUT_DIR = Path("experiments/output/worst_case_verify")
-_DEFAULT_OUTPUT_DIR = Path("experiments/output/worst_case_verify")
+_DEFAULT_INPUT_DIR = Path("runs/run_worst_case_verify")
 
 
 def _load_json(path: Path) -> list | dict:
@@ -149,11 +149,15 @@ def main() -> None:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=_DEFAULT_OUTPUT_DIR,
+        default=Path(""),
         help="Directory where plots are saved.",
     )
     args = parser.parse_args()
-    plot(args.input_dir, args.output_dir)
+    output_dir = create_module_output_dir(
+        module_name="plot_worst_case_heatmap",
+        requested_output_dir=args.output_dir,
+    )
+    plot(args.input_dir, output_dir)
 
 
 if __name__ == "__main__":

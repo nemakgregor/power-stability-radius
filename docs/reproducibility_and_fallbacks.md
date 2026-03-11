@@ -25,10 +25,11 @@ than "first row wins".
 
 Location: `config.py`, `conf/config_shared.yaml`
 
-The project default for `opf.threads` is `1` in both Python and YAML. This is a
-deliberate determinism contract: multi-threaded HiGHS can change pivot order and
-produce different dispatch choices on tied or weakly conditioned LPs. The
-default `random_seed=42` is aligned across the same entrypoints.
+The project default for `opf.threads` is `4` in both Python and YAML. This is a
+performance-oriented default; set `opf.threads=1` when the strictest
+reproducibility matters more than runtime. Multi-threaded HiGHS can change
+pivot order and produce different dispatch choices on tied or weakly conditioned
+LPs. The default `random_seed=42` is aligned across the same entrypoints.
 
 ### DC OPF adaptive headroom
 
