@@ -1322,12 +1322,14 @@ def compute_results_for_case(
         if src_p == "uniform":
             _sigma_p_meta = float(ac_ext.sigma_p_mw_uniform)
         elif src_p == "uc_jl" and ac_ext.sigma_p_mw_array is not None:
-            _sigma_p_meta = ac_ext.sigma_p_mw_array.tolist()
+            _arr = ac_ext.sigma_p_mw_array
+            _sigma_p_meta = _arr.tolist() if hasattr(_arr, "tolist") else list(_arr)
         src_q = str(ac_ext.sigma_q_mvar_source).strip().lower()
         if src_q == "uniform":
             _sigma_q_meta = float(ac_ext.sigma_q_mvar_uniform)
         elif src_q == "uc_jl" and ac_ext.sigma_q_mvar_array is not None:
-            _sigma_q_meta = ac_ext.sigma_q_mvar_array.tolist()
+            _arr = ac_ext.sigma_q_mvar_array
+            _sigma_q_meta = _arr.tolist() if hasattr(_arr, "tolist") else list(_arr)
 
     results: dict[str, Any] = {
         "__meta__": {

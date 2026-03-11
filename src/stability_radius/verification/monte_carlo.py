@@ -273,18 +273,31 @@ def _sample_gaussian_ac(
     rng: np.random.Generator,
     n: int,
     n_bus: int,
-    sigma_p_mw: float,
-    sigma_q_mvar: float,
+    sigma_p_mw: "float | np.ndarray",
+    sigma_q_mvar: "float | np.ndarray",
 ) -> tuple[np.ndarray, np.ndarray]:
-    sp = float(sigma_p_mw)
-    sq = float(sigma_q_mvar)
-    if not math.isfinite(sp) or sp <= 0:
-        raise ValueError("sigma_p_mw must be finite and >0")
-    if not math.isfinite(sq) or sq <= 0:
-        raise ValueError("sigma_q_mvar must be finite and >0")
+    """Generate Gaussian injection perturbation samples.
 
-    dp = (sp * rng.standard_normal(size=(int(n), int(n_bus)))).astype(float, copy=False)
-    dq = (sq * rng.standard_normal(size=(int(n), int(n_bus)))).astype(float, copy=False)
+    sigma_p_mw / sigma_q_mvar can be either:
+    - a scalar float  → isotropic (same sigma for all buses)
+    - a (n_bus,) array → heterogeneous (per-bus sigma)
+    """
+    sp = np.asarray(sigma_p_mw, dtype=float)
+    sq = np.asarray(sigma_q_mvar, dtype=float)
+    # broadcast scalar to per-bus array
+    if sp.ndim == 0:
+        sp = np.full(int(n_bus), float(sp))
+    if sq.ndim == 0:
+        sq = np.full(int(n_bus), float(sq))
+    if np.any(~np.isfinite(sp)) or np.any(sp <= 0):
+        raise ValueError("sigma_p_mw must be finite and >0 (all buses)")
+    if np.any(~np.isfinite(sq)) or np.any(sq <= 0):
+        raise ValueError("sigma_q_mvar must be finite and >0 (all buses)")
+
+    z_p = rng.standard_normal(size=(int(n), int(n_bus)))
+    z_q = rng.standard_normal(size=(int(n), int(n_bus)))
+    dp = (sp[None, :] * z_p).astype(float, copy=False)
+    dq = (sq[None, :] * z_q).astype(float, copy=False)
     _project_sum_zero_two_blocks_inplace(dp, dq)
     return dp, dq
 
@@ -490,8 +503,9 @@ def run_monte_carlo_verification(
     mode: str = "dc",
     allow_download: bool = False,
     # AC-only parameters (explicit)
-    ac_sigma_p_mw: float | None = None,
-    ac_sigma_q_mvar: float | None = None,
+    # Can be a scalar float (uniform) or a (n_bus,) ndarray (per-bus heterogeneous)
+    ac_sigma_p_mw: "float | np.ndarray | None" = None,
+    ac_sigma_q_mvar: "float | np.ndarray | None" = None,
     ac_pf_solver: str = "pandapower",
     ac_lossless: bool = True,
     ac_basepoint_s_tol_mva: float = 1e-3,
@@ -859,8 +873,13 @@ def run_monte_carlo_verification(
             f"results.json lossless={bool(base_ac.get('lossless'))}, requested={bool(ac_lossless)}."
         )
 
-    sigma_p = float(ac_sigma_p_mw)
-    sigma_q = float(ac_sigma_q_mvar)
+    # Support both scalar (uniform) and per-bus array sigma
+    sigma_p = np.asarray(ac_sigma_p_mw, dtype=float)
+    sigma_q = np.asarray(ac_sigma_q_mvar, dtype=float)
+    if sigma_p.ndim == 0:
+        sigma_p = float(sigma_p)  # keep as scalar for backward-compat downstream checks
+    if sigma_q.ndim == 0:
+        sigma_q = float(sigma_q)
 
     # Extract AC radii from results
     line_ids_sorted = [int(x) for x in sorted(net.line.index)]
@@ -987,7 +1006,26 @@ def run_monte_carlo_verification(
     line_ids, limits_mva = _line_limits_mva_sorted(nn)
 
     # Base PF (no perturbation) must match results.json regime
-    pp.runpp(nn, calculate_voltage_angles=True, enforce_q_lims=True, init="flat")
+    # Fallback chain for stressed (API) networks: try dc/flat init, with/without Q limits
+    _base_conv = False
+    for _init in ("dc", "flat"):
+        for _q in (True, False):
+            try:
+                pp.runpp(
+                    nn,
+                    calculate_voltage_angles=True,
+                    enforce_q_lims=_q,
+                    init=_init,
+                    max_iter=50,
+                    numba=False,
+                )
+                if bool(getattr(nn, "converged", True)):
+                    _base_conv = True
+                    break
+            except Exception:  # noqa: BLE001
+                pass
+        if _base_conv:
+            break
     if not bool(getattr(nn, "converged", True)):
         raise RuntimeError("AC MC: base PF did not converge (net.converged=False).")
 
@@ -1012,13 +1050,19 @@ def run_monte_carlo_verification(
     if d <= 0:
         raise ValueError("AC MC: invalid dimension (n_bus must be >=2).")
 
+    _sigma_p_scalar = float(np.mean(sigma_p)) if isinstance(sigma_p, np.ndarray) else float(sigma_p)
+    _sigma_q_scalar = float(np.mean(sigma_q)) if isinstance(sigma_q, np.ndarray) else float(sigma_q)
+    _sigma_uniform = (
+        isinstance(sigma_p, float) and isinstance(sigma_q, float)
+        and abs(sigma_p - sigma_q) <= 1e-15
+    )
     if (
-        abs(sigma_p - sigma_q) <= 1e-15
+        _sigma_uniform
         and math.isfinite(radius_check.r_star)
         and radius_check.r_star >= 0
     ):
         p_ball_analytic = 100.0 * _chi2_cdf(
-            x=(float(radius_check.r_star) / float(sigma_p)) ** 2, df=d
+            x=(float(radius_check.r_star) / _sigma_p_scalar) ** 2, df=d
         )
         prob_status = PROB_OK
     else:
@@ -1121,8 +1165,8 @@ def run_monte_carlo_verification(
         eta_ci = (float("nan"), float("nan"))
 
     denom = (
-        float(sigma_p) * math.sqrt(float(d))
-        if math.isfinite(sigma_p) and sigma_p > 0
+        _sigma_p_scalar * math.sqrt(float(d))
+        if math.isfinite(_sigma_p_scalar) and _sigma_p_scalar > 0
         else float("nan")
     )
     rho = (
@@ -1251,7 +1295,7 @@ def run_monte_carlo_verification(
         n_samples=int(n_samples),
         seed=int(seed),
         chunk_size=int(chunk_size),
-        sigma_mw=float(sigma_p),  # schema legacy
+        sigma_mw=_sigma_p_scalar,  # schema legacy (mean sigma for per-bus case)
     )
 
     cert_interp = interpret_certificate_components(
@@ -1264,8 +1308,8 @@ def run_monte_carlo_verification(
         "certificate_soundness": str(cert_interp.soundness),
         "certificate_usefulness": str(cert_interp.usefulness),
         "certificate_notes": list(cert_interp.notes),
-        "ac_sigma_p_mw": float(sigma_p),
-        "ac_sigma_q_mvar": float(sigma_q),
+        "ac_sigma_p_mw": _sigma_p_scalar,
+        "ac_sigma_q_mvar": _sigma_q_scalar,
         "ac_lossless": bool(ac_lossless),
         "ac_pf_solver": str(solver_eff),
         "ac_basepoint_s_tol_mva": float(ac_basepoint_s_tol_mva),
