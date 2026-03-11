@@ -34,7 +34,7 @@ def test_setup_logging_expands_tilde_runs_dir(
     )
     run_dir = Path(setup_logging(cfg)).resolve()
 
-    expected = (home / "runs" / "run1").resolve()
+    expected = (home / "runs" / "general" / "run1").resolve()
     assert run_dir == expected
     assert expected.is_dir()
     assert (expected / "run.log").exists()
