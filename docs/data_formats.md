@@ -622,13 +622,14 @@ Top-level JSON object with two kinds of keys:
 | `pf_solver` | string | `"pandapower"` or `"pypsa"`. |
 | `pf_init` | string | `"flat"`, `"dc"`, or `"pp"`. |
 | `lossless` | bool | Whether series resistance was zeroed. |
-| `distributed_slack` | bool | Whether distributed slack was used. |
+| `distributed_slack_requested` | bool | Whether distributed slack was requested in config/CLI. |
+| `distributed_slack` | bool | Whether distributed slack was actually used by the successful solve. |
 | `trafo_model` | string | Transformer model type (e.g., `"pi"`). |
 | `chunk_size` | int | AC computation batch size. |
 | `balance` | bool | Whether `sum(dp)=0` projection was applied. |
 | `pf_status` | string | Power flow convergence status. |
 | `pf_attempt` | string | Which PF attempt succeeded. |
-| `pf_repairs` | string[] | List of PF repair actions applied. |
+| `pf_repairs` | string[] | List of PF repair actions applied (for example `distributed_slack_auto_disabled_large_network`). |
 | `feasibility` | object\|null | AC base point feasibility check result. |
 | `sigma_source` | string\|null | `"uniform"`, `"uc_jl"`, or null. |
 | `sigma_p_mw` | float\|float[]\|null | Per-bus sigma_P (scalar if uniform, array if uc_jl). |

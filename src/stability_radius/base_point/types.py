@@ -103,6 +103,8 @@ class BasePointAC:
     # AC PF repair metadata: which solver attempt succeeded and what was changed.
     pf_attempt: str = "primary"  # "primary" | "alt_init" | "relaxed"
     pf_repairs: tuple[str, ...] = ()  # list of repair actions applied
+    distributed_slack_requested: bool = False
+    distributed_slack_used: bool = False
 
     # Optional: net active power injection per bus (MW), aligned with bus_ids.
     # From AC PF solution (includes losses at slack). Used by acpf dispatch mode.
@@ -125,6 +127,8 @@ class BasePointAC:
             "status": str(self.status),
             "pf_attempt": str(self.pf_attempt),
             "pf_repairs": list(self.pf_repairs),
+            "distributed_slack_requested": bool(self.distributed_slack_requested),
+            "distributed_slack_used": bool(self.distributed_slack_used),
             "gen_dispatch_mw_by_name": [
                 (str(k), float(v)) for k, v in self.gen_dispatch_mw_by_name
             ],

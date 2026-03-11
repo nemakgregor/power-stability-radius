@@ -11,11 +11,10 @@ Covers:
 
 from __future__ import annotations
 
-import math
-from dataclasses import dataclass
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import numpy as np
+import pandas as pd
 import pytest
 
 pp = pytest.importorskip("pandapower")
@@ -47,6 +46,50 @@ def _make_simple_net():
     )
 
     return net, b0
+
+
+def _make_chain_net(n_buses: int):
+    net = pp.create_empty_network(sn_mva=100.0)
+    buses = [int(pp.create_bus(net, vn_kv=110.0)) for _ in range(n_buses)]
+    pp.create_ext_grid(net, buses[0], vm_pu=1.0)
+
+    for idx in range(1, n_buses):
+        pp.create_load(net, buses[idx], p_mw=0.1, q_mvar=0.0)
+        pp.create_line_from_parameters(
+            net,
+            from_bus=buses[idx - 1],
+            to_bus=buses[idx],
+            length_km=1.0,
+            r_ohm_per_km=0.01,
+            x_ohm_per_km=0.10,
+            c_nf_per_km=0.0,
+            max_i_ka=1.0,
+            max_loading_percent=100.0,
+        )
+
+    return net, buses[0]
+
+
+def _populate_fake_pp_results(nn) -> None:
+    nn.converged = True
+    nn.res_bus = pd.DataFrame(
+        {
+            "vm_pu": 1.0,
+            "va_degree": 0.0,
+            "p_mw": 0.0,
+            "q_mvar": 0.0,
+        },
+        index=nn.bus.index,
+    )
+    nn.res_line = pd.DataFrame(
+        {
+            "p_from_mw": 0.0,
+            "q_from_mvar": 0.0,
+            "p_to_mw": 0.0,
+            "q_to_mvar": 0.0,
+        },
+        index=nn.line.index,
+    )
 
 
 # ---------- Tests for primary solve (no fallback) ----------
@@ -244,3 +287,59 @@ def test_pypsa_apf_result_custom_fields() -> None:
     assert result.pf_attempt == "relaxed"
     assert len(result.pf_repairs) == 2
     assert "enforce_q_lims_disabled" in result.pf_repairs
+
+
+def test_distributed_slack_metadata_reports_requested_and_used() -> None:
+    from stability_radius.base_point.pypsa_pf import solve_ac_pf_base_point_from_pandapower
+
+    net, slack_bus = _make_simple_net()
+
+    def _fake_runpp(nn, **kwargs):
+        _populate_fake_pp_results(nn)
+
+    with patch("pandapower.runpp", side_effect=_fake_runpp):
+        result = solve_ac_pf_base_point_from_pandapower(
+            net=net,
+            slack_bus=slack_bus,
+            solver="pandapower",
+            init="flat",
+            lossless=True,
+            distributed_slack=True,
+        )
+
+    assert result.distributed_slack_requested is True
+    assert result.distributed_slack_used is True
+    assert "distributed_slack_auto_disabled_large_network" not in (
+        result.pf_repairs or []
+    )
+
+
+def test_large_network_auto_disables_distributed_slack_and_propagates_meta() -> None:
+    from stability_radius.base_point.ac import solve_ac_pf_base_point
+
+    net, slack_bus = _make_chain_net(301)
+
+    def _fake_runpp(nn, **kwargs):
+        _populate_fake_pp_results(nn)
+
+    with patch("pandapower.runpp", side_effect=_fake_runpp):
+        bp, raw = solve_ac_pf_base_point(
+            net=net,
+            slack_bus=slack_bus,
+            pf_solver="pandapower",
+            pf_init="flat",
+            lossless=True,
+            gen_dispatch_mw_by_name={},
+            distributed_slack=True,
+        )
+
+    assert raw.distributed_slack_requested is True
+    assert raw.distributed_slack_used is False
+    assert "distributed_slack_auto_disabled_large_network" in (raw.pf_repairs or [])
+
+    assert bp.distributed_slack_requested is True
+    assert bp.distributed_slack_used is False
+    meta = bp.to_meta_dict()
+    assert meta["distributed_slack_requested"] is True
+    assert meta["distributed_slack_used"] is False
+    assert "distributed_slack_auto_disabled_large_network" in meta["pf_repairs"]

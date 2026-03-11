@@ -93,7 +93,9 @@ def resolve_slack_bus_id(net: Any, slack_bus: int) -> int:
 
     The resolved bus is validated against ``net.ext_grid``: if there is
     exactly one in-service ext_grid and the resolved bus doesn't match,
-    the ext_grid bus is used instead (with a warning).
+    the ext_grid bus is used instead (with a warning). If there are
+    multiple in-service ext_grids and auto-detection is requested
+    (``slack_bus=-1``), the smallest ext_grid bus id is used.
     """
     bus_ids = [int(x) for x in sorted(net.bus.index)]
     bus_pos = {bid: pos for pos, bid in enumerate(bus_ids)}
@@ -108,7 +110,7 @@ def resolve_slack_bus_id(net: Any, slack_bus: int) -> int:
         if len(ext_grid_buses) > 1:
             sb = ext_grid_buses[0]
             logger.warning(
-                "Multiple ext_grid buses %s; using first: bus %d",
+                "Multiple ext_grid buses %s; using smallest bus id: bus %d",
                 ext_grid_buses, sb,
             )
             return int(sb)
@@ -138,7 +140,7 @@ def resolve_slack_bus_id(net: Any, slack_bus: int) -> int:
 
 
 def _get_ext_grid_buses(net: Any) -> list[int]:
-    """Return list of in-service ext_grid bus IDs."""
+    """Return sorted unique in-service ext_grid bus IDs."""
     ext_buses: list[int] = []
     if hasattr(net, "ext_grid") and net.ext_grid is not None and len(net.ext_grid):
         for eid in net.ext_grid.index:
@@ -150,7 +152,7 @@ def _get_ext_grid_buses(net: Any) -> list[int]:
                 pass
             if in_service:
                 ext_buses.append(int(row["bus"]))
-    return ext_buses
+    return sorted(set(ext_buses))
 
 
 def ensure_ext_grid_at_slack(net: Any, slack_bus_id: int) -> None:

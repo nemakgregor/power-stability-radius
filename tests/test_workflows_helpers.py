@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import numpy as np
 import pytest
 
+from stability_radius.config import OPFConfig
 from stability_radius.workflows import (
     ACExtensionsConfig,
+    _build_headroom_schedule,
     _build_sigma_arrays,
     _merge_line_results,
+    _solve_dc_opf_with_adaptive_headroom,
 )
 
 
@@ -140,3 +145,39 @@ class TestBuildSigmaArrays:
         sp, sq = _build_sigma_arrays(ac_ext=ext, n_bus=3)
         np.testing.assert_array_equal(sp, np.full(3, 10.0))
         np.testing.assert_array_equal(sq, sq_arr)
+
+
+class TestAdaptiveHeadroom:
+    def test_build_headroom_schedule_relaxes_towards_one(self):
+        assert _build_headroom_schedule(0.90) == [0.9, 0.92, 0.95, 0.98, 1.0]
+        assert _build_headroom_schedule(0.98) == [0.98, 1.0]
+        assert _build_headroom_schedule(1.0) == [1.0]
+
+    def test_solve_dc_opf_with_adaptive_headroom_retries_in_order(self):
+        cfg = OPFConfig(headroom_factor=0.90)
+        bp_obj = object()
+        base_obj = object()
+        seen: list[float] = []
+
+        def _fake_build_dc_base_point_dc_opf(*, net, slack_bus, opf_cfg, limit_factor):
+            seen.append(float(opf_cfg.headroom_factor))
+            if float(opf_cfg.headroom_factor) < 0.95:
+                raise RuntimeError("infeasible for this headroom")
+            return bp_obj, base_obj
+
+        with patch(
+            "stability_radius.workflows.build_dc_base_point_dc_opf",
+            side_effect=_fake_build_dc_base_point_dc_opf,
+        ):
+            bp_dc, base_dc, used = _solve_dc_opf_with_adaptive_headroom(
+                net=object(),
+                slack_bus=0,
+                opf_cfg=cfg,
+                limit_factor=1.0,
+                case_tag="case30",
+            )
+
+        assert bp_dc is bp_obj
+        assert base_dc is base_obj
+        assert used == pytest.approx(0.95)
+        assert seen == [0.9, 0.92, 0.95]

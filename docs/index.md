@@ -41,6 +41,7 @@ Verification is provided through:
 | [data_formats.md](data_formats.md) | Input file schemas (MATPOWER, UnitCommitment.jl), output JSON structure, CSV/plots |
 | [configuration.md](configuration.md) | YAML config system, all parameters, defaults, and interactions |
 | [execution_flow.md](execution_flow.md) | End-to-end execution traces for CLI commands, experiment scripts, and entry points |
+| [reproducibility_and_fallbacks.md](reproducibility_and_fallbacks.md) | Deterministic repair paths, surrogate values, tie-break rules, and how they are surfaced in metadata |
 | [experiments_and_evaluation.md](experiments_and_evaluation.md) | Experimental pipeline, benchmark cases, metrics, and reproducibility procedures |
 | [developer_guide.md](developer_guide.md) | Extension points, coding conventions, adding new algorithms/metrics/parsers |
 | [limitations_and_assumptions.md](limitations_and_assumptions.md) | Mathematical and implementation assumptions, scalability, known limitations |

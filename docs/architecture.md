@@ -142,7 +142,7 @@ Computes the operating point around which the stability radius is certified.
 
 **BasePointDC fields:** `bus_ids`, `bus_injections_mw`, `line_ids`, `line_flows_mw`, `line_limits_mw`, `gen_dispatch_mw_by_name`, `status`, `objective`.
 
-**BasePointAC fields:** `bus_ids`, `vm_pu`, `va_rad`, `line_ids`, `p_from_mw`, `q_from_mvar`, `p_to_mw`, `q_to_mvar`, `s_limit_mva`, `pf_solver`, `pf_init`, `lossless`, `pf_attempt`, `pf_repairs`.
+**BasePointAC fields:** `bus_ids`, `vm_pu`, `va_rad`, `line_ids`, `p_from_mw`, `q_from_mvar`, `p_to_mw`, `q_to_mvar`, `s_limit_mva`, `pf_solver`, `pf_init`, `lossless`, `pf_attempt`, `pf_repairs`, `distributed_slack_requested`, `distributed_slack_used`.
 
 ### 1.7 DC Model (`dc/dc_model.py`)
 
