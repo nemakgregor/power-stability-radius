@@ -413,7 +413,10 @@ def find_hidden_danger_lines(
 
     # --- absolute safety filter ---
     lr_col = "loading_ratio" if has_lr else comparison_col
-    if lr_col in ("loading_ratio", comparison_col) and comparison_col == "loading_ratio":
+    if (
+        lr_col in ("loading_ratio", comparison_col)
+        and comparison_col == "loading_ratio"
+    ):
         sub["safely_loaded"] = sub[comparison_col] < max_safe_loading_ratio
     elif has_lr:
         sub["safely_loaded"] = sub["loading_ratio"] < max_safe_loading_ratio
@@ -592,7 +595,10 @@ def generate_pairwise_correlation_heatmap(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     cols = [c for c in metric_columns if c in df.columns]
-    if "empirical_overload_prob" in df.columns and "empirical_overload_prob" not in cols:
+    if (
+        "empirical_overload_prob" in df.columns
+        and "empirical_overload_prob" not in cols
+    ):
         cols.append("empirical_overload_prob")
 
     sub = df[cols].replace([np.inf, -np.inf], np.nan).dropna()
@@ -627,12 +633,21 @@ def generate_pairwise_correlation_heatmap(
             val = corr_matrix.values[i, j]
             if math.isfinite(val):
                 color = "white" if abs(val) > 0.7 else "black"
-                ax.text(j, i, f"{val:.2f}", ha="center", va="center",
-                        fontsize=7, color=color)
+                ax.text(
+                    j,
+                    i,
+                    f"{val:.2f}",
+                    ha="center",
+                    va="center",
+                    fontsize=7,
+                    color=color,
+                )
 
     cbar = plt.colorbar(im, ax=ax, shrink=0.8)
     cbar.set_label("Spearman rho")
-    ax.set_title("Pairwise Spearman Correlations\n(sign-aligned: positive = both say 'dangerous')")
+    ax.set_title(
+        "Pairwise Spearman Correlations\n(sign-aligned: positive = both say 'dangerous')"
+    )
 
     fig.tight_layout()
     fig.savefig(str(p), dpi=150)
@@ -693,7 +708,7 @@ def generate_precision_at_k_curves(
 
         probs = sub_sorted[target_column].values
         means = [float(np.mean(probs[:k])) for k in k_range if k <= len(probs)]
-        k_actual = k_range[:len(means)]
+        k_actual = k_range[: len(means)]
 
         color, ls, lw, label = style_map.get(
             col, (None, "-", 1.0, col.replace("dir_sens_", "DS: "))
@@ -731,8 +746,14 @@ def generate_hidden_danger_case_study(
 
     if hidden_lines.empty or df.empty:
         fig, ax = plt.subplots()
-        ax.text(0.5, 0.5, "No hidden-danger lines found", transform=ax.transAxes,
-                ha="center", va="center")
+        ax.text(
+            0.5,
+            0.5,
+            "No hidden-danger lines found",
+            transform=ax.transAxes,
+            ha="center",
+            va="center",
+        )
         fig.savefig(str(p), dpi=150)
         plt.close(fig)
         return p
@@ -798,8 +819,14 @@ def generate_hidden_danger_case_study(
             values.append(float(row[emp_col]))
             colors.append("#212121")
 
-        bars = ax.bar(range(len(values)), values, color=colors, edgecolor="k",
-                      linewidth=0.5, alpha=0.85)
+        bars = ax.bar(
+            range(len(values)),
+            values,
+            color=colors,
+            edgecolor="k",
+            linewidth=0.5,
+            alpha=0.85,
+        )
         ax.set_xticks(range(len(values)))
         ax.set_xticklabels(labels, fontsize=7, rotation=0)
         ax.set_title(line_key, fontsize=9, fontweight="bold")
@@ -808,13 +835,22 @@ def generate_hidden_danger_case_study(
         # Annotate bar values
         for bar_obj, val in zip(bars, values):
             if math.isfinite(val) and val > 0:
-                ax.text(bar_obj.get_x() + bar_obj.get_width() / 2, bar_obj.get_height(),
-                        f"{val:.3f}", ha="center", va="bottom", fontsize=6)
+                ax.text(
+                    bar_obj.get_x() + bar_obj.get_width() / 2,
+                    bar_obj.get_height(),
+                    f"{val:.3f}",
+                    ha="center",
+                    va="bottom",
+                    fontsize=6,
+                )
 
     axes[0].set_ylabel("Value (higher = more dangerous)")
-    fig.suptitle("Hidden-Danger Lines: Conventional metrics say SAFE,\n"
-                 "Stability Radius says DANGEROUS (confirmed by MC)",
-                 fontsize=11, fontweight="bold")
+    fig.suptitle(
+        "Hidden-Danger Lines: Conventional metrics say SAFE,\n"
+        "Stability Radius says DANGEROUS (confirmed by MC)",
+        fontsize=11,
+        fontweight="bold",
+    )
     fig.tight_layout()
     fig.savefig(str(p), dpi=150)
     plt.close(fig)
@@ -838,13 +874,21 @@ def generate_tm_gap_chart(
 
     if wc_df.empty:
         fig, ax = plt.subplots()
-        ax.text(0.5, 0.5, "No worst-case data available", transform=ax.transAxes,
-                ha="center", va="center")
+        ax.text(
+            0.5,
+            0.5,
+            "No worst-case data available",
+            transform=ax.transAxes,
+            ha="center",
+            va="center",
+        )
         fig.savefig(str(p), dpi=150)
         plt.close(fig)
         return p
 
-    tm_canon_cols = [c for c in wc_df.columns if c.startswith("tm_") and c != "tm_worst_case"]
+    tm_canon_cols = [
+        c for c in wc_df.columns if c.startswith("tm_") and c != "tm_worst_case"
+    ]
     if not tm_canon_cols or "tm_worst_case" not in wc_df.columns:
         fig, ax = plt.subplots()
         plt.close(fig)
@@ -852,7 +896,9 @@ def generate_tm_gap_chart(
 
     show = wc_df.copy()
     show["min_canonical_tm"] = show[tm_canon_cols].min(axis=1)
-    show = show.replace([np.inf, -np.inf], np.nan).dropna(subset=["tm_worst_case", "min_canonical_tm"])
+    show = show.replace([np.inf, -np.inf], np.nan).dropna(
+        subset=["tm_worst_case", "min_canonical_tm"]
+    )
     show = show[show["tm_worst_case"] > 0]
     show["gap_ratio"] = show["min_canonical_tm"] / show["tm_worst_case"]
     show = show.nlargest(max_lines, "gap_ratio")
@@ -867,18 +913,34 @@ def generate_tm_gap_chart(
     y_pos = np.arange(len(show))
     bar_h = 0.35
 
-    ax.barh(y_pos - bar_h / 2, show["min_canonical_tm"].values,
-            height=bar_h, color="#1976D2", edgecolor="k", linewidth=0.5,
-            label="Min Canonical TM", alpha=0.85)
-    ax.barh(y_pos + bar_h / 2, show["tm_worst_case"].values,
-            height=bar_h, color="#D32F2F", edgecolor="k", linewidth=0.5,
-            label="Worst-case TM (= Stability Radius)", alpha=0.85)
+    ax.barh(
+        y_pos - bar_h / 2,
+        show["min_canonical_tm"].values,
+        height=bar_h,
+        color="#1976D2",
+        edgecolor="k",
+        linewidth=0.5,
+        label="Min Canonical TM",
+        alpha=0.85,
+    )
+    ax.barh(
+        y_pos + bar_h / 2,
+        show["tm_worst_case"].values,
+        height=bar_h,
+        color="#D32F2F",
+        edgecolor="k",
+        linewidth=0.5,
+        label="Worst-case TM (= Stability Radius)",
+        alpha=0.85,
+    )
 
     ax.set_yticks(y_pos)
     ax.set_yticklabels(show["line_key"].values, fontsize=8)
     ax.set_xlabel("Transfer Margin (MVA)")
-    ax.set_title("Transfer Margin Gap: Canonical directions miss the worst-case\n"
-                 "(sorted by gap ratio, descending)")
+    ax.set_title(
+        "Transfer Margin Gap: Canonical directions miss the worst-case\n"
+        "(sorted by gap ratio, descending)"
+    )
     ax.legend(loc="lower right")
     ax.grid(True, axis="x", alpha=0.3)
 
@@ -888,8 +950,12 @@ def generate_tm_gap_chart(
         if math.isfinite(ratio):
             ax.text(
                 max(row["min_canonical_tm"], row["tm_worst_case"]) * 1.02,
-                i, f"{ratio:.1f}x",
-                va="center", fontsize=7, color="#B71C1C", fontweight="bold",
+                i,
+                f"{ratio:.1f}x",
+                va="center",
+                fontsize=7,
+                color="#B71C1C",
+                fontweight="bold",
             )
 
     fig.tight_layout()
@@ -918,14 +984,23 @@ def generate_danger_decomposition_plot(
 
     if h_matrix is None or df.empty:
         fig, ax = plt.subplots()
-        ax.text(0.5, 0.5, "No h-vectors available", transform=ax.transAxes,
-                ha="center", va="center")
+        ax.text(
+            0.5,
+            0.5,
+            "No h-vectors available",
+            transform=ax.transAxes,
+            ha="center",
+            va="center",
+        )
         fig.savefig(str(p), dpi=150)
         plt.close(fig)
         return p
 
-    line_keys = [k for k in sorted(results.keys())
-                 if k.startswith("line_") and isinstance(results[k], dict)]
+    line_keys = [
+        k
+        for k in sorted(results.keys())
+        if k.startswith("line_") and isinstance(results[k], dict)
+    ]
 
     if len(line_keys) != h_matrix.shape[0]:
         fig, ax = plt.subplots()
@@ -949,7 +1024,11 @@ def generate_danger_decomposition_plot(
         if row_match.empty:
             continue
         emp_prob = float(row_match["empirical_overload_prob"].iloc[0])
-        lr = float(row_match["loading_ratio"].iloc[0]) if "loading_ratio" in row_match.columns else float("nan")
+        lr = (
+            float(row_match["loading_ratio"].iloc[0])
+            if "loading_ratio" in row_match.columns
+            else float("nan")
+        )
 
         if math.isfinite(margin) and math.isfinite(h_norm) and h_norm > 0:
             margins.append(margin)
@@ -991,17 +1070,33 @@ def generate_danger_decomposition_plot(
     def _draw_panel(ax, x_arr, xlabel, title):
         # Non-overloaded lines: gray dots
         if safe_mask.any():
-            ax.scatter(x_arr[safe_mask], h_norms_arr[safe_mask],
-                       c="lightgray", edgecolors="gray", linewidths=0.3,
-                       alpha=0.5, s=40, label="No overload", zorder=2)
+            ax.scatter(
+                x_arr[safe_mask],
+                h_norms_arr[safe_mask],
+                c="lightgray",
+                edgecolors="gray",
+                linewidths=0.3,
+                alpha=0.5,
+                s=40,
+                label="No overload",
+                zorder=2,
+            )
 
         # Overloaded lines: colored by log-scaled probability
         sc = None
         if overloaded.any():
-            sc = ax.scatter(x_arr[overloaded], h_norms_arr[overloaded],
-                            c=emp_probs_arr[overloaded], cmap="YlOrRd",
-                            norm=norm, edgecolors="k", linewidths=0.5,
-                            alpha=0.9, s=80, zorder=3)
+            sc = ax.scatter(
+                x_arr[overloaded],
+                h_norms_arr[overloaded],
+                c=emp_probs_arr[overloaded],
+                cmap="YlOrRd",
+                norm=norm,
+                edgecolors="k",
+                linewidths=0.5,
+                alpha=0.9,
+                s=80,
+                zorder=3,
+            )
             cbar = plt.colorbar(sc, ax=ax)
             cbar.set_label("Empirical overload probability")
 
@@ -1016,8 +1111,11 @@ def generate_danger_decomposition_plot(
                 ax.annotate(
                     f"{ov_keys[idx]}\n({ov_probs[idx]:.1%})",
                     (ov_x[idx], ov_h[idx]),
-                    fontsize=6, fontweight="bold", color="#B71C1C",
-                    textcoords="offset points", xytext=(5, 5),
+                    fontsize=6,
+                    fontweight="bold",
+                    color="#B71C1C",
+                    textcoords="offset points",
+                    xytext=(5, 5),
                     arrowprops=dict(arrowstyle="-", color="gray", lw=0.5),
                 )
 
@@ -1029,9 +1127,12 @@ def generate_danger_decomposition_plot(
         return sc
 
     # Panel 1: margin vs ||h||
-    sc1 = _draw_panel(axes[0], margins_arr,
-                      "Margin (MVA) = S_limit - |S_0|",
-                      "Danger Decomposition: radius = margin / ||h||")
+    sc1 = _draw_panel(
+        axes[0],
+        margins_arr,
+        "Margin (MVA) = S_limit - |S_0|",
+        "Danger Decomposition: radius = margin / ||h||",
+    )
 
     # Draw iso-radius contours
     if len(margins_arr) > 0 and margins_arr.max() > 0 and h_norms_arr.max() > 0:
@@ -1040,31 +1141,213 @@ def generate_danger_decomposition_plot(
             if r_iso > 0 and math.isfinite(r_iso):
                 h_contour = m_range / r_iso
                 valid = h_contour <= h_norms_arr.max() * 1.3
-                axes[0].plot(m_range[valid], h_contour[valid], "--", color="gray",
-                             alpha=0.4, linewidth=0.8)
-                label_idx = np.searchsorted(h_contour[valid],
-                                            h_norms_arr.max() * 0.5)
+                axes[0].plot(
+                    m_range[valid],
+                    h_contour[valid],
+                    "--",
+                    color="gray",
+                    alpha=0.4,
+                    linewidth=0.8,
+                )
+                label_idx = np.searchsorted(h_contour[valid], h_norms_arr.max() * 0.5)
                 if label_idx < len(m_range[valid]):
-                    axes[0].text(m_range[valid][label_idx], h_contour[valid][label_idx],
-                                 f"r={r_iso:.1f}", fontsize=7, color="gray", alpha=0.7)
+                    axes[0].text(
+                        m_range[valid][label_idx],
+                        h_contour[valid][label_idx],
+                        f"r={r_iso:.1f}",
+                        fontsize=7,
+                        color="gray",
+                        alpha=0.7,
+                    )
 
     # Panel 2: loading_ratio vs ||h||
-    _draw_panel(axes[1], lr_arr,
-                "Loading Ratio = |S_0| / S_limit",
-                "Hidden Danger: Low LR does NOT mean safe")
+    _draw_panel(
+        axes[1],
+        lr_arr,
+        "Loading Ratio = |S_0| / S_limit",
+        "Hidden Danger: Low LR does NOT mean safe",
+    )
 
     # Mark the "safe by LR" region
     if any(math.isfinite(lr) for lr in lr_arr):
         axes[1].axvline(x=0.6, color="green", linestyle="--", linewidth=1.5, alpha=0.6)
-        axes[1].text(0.58, h_norms_arr.max() * 0.95, "LR < 0.6\n'safe'",
-                     fontsize=8, color="green", ha="right", va="top")
+        axes[1].text(
+            0.58,
+            h_norms_arr.max() * 0.95,
+            "LR < 0.6\n'safe'",
+            fontsize=8,
+            color="green",
+            ha="right",
+            va="top",
+        )
 
-    fig.suptitle("WHY the Stability Radius catches danger that Loading Ratio misses",
-                 fontsize=12, fontweight="bold", y=1.02)
+    fig.suptitle(
+        "WHY the Stability Radius catches danger that Loading Ratio misses",
+        fontsize=12,
+        fontweight="bold",
+        y=1.02,
+    )
     fig.tight_layout()
     fig.savefig(str(p), dpi=150, bbox_inches="tight")
     plt.close(fig)
     return p
+
+
+def generate_classification_scatter(
+    df: pd.DataFrame,
+    *,
+    metric_columns: list[str],
+    target_col: str = "empirical_overload_prob",
+    output_dir: Path,
+) -> tuple[Path, pd.DataFrame]:
+    """For each predictive metric generate a scatter plot that classifies
+    every line into one of four categories:
+
+    - **TP** (True Positive): metric predicts danger AND MC confirms overload.
+    - **FP** (False Positive): metric predicts danger BUT MC shows no overload.
+    - **FN** (False Negative / Hidden Danger): metric predicts safe BUT MC
+      confirms overload.  These are the lines the metric *misses*.
+    - **TN** (True Negative): metric predicts safe AND MC shows no overload.
+
+    The "danger" threshold for each metric is chosen so that exactly *K*
+    lines are predicted dangerous, where *K* = number of MC-overloaded lines.
+    This makes precision/recall directly comparable across metrics.
+
+    Returns
+    -------
+    (output_dir, classification_df)
+        ``classification_df`` has one row per line and a column per metric
+        with the label TP / FP / FN / TN.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    mc_positive = df[target_col] > 0
+    k = int(mc_positive.sum())
+
+    if k == 0 or df.empty:
+        return output_dir, pd.DataFrame()
+
+    # Exclude a-posteriori metrics that use MC output.
+    skip = {"thermal_risk_index"}
+    predictive = [c for c in metric_columns if c in df.columns and c not in skip]
+
+    # Build classification table for ALL lines.
+    cls_df = df[["line_key", target_col]].copy()
+    cls_df["mc_overloaded"] = mc_positive
+
+    for col in predictive:
+        ascending = col in _NEGATE_FOR_CORRELATION
+        ranked = df[col].rank(ascending=ascending, method="first")
+        predicted_danger = ranked <= k
+        labels = pd.Series("TN", index=df.index)
+        labels[predicted_danger & mc_positive] = "TP"
+        labels[predicted_danger & ~mc_positive] = "FP"
+        labels[~predicted_danger & mc_positive] = "FN"
+        cls_df[f"cls_{col}"] = labels
+        cls_df[col] = df[col]
+
+    # Save full classification table.
+    cls_df.to_csv(output_dir / "classification_all_lines.csv", index=False)
+
+    # ---------- per-metric scatter plots ----------
+    colors = {"TP": "#4CAF50", "FP": "#FF9800", "FN": "#E53935", "TN": "#BDBDBD"}
+    labels_nice = {
+        "TP": "True Positive (danger confirmed)",
+        "FP": "False Positive (false alarm)",
+        "FN": "False Negative (missed danger)",
+        "TN": "True Negative (safe confirmed)",
+    }
+
+    for col in predictive:
+        cls_col = f"cls_{col}"
+        ascending = col in _NEGATE_FOR_CORRELATION
+
+        fig, ax = plt.subplots(figsize=(9, 7))
+
+        # Draw points by category (TN first so they stay behind).
+        for cat in ["TN", "FP", "FN", "TP"]:
+            mask = cls_df[cls_col] == cat
+            if not mask.any():
+                continue
+            size = 30 if cat == "TN" else 70
+            alpha = 0.4 if cat == "TN" else 0.85
+            ax.scatter(
+                cls_df.loc[mask, col],
+                cls_df.loc[mask, target_col],
+                c=colors[cat],
+                s=size,
+                alpha=alpha,
+                edgecolors="k" if cat != "TN" else "gray",
+                linewidths=0.4,
+                label=labels_nice[cat],
+                zorder=2 if cat == "TN" else 3,
+            )
+
+        # Draw threshold line.
+        threshold_vals = df[col].sort_values(ascending=ascending)
+        threshold = float(threshold_vals.iloc[k - 1])
+        ax.axvline(
+            x=threshold,
+            color="#1565C0",
+            linestyle="--",
+            linewidth=1.5,
+            alpha=0.7,
+        )
+        side = "left" if ascending else "right"
+        ax.text(
+            threshold,
+            ax.get_ylim()[1] * 0.95,
+            f"  top-{k} threshold",
+            fontsize=8,
+            color="#1565C0",
+            ha="left" if ascending else "right",
+            va="top",
+        )
+
+        # Label FN lines (hidden dangers).
+        fn_mask = cls_df[cls_col] == "FN"
+        fn_rows = cls_df[fn_mask].nlargest(5, target_col)
+        for _, row in fn_rows.iterrows():
+            ax.annotate(
+                row["line_key"],
+                (row[col], row[target_col]),
+                fontsize=6,
+                color="#B71C1C",
+                fontweight="bold",
+                textcoords="offset points",
+                xytext=(5, 5),
+                arrowprops=dict(arrowstyle="-", color="gray", lw=0.5),
+            )
+
+        # Confusion matrix counts in legend title.
+        tp = int((cls_df[cls_col] == "TP").sum())
+        fp = int((cls_df[cls_col] == "FP").sum())
+        fn = int((cls_df[cls_col] == "FN").sum())
+        tn = int((cls_df[cls_col] == "TN").sum())
+        precision = tp / max(tp + fp, 1)
+        recall = tp / max(tp + fn, 1)
+
+        col_label = col.replace("_", " ").title()
+        direction = "(lower = danger)" if ascending else "(higher = danger)"
+        ax.set_xlabel(f"{col_label} {direction}")
+        ax.set_ylabel("Empirical Overload Probability (MC)")
+        ax.set_title(
+            f"Classification by {col_label}\n"
+            f"TP={tp}  FP={fp}  FN={fn}  TN={tn}"
+            f"  |  Precision={precision:.0%}  Recall={recall:.0%}"
+        )
+        ax.legend(loc="upper right", fontsize=7, framealpha=0.9)
+        ax.grid(True, alpha=0.2)
+
+        fig.tight_layout()
+        fig.savefig(
+            str(output_dir / f"classification_{col}.png"),
+            dpi=150,
+            bbox_inches="tight",
+        )
+        plt.close(fig)
+
+    return output_dir, cls_df
 
 
 def generate_summary_comparison_table(
@@ -1091,24 +1374,44 @@ def generate_summary_comparison_table(
 
         # Compute precision-at-3 and precision-at-5
         if metric in df.columns:
-            sub = df[[metric, "empirical_overload_prob"]].replace(
-                [np.inf, -np.inf], np.nan
-            ).dropna()
+            sub = (
+                df[[metric, "empirical_overload_prob"]]
+                .replace([np.inf, -np.inf], np.nan)
+                .dropna()
+            )
             ascending = metric in _NEGATE_FOR_CORRELATION
             sub_sorted = sub.sort_values(metric, ascending=ascending)
-            p3 = float(sub_sorted.head(min(3, len(sub_sorted)))["empirical_overload_prob"].mean()) if not sub_sorted.empty else float("nan")
-            p5 = float(sub_sorted.head(min(5, len(sub_sorted)))["empirical_overload_prob"].mean()) if not sub_sorted.empty else float("nan")
+            p3 = (
+                float(
+                    sub_sorted.head(min(3, len(sub_sorted)))[
+                        "empirical_overload_prob"
+                    ].mean()
+                )
+                if not sub_sorted.empty
+                else float("nan")
+            )
+            p5 = (
+                float(
+                    sub_sorted.head(min(5, len(sub_sorted)))[
+                        "empirical_overload_prob"
+                    ].mean()
+                )
+                if not sub_sorted.empty
+                else float("nan")
+            )
         else:
             p3 = float("nan")
             p5 = float("nan")
 
-        summary_rows.append({
-            "metric": metric,
-            "spearman_rho": float(rho) if math.isfinite(float(rho)) else None,
-            "p_value": float(pval) if math.isfinite(float(pval)) else None,
-            "precision_at_3": p3,
-            "precision_at_5": p5,
-        })
+        summary_rows.append(
+            {
+                "metric": metric,
+                "spearman_rho": float(rho) if math.isfinite(float(rho)) else None,
+                "p_value": float(pval) if math.isfinite(float(pval)) else None,
+                "precision_at_3": p3,
+                "precision_at_5": p5,
+            }
+        )
 
     summary_df = pd.DataFrame(summary_rows)
     summary_path = output_dir / "summary_metric_comparison.csv"
@@ -1123,11 +1426,17 @@ def generate_summary_comparison_table(
         radius_col = "radius_ac_l2"
         if radius_col in df.columns:
             all_ranked = df.copy()
-            all_ranked["rank_by_radius"] = all_ranked[radius_col].rank(ascending=True, method="min")
+            all_ranked["rank_by_radius"] = all_ranked[radius_col].rank(
+                ascending=True, method="min"
+            )
             if "loading_ratio" in all_ranked.columns:
-                all_ranked["rank_by_loading_ratio"] = all_ranked["loading_ratio"].rank(ascending=False, method="min")
+                all_ranked["rank_by_loading_ratio"] = all_ranked["loading_ratio"].rank(
+                    ascending=False, method="min"
+                )
             if "performance_index" in all_ranked.columns:
-                all_ranked["rank_by_perf_index"] = all_ranked["performance_index"].rank(ascending=False, method="min")
+                all_ranked["rank_by_perf_index"] = all_ranked["performance_index"].rank(
+                    ascending=False, method="min"
+                )
 
             detail = all_ranked[all_ranked["line_key"].isin(hd_keys)]
 
@@ -1185,18 +1494,10 @@ def _generate_canonical_transfer_directions(
         bus_p = np.asarray(bus_p_mw_raw, dtype=float)
 
         # Sort non-slack buses by injection: generators > 0, loads < 0
-        non_slack = [
-            (i, bus_p[i])
-            for i in range(n_bus)
-            if bus_ids[i] != slack_bus_id
-        ]
+        non_slack = [(i, bus_p[i]) for i in range(n_bus) if bus_ids[i] != slack_bus_id]
 
-        gens = sorted(
-            [(i, p) for i, p in non_slack if p > 0], key=lambda x: -x[1]
-        )
-        loads = sorted(
-            [(i, p) for i, p in non_slack if p < 0], key=lambda x: x[1]
-        )
+        gens = sorted([(i, p) for i, p in non_slack if p > 0], key=lambda x: -x[1])
+        loads = sorted([(i, p) for i, p in non_slack if p < 0], key=lambda x: x[1])
 
         # Direction 1: max gen -> max load
         if gens and loads and gens[0][0] != loads[0][0]:
@@ -1299,6 +1600,34 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--sigma-q", type=float, default=1.0, help="Per-bus sigma_q_mvar (uniform)"
     )
     parser.add_argument(
+        "--sigma-p-scale",
+        type=float,
+        default=None,
+        help=(
+            "If set, overrides --sigma-p with load-proportional sigma: "
+            "sigma_p[i] = max(sigma_p_min, load_p[i] * scale). "
+            "E.g. --sigma-p-scale 0.05 uses 5%% of bus load as std-dev."
+        ),
+    )
+    parser.add_argument(
+        "--sigma-p-min",
+        type=float,
+        default=1.0,
+        help="Minimum sigma_p_mw per bus when using --sigma-p-scale (default 1.0 MW)",
+    )
+    parser.add_argument(
+        "--sigma-q-scale",
+        type=float,
+        default=None,
+        help="Like --sigma-p-scale but for Q: sigma_q[i] = max(sigma_q_min, load_q[i] * scale)",
+    )
+    parser.add_argument(
+        "--sigma-q-min",
+        type=float,
+        default=1.0,
+        help="Minimum sigma_q_mvar per bus when using --sigma-q-scale (default 1.0 MVAr)",
+    )
+    parser.add_argument(
         "--mc-samples",
         type=int,
         default=10000,
@@ -1349,17 +1678,73 @@ def main(argv: list[str] | None = None) -> int:
         del _net
 
     # ------------------------------------------------------------------
+    # Build per-bus sigma arrays (uniform or load-proportional)
+    # ------------------------------------------------------------------
+    from stability_radius.parsers.matpower import load_network as _load_net_sigma
+
+    _net_sigma = _load_net_sigma(Path(args.input).expanduser().resolve())
+    n_bus_total = int(len(_net_sigma.bus))
+
+    # Sum load at each bus once (used for both P and Q scale modes)
+    bus_load_p = _net_sigma.load.groupby("bus")["p_mw"].sum().reindex(
+        _net_sigma.bus.index, fill_value=0.0
+    )
+    bus_load_q = _net_sigma.load.groupby("bus")["q_mvar"].sum().reindex(
+        _net_sigma.bus.index, fill_value=0.0
+    )
+
+    if args.sigma_p_scale is not None:
+        scale_p = float(args.sigma_p_scale)
+        min_p = float(args.sigma_p_min)
+        sigma_p_array = np.maximum(min_p, bus_load_p.values * scale_p)
+        logger.info(
+            "Load-proportional sigma_p: scale=%.2f, min=%.1f -> range [%.2f, %.2f] MW",
+            scale_p, min_p, float(sigma_p_array.min()), float(sigma_p_array.max()),
+        )
+    else:
+        sigma_p_array = None
+
+    if args.sigma_q_scale is not None:
+        scale_q = float(args.sigma_q_scale)
+        min_q = float(args.sigma_q_min)
+        sigma_q_array = np.maximum(min_q, bus_load_q.values * scale_q)
+        logger.info(
+            "Load-proportional sigma_q: scale=%.2f, min=%.1f -> range [%.2f, %.2f] MVAr",
+            scale_q, min_q, float(sigma_q_array.min()), float(sigma_q_array.max()),
+        )
+    elif sigma_p_array is not None:
+        # Q uniform when only P scale is given
+        sigma_q_array = np.full(n_bus_total, float(args.sigma_q))
+    else:
+        sigma_q_array = None
+
+    sigma_p_for_radius = sigma_p_array if sigma_p_array is not None else np.full(n_bus_total, float(args.sigma_p))
+    sigma_q_for_radius = sigma_q_array if sigma_q_array is not None else np.full(n_bus_total, float(args.sigma_q))
+    del _net_sigma
+
+    # ------------------------------------------------------------------
     # Step 1: Compute radii (with h-vectors for directional analysis)
     # ------------------------------------------------------------------
     logger.info("Step 1/5: Computing stability radii ...")
-    ac_ext = ACExtensionsConfig(
-        sigma_p_mw_source="uniform",
-        sigma_q_mvar_source="uniform",
-        sigma_p_mw_uniform=float(args.sigma_p),
-        sigma_q_mvar_uniform=float(args.sigma_q),
-        metric_enabled=True,
-        save_h_vectors=True,
-    )
+    _use_nonuniform = sigma_p_array is not None or sigma_q_array is not None
+    if _use_nonuniform:
+        ac_ext = ACExtensionsConfig(
+            sigma_p_mw_source="uc_jl",
+            sigma_q_mvar_source="uc_jl",
+            sigma_p_mw_array=sigma_p_for_radius.tolist(),
+            sigma_q_mvar_array=sigma_q_for_radius.tolist(),
+            metric_enabled=True,
+            save_h_vectors=True,
+        )
+    else:
+        ac_ext = ACExtensionsConfig(
+            sigma_p_mw_source="uniform",
+            sigma_q_mvar_source="uniform",
+            sigma_p_mw_uniform=float(args.sigma_p),
+            sigma_q_mvar_uniform=float(args.sigma_q),
+            metric_enabled=True,
+            save_h_vectors=True,
+        )
     results = compute_results_for_case(
         input_path=str(args.input),
         slack_bus=slack_bus,
@@ -1423,8 +1808,8 @@ def main(argv: list[str] | None = None) -> int:
         slack_bus=slack_bus,
         n_samples=int(args.mc_samples),
         seed=int(args.mc_seed),
-        ac_sigma_p_mw=float(args.sigma_p),
-        ac_sigma_q_mvar=float(args.sigma_q),
+        ac_sigma_p_mw=sigma_p_for_radius,
+        ac_sigma_q_mvar=sigma_q_for_radius,
         ac_pf_solver="pandapower",
         ac_lossless=True,
         ac_basepoint_s_tol_mva=0.01,
@@ -1599,21 +1984,38 @@ def main(argv: list[str] | None = None) -> int:
 
     # --- Advanced artifacts ---
     generate_pairwise_correlation_heatmap(
-        df, metric_columns=metric_cols, output_dir=output_dir,
+        df,
+        metric_columns=metric_cols,
+        output_dir=output_dir,
     )
     generate_precision_at_k_curves(
-        df, metric_columns=metric_cols, output_dir=output_dir,
+        df,
+        metric_columns=metric_cols,
+        output_dir=output_dir,
     )
     generate_hidden_danger_case_study(
-        df, hidden_lines=hidden_lr, output_dir=output_dir,
+        df,
+        hidden_lines=hidden_lr,
+        output_dir=output_dir,
     )
     if not wc_df.empty:
         generate_tm_gap_chart(wc_df, output_dir=output_dir)
     generate_danger_decomposition_plot(
-        df, results=results, h_matrix=h_matrix, output_dir=output_dir,
+        df,
+        results=results,
+        h_matrix=h_matrix,
+        output_dir=output_dir,
     )
     generate_summary_comparison_table(
-        df, hidden_lines_lr=hidden_lr, corr_df=corr_df, output_dir=output_dir,
+        df,
+        hidden_lines_lr=hidden_lr,
+        corr_df=corr_df,
+        output_dir=output_dir,
+    )
+    generate_classification_scatter(
+        df,
+        metric_columns=metric_cols,
+        output_dir=output_dir,
     )
 
     # ------------------------------------------------------------------
@@ -1671,17 +2073,27 @@ def main(argv: list[str] | None = None) -> int:
     if not wc_df.empty:
         print("=== Worst-case direction verification (sample) ===")
         # Show lines where canonical TMs are large but worst-case TM is small
-        tm_canon_cols = [c for c in wc_df.columns if c.startswith("tm_") and c != "tm_worst_case"]
+        tm_canon_cols = [
+            c for c in wc_df.columns if c.startswith("tm_") and c != "tm_worst_case"
+        ]
         if tm_canon_cols:
             wc_show = wc_df.copy()
             wc_show["min_canonical_tm"] = wc_show[tm_canon_cols].min(axis=1)
-            wc_show["canonical_vs_worst"] = wc_show["min_canonical_tm"] / wc_show["tm_worst_case"].replace(0, np.nan)
+            wc_show["canonical_vs_worst"] = wc_show["min_canonical_tm"] / wc_show[
+                "tm_worst_case"
+            ].replace(0, np.nan)
             # Show lines where canonical TM >> worst-case TM (ratio > 2)
-            interesting = wc_show[
-                wc_show["canonical_vs_worst"] > 2.0
-            ].nsmallest(10, "tm_worst_case")
+            interesting = wc_show[wc_show["canonical_vs_worst"] > 2.0].nsmallest(
+                10, "tm_worst_case"
+            )
             if not interesting.empty:
-                show_cols = ["line_key", "radius_ac_l2", "tm_worst_case", "min_canonical_tm", "canonical_vs_worst"]
+                show_cols = [
+                    "line_key",
+                    "radius_ac_l2",
+                    "tm_worst_case",
+                    "min_canonical_tm",
+                    "canonical_vs_worst",
+                ]
                 print(interesting[show_cols].to_string(index=False))
                 print(
                     "\n  (canonical_vs_worst > 1 means canonical transfer directions"
