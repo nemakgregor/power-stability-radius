@@ -263,3 +263,33 @@ def test_ac_fpf_lossless_mode() -> None:
 
     assert result.status == "PP_OPP_OK"
     assert result.v_mag_pu.shape == (3,)
+
+
+def test_ac_fpf_line_limit_setup_uses_deterministic_surrogates() -> None:
+    from stability_radius.base_point.pandapower_opp import _set_line_thermal_limits
+
+    net, _ = _make_3bus_net()
+    net.line.loc[:, "max_loading_percent"] = np.nan
+    net.line.loc[:, "max_i_ka"] = 0.0
+
+    _set_line_thermal_limits(net)
+
+    assert np.allclose(net.line["max_loading_percent"].to_numpy(dtype=float), 100.0)
+    assert np.allclose(net.line["max_i_ka"].to_numpy(dtype=float), 100.0)
+
+
+def test_ac_fpf_generator_defaults_are_deterministic_when_bounds_are_missing() -> None:
+    from stability_radius.base_point.pandapower_opp import _setup_gen_for_opp
+
+    net, _ = _make_3bus_net()
+    gid = int(sorted(net.gen.index)[0])
+    net.gen.at[gid, "max_p_mw"] = float("nan")
+    net.gen.at[gid, "min_q_mvar"] = float("nan")
+    net.gen.at[gid, "max_q_mvar"] = float("nan")
+
+    pg0_map = _setup_gen_for_opp(net, pg0_source="case")
+
+    assert net.gen.at[gid, "max_p_mw"] == pytest.approx(100.0)
+    assert net.gen.at[gid, "min_q_mvar"] == pytest.approx(-999.0)
+    assert net.gen.at[gid, "max_q_mvar"] == pytest.approx(999.0)
+    assert pg0_map[f"gen_{gid}"] == pytest.approx(5.0)

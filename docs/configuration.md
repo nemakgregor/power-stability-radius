@@ -215,6 +215,7 @@ the ultimate fallback when YAML values are missing.
 @dataclass(frozen=True)
 class LoggingConfig:
     runs_dir: str = "runs"
+    module_name: str = "general"
     level_console: str = "INFO"
     level_file: str = "DEBUG"
     run_dir_mode: str = "timestamp"   # "timestamp" | "overwrite"
@@ -227,7 +228,7 @@ class LoggingConfig:
 @dataclass(frozen=True)
 class HiGHSConfig:
     solver_name: str = "highs"
-    threads: int = 14
+    threads: int = 4
     random_seed: int = 42
     user_objective_scale: int = -1
     user_bound_scale: int = -10
@@ -327,7 +328,7 @@ class ACFPFConfig:
 | Runs directory | `logging.runs_dir` | `--runs-dir` | str | `"runs"` | Base directory for run output folders |
 | Console log level | `logging.level_console` | `--log-level` | str | `"INFO"` | Python logging level for console output |
 | File log level | `logging.level_file` | `--log-file-level` | str | `"DEBUG"` | Python logging level for the run log file |
-| Run directory mode | `logging.run_dir_mode` | `--run-dir-mode` | str | `"timestamp"` | `"timestamp"`: create `runs/<timestamp>/`. `"overwrite"`: create/recreate `runs/<run_name>/` |
+| Run directory mode | `logging.run_dir_mode` | `--run-dir-mode` | str | `"timestamp"` | `"timestamp"`: create `runs/<module>/<timestamp>/`. `"overwrite"`: create/recreate `runs/<module>/<run_name>/` |
 | Run name | `logging.run_name` | `--run-name` | str | `"latest"` | Folder name when `run_dir_mode="overwrite"` |
 | Run tests | `run_tests` | `--run-tests` | int | `1` | If 1, run the test suite before the main command |
 
@@ -345,7 +346,7 @@ The DC OPF is used only when `base_dispatch=dc_opf`.
 | Parameter | YAML key | CLI flag | Type | Default | Effect | Notes |
 |-----------|----------|----------|------|---------|--------|-------|
 | Solver name | `opf.solver_name` | `--opf-solver-name` | str | `"highs"` | Must be `"highs"`. Project policy. | Do not change. |
-| Threads | `opf.threads` | `--opf-threads` | int | `1` (YAML) / `14` (Python) | Number of HiGHS solver threads. | **[determinism-critical]** Use 1 for reproducibility. More threads can change LP pivot order. |
+| Threads | `opf.threads` | `--opf-threads` | int | `4` | Number of HiGHS solver threads. | Performance-oriented default. Use `1` for the strictest reproducibility. |
 | Random seed | `opf.random_seed` | `--opf-random-seed` | int | `42` | HiGHS random seed for tie-breaking. | **[determinism-critical]** |
 | Headroom factor | `opf.headroom_factor` | `--opf-headroom-factor` | float | `0.98` | Fraction of thermal capacity used as OPF line constraint. `0.98` means 2% security margin. | **[determinism-critical]** Valid range: (0, 1]. Values below ~0.90 can cause OPF infeasibility on tight networks. |
 | Unconstrained line limit | `opf.unconstrained_line_nom_mw` | `--opf-unconstrained-line-nom-mw` | float | `1e5` | Surrogate finite thermal limit (MW) for lines with `rateA=0/inf/NaN`. PyPSA requires finite limits. | **[determinism-critical]** Must match `DEFAULT_UNCONSTRAINED_LINE_NOM_MW` in Python. |
@@ -554,7 +555,7 @@ compute:
 
 allow_download: true
 data_dir: data/input
-output_dir: experiments/output/test_run_6
+output_dir: runs/run_pglib_sweep/test_run_6
 case_timeout_sec: 1200
 ```
 
@@ -655,7 +656,7 @@ compute:
 
 opf:
   headroom_factor: 0.95
-  threads: 1
+  threads: 4
 ```
 
 ### DC extensions (probabilistic + N-1)
@@ -743,7 +744,7 @@ Tune them based on your system and network size.
 | `ac_fpf.max_attempts` | Each attempt runs a full PDIPM solve. With 3 attempts and 240s timeout, worst case is ~12 minutes. | Use 1 for fast runs; 3 for robust convergence on hard networks. |
 | `ac_fpf.per_attempt_timeout` | Prevents a single slow PDIPM solve from blocking the entire pipeline. | Set to 120--240s for production runs. |
 | `ac_fpf.max_iteration` | More iterations mean longer solves but better convergence. | 300 is a good default. Increase to 500 for challenging networks (PEGASE). |
-| `opf.threads` | More threads can speed up the LP but may change the solution due to non-deterministic parallel pivoting. | Use 1 for reproducibility, more for speed. |
+| `opf.threads` | More threads can speed up the LP but may change the solution due to non-deterministic parallel pivoting. | Default `4` is a speed/consistency trade-off; use `1` for the strictest reproducibility. |
 
 ### Convergence
 

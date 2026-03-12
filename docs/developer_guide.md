@@ -219,7 +219,7 @@ def compute_baseline_metrics(results: dict) -> dict:
 2. **Create experiment config** in `experiments/configs/my_experiment.yaml`
 
 3. **Follow conventions**:
-   - Save outputs to `experiments/output/<name>/`
+   - Save outputs to `runs/<module>/<name>/` (or directly `runs/<module>/`)
    - Include `debug.log` with detailed logs
    - Save `summary.json` for aggregated results
    - Generate `.png` and `.pdf` versions of plots

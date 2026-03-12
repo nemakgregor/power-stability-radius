@@ -1117,6 +1117,7 @@ def compute_results_for_case(
     ac_pf_status = "n/a"
     ac_pf_attempt = "n/a"
     ac_pf_repairs: list[str] = []
+    ac_distributed_slack_used = False
     ac_sigma_computed = False
     ac_metric_computed = False
     ac_feasibility: ACFeasibilityResult | None = None
@@ -1152,6 +1153,7 @@ def compute_results_for_case(
                 ac_pf_status = str(bp_ac.status)
                 ac_pf_attempt = str(bp_ac.pf_attempt)
                 ac_pf_repairs = list(bp_ac.pf_repairs)
+                ac_distributed_slack_used = bool(bp_ac.distributed_slack_used)
             else:
                 with log_stage(
                     logger,
@@ -1174,6 +1176,7 @@ def compute_results_for_case(
                     ac_pf_status = str(bp_ac.status)
                     ac_pf_attempt = str(bp_ac.pf_attempt)
                     ac_pf_repairs = list(bp_ac.pf_repairs)
+                    ac_distributed_slack_used = bool(bp_ac.distributed_slack_used)
         except Exception:
             logger.warning(
                 "%s: AC power flow failed to converge; "
@@ -1357,7 +1360,8 @@ def compute_results_for_case(
                 "pf_solver": str(ac_pf_solver),
                 "pf_init": str(ac_pf_init),
                 "lossless": bool(ac_lossless),
-                "distributed_slack": bool(ac_distributed_slack),
+                "distributed_slack_requested": bool(ac_distributed_slack),
+                "distributed_slack": bool(ac_distributed_slack_used),
                 "trafo_model": str(ac_trafo_model),
                 "chunk_size": int(ac_chunk_size),
                 "balance": bool(ac_balance),

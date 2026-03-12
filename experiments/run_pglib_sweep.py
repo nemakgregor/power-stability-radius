@@ -3,7 +3,7 @@
 Reads ``experiments/configs/pglib_sweep.yaml``, computes DC and AC L2 radii
 for each listed PGLib case, and produces:
 
-- Per-case JSON results in ``experiments/output/pglib_sweep/``
+- Per-case JSON results in ``runs/run_pglib_sweep/``
 - ``summary.json`` with aggregated metrics
 - **Table 1** (printed to stdout): case, n_b, n_l, r*_DC, r*_AC, AC/DC, time, bottleneck
 - **Fig. 1** (saved as PNG): bar chart comparing r*_DC and r*_AC across cases
@@ -40,6 +40,7 @@ import yaml  # noqa: E402
 
 from stability_radius.config import OPFConfig
 from stability_radius.parsers.matpower import load_network
+from stability_radius.utils import create_module_output_dir
 from stability_radius.utils.download import ensure_case_file
 from stability_radius.workflows import (
     DCExtensionsConfig,
@@ -720,7 +721,10 @@ def run(config_path: Path, reuse_dir: Path | None = None) -> None:
     cases = cfg["cases"]
     compute_cfg = cfg.get("compute", {})
     data_dir = Path(cfg.get("data_dir", "data/input"))
-    output_dir = Path(cfg.get("output_dir", "experiments/output/pglib_sweep"))
+    output_dir = create_module_output_dir(
+        module_name="run_pglib_sweep",
+        requested_output_dir=cfg.get("output_dir", None),
+    )
     allow_download = bool(cfg.get("allow_download", False))
     case_timeout = int(cfg.get("case_timeout_sec", 900))
 

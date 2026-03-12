@@ -130,9 +130,9 @@ CLI‑флаги имеют приоритет над YAML.
 
 ## Артефакты запуска (run directory)
 
-Каждая команда создаёт директорию в `runs/` (см. `logging.run_dir_mode`):
-- `runs/<timestamp>/` (по умолчанию) или
-- `runs/<run_name>/` (overwrite)
+Каждая команда создаёт директорию в `runs/<module>/` (см. `logging.run_dir_mode`):
+- `runs/<module>/<timestamp>/` (по умолчанию) или
+- `runs/<module>/<run_name>/` (overwrite)
 
 Типичные файлы:
 - `run.log`

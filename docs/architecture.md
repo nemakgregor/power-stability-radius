@@ -119,7 +119,7 @@ The central function `compute_results_for_case()` orchestrates the entire comput
 
 | Module | Responsibility |
 |---|---|
-| `matpower.py` | Parse MATPOWER `.m` files into pandapower networks. Uses `pandapower.converter.from_mpc()` with a fallback to regex-based parsing for edge cases |
+| `matpower.py` | Parse MATPOWER `.m` files into pandapower networks. Uses the repository's deterministic MATPOWER parser and converts PPC -> pandapower via `from_ppc()` |
 | `uc_jl.py` | Parse UnitCommitment.jl JSON instance files to extract per-bus sigma arrays from hourly demand data |
 
 The parsers have no dependency on the radius computation modules and produce standard pandapower network objects or NumPy arrays. See [data_formats.md](data_formats.md) for input file schemas.
@@ -142,7 +142,7 @@ Computes the operating point around which the stability radius is certified.
 
 **BasePointDC fields:** `bus_ids`, `bus_injections_mw`, `line_ids`, `line_flows_mw`, `line_limits_mw`, `gen_dispatch_mw_by_name`, `status`, `objective`.
 
-**BasePointAC fields:** `bus_ids`, `vm_pu`, `va_rad`, `line_ids`, `p_from_mw`, `q_from_mvar`, `p_to_mw`, `q_to_mvar`, `s_limit_mva`, `pf_solver`, `pf_init`, `lossless`, `pf_attempt`, `pf_repairs`.
+**BasePointAC fields:** `bus_ids`, `vm_pu`, `va_rad`, `line_ids`, `p_from_mw`, `q_from_mvar`, `p_to_mw`, `q_to_mvar`, `s_limit_mva`, `pf_solver`, `pf_init`, `lossless`, `pf_attempt`, `pf_repairs`, `distributed_slack_requested`, `distributed_slack_used`.
 
 ### 1.7 DC Model (`dc/dc_model.py`)
 
@@ -667,7 +667,9 @@ All network data is converted to pandapower's internal format (`pandapowerNet`) 
 - Access to pandapower's AC power flow solver (`runpp`), optimal power flow (`runopp`), and network manipulation utilities.
 - Consistent bus/line indexing across all downstream modules.
 
-The conversion from MATPOWER uses `pandapower.converter.from_mpc()` with a regex-based fallback parser for cases where the standard converter fails.
+The MATPOWER import path is deterministic: the repository parses the `.m` file
+into a PPC structure and then calls pandapower's `from_ppc()` converter. There
+is no optional runtime fallback chain here.
 
 ### 7.2 Sparse LU Factorization for O(n) Solves
 
@@ -691,7 +693,12 @@ AC thermal limits can be binding at either the from-end or the to-end of a line 
 
 ### 7.7 Deterministic Configuration Propagation
 
-The project enforces a "determinism contract": certain parameters (e.g., `unconstrained_line_nom_mw`, Monte Carlo `seed`) must be identical whether the code is invoked programmatically (via `DEFAULT_*` singletons) or via CLI/YAML. The `config.py` module documents these contracts explicitly, and the CLI injects YAML-derived values into the same dataclass constructors used by the library API.
+The project enforces a "determinism contract": certain parameters (for example
+`opf.threads`, `unconstrained_line_nom_mw`, Monte Carlo `seed`) must be
+identical whether the code is invoked programmatically (via `DEFAULT_*`
+singletons) or via CLI/YAML. The `config.py` module documents these contracts
+explicitly, and the CLI injects YAML-derived values into the same dataclass
+constructors used by the library API.
 
 ### 7.8 Immutable Results Pipeline
 

@@ -1,13 +1,13 @@
 """Aggregate experiment JSON outputs into a CSV summary table.
 
-Scans ``experiments/output/`` subdirectories for ``summary.json`` and
+Scans ``runs/`` subdirectories for ``summary.json`` and
 per-case result JSON files, then produces a single CSV suitable for
 inclusion in the paper.
 
 Usage::
 
     python -m experiments.collect_results
-    python -m experiments.collect_results --output-dir experiments/output --csv experiments/output/all_results.csv
+    python -m experiments.collect_results --output-dir runs --csv runs/collect_results/all_results.csv
 """
 
 from __future__ import annotations
@@ -19,10 +19,12 @@ import logging
 from pathlib import Path
 
 import numpy as np
+from stability_radius.utils import create_module_output_dir
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_OUTPUT_DIR = Path("experiments/output")
+_DEFAULT_OUTPUT_DIR = Path("runs")
+_DEFAULT_CSV_PATH = Path("runs/collect_results/all_results.csv")
 
 
 def _load_json(path: Path) -> dict | list:
@@ -152,11 +154,15 @@ def main() -> None:
     parser.add_argument(
         "--csv",
         type=Path,
-        default=_DEFAULT_OUTPUT_DIR / "all_results.csv",
+        default=_DEFAULT_CSV_PATH,
         help="Path for the output CSV file.",
     )
     args = parser.parse_args()
-    collect(args.output_dir, args.csv)
+    csv_dir = create_module_output_dir(
+        module_name="collect_results",
+        requested_output_dir=args.csv.parent,
+    )
+    collect(args.output_dir, csv_dir / args.csv.name)
 
 
 if __name__ == "__main__":

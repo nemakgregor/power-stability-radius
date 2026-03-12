@@ -41,7 +41,9 @@ Verification is provided through:
 | [data_formats.md](data_formats.md) | Input file schemas (MATPOWER, UnitCommitment.jl), output JSON structure, CSV/plots |
 | [configuration.md](configuration.md) | YAML config system, all parameters, defaults, and interactions |
 | [execution_flow.md](execution_flow.md) | End-to-end execution traces for CLI commands, experiment scripts, and entry points |
+| [reproducibility_and_fallbacks.md](reproducibility_and_fallbacks.md) | Deterministic repair paths, surrogate values, tie-break rules, and how they are surfaced in metadata |
 | [experiments_and_evaluation.md](experiments_and_evaluation.md) | Experimental pipeline, benchmark cases, metrics, and reproducibility procedures |
+| [n1_demo.md](n1_demo.md) | Three-regime `n1_stability_demo` workflow: Cost OPF vs Radius OPF vs screening-based SCOPF |
 | [developer_guide.md](developer_guide.md) | Extension points, coding conventions, adding new algorithms/metrics/parsers |
 | [limitations_and_assumptions.md](limitations_and_assumptions.md) | Mathematical and implementation assumptions, scalability, known limitations |
 | [metrics.md](metrics.md) | Complete reference for all metrics: formulas, inputs, predictive vs a posteriori classification |
@@ -110,3 +112,20 @@ poetry run python src/power_stability_radius.py \
 python -m experiments.run_pglib_sweep
 python -m experiments.run_sigma_radius --config experiments/configs/sigma_case2000_goc.yaml
 ```
+
+### Run the three-regime N-1 demo
+
+```bash
+python -m stability_radius.n1_stability_demo \
+    --input data/input/pglib_opf_case118_ieee.m \
+    --output-dir n1_demo_case118 \
+    --n-iter 2 \
+    --scopf-iter 2
+```
+
+Artifacts are written to `runs/n1_stability_demo/n1_demo_case118/`. See
+[n1_demo.md](n1_demo.md) for the output files, plots, and the interpretation of
+proxy headroom, post-PF current-loading diagnostics, pandapower's
+apparent-power OPF branch constraints, and the new proxy-vs-OPF limit
+consistency check against the reconstructed pandapower line-limit model in this
+demo.

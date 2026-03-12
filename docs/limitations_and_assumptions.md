@@ -110,7 +110,7 @@ All arrays are indexed according to `sorted(net.bus.index)` and `sorted(net.line
 While the code handles multiple ext_grids with a warning, it fundamentally assumes **one slack bus**:
 - The reduced system eliminates exactly one bus
 - The Jacobian has n_bus - 1 equations
-- Multiple ext_grids are disambiguated by choosing the first one
+- Multiple ext_grids are disambiguated by choosing the smallest in-service ext_grid bus id
 
 ### 2.5 PQ and PV Bus Classification (Confirmed - AC Only)
 
@@ -228,7 +228,7 @@ The code validates that voltage angles are in radians (max|va| < 10). This guard
 | Storage elements | Not supported | Not included in dispatch model |
 | Switched shunts | Partially | Disabled under lossless policy |
 | Generator reactive limits | Not modeled | PV buses stay PV (no Q-limit switching) |
-| Multiple slack buses | Partial | Uses first ext_grid bus only |
+| Multiple slack buses | Partial | Uses smallest in-service ext_grid bus id |
 | Contingency analysis beyond N-1 | Not implemented | Only single-line outages |
 | Time-series analysis | Not implemented | Operates on a single snapshot |
 | Voltage stability | Not addressed | Only thermal limits considered |
@@ -247,7 +247,10 @@ If the base point is obtained from a dispatch (e.g., DC OPF) that doesn't fully 
 
 ### 7.3 Parser Failures
 
-The MATPOWER parser has a primary path (pandapower's `from_mpc()`) and a fallback regex parser. Some non-standard .m files may fail both parsing strategies.
+The MATPOWER parser uses a single deterministic path: internal `.m` parsing to
+PPC, then pandapower `from_ppc()` conversion. Some non-standard `.m` files may
+still fail parsing or conversion, but there is no secondary runtime parser
+fallback.
 
 ---
 

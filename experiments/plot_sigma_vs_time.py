@@ -1,13 +1,13 @@
 """Plot sigma-radius vs compute time from the sigma-radius experiment.
 
-Reads results from ``experiments/output/sigma_radius/`` and produces a
+Reads results from ``runs/run_sigma_radius/`` and produces a
 scatter plot of per-line sigma-radius values, plus a bar chart of timing
 from the scalability experiment if available.
 
 Usage::
 
     python -m experiments.plot_sigma_vs_time
-    python -m experiments.plot_sigma_vs_time --sigma-dir experiments/output/sigma_radius --scalability experiments/output/scalability/scalability.json
+    python -m experiments.plot_sigma_vs_time --sigma-dir runs/run_sigma_radius --scalability runs/run_scalability/scalability.json
 """
 
 from __future__ import annotations
@@ -19,12 +19,12 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+from stability_radius.utils import create_module_output_dir
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_SIGMA_DIR = Path("experiments/output/sigma_radius")
-_DEFAULT_SCALABILITY = Path("experiments/output/scalability/scalability.json")
-_DEFAULT_OUTPUT_DIR = Path("experiments/output/sigma_radius")
+_DEFAULT_SIGMA_DIR = Path("runs/run_sigma_radius")
+_DEFAULT_SCALABILITY = Path("runs/run_scalability/scalability.json")
 
 
 def _load_json(path: Path) -> dict | list:
@@ -143,11 +143,15 @@ def main() -> None:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=_DEFAULT_OUTPUT_DIR,
+        default=Path(""),
         help="Directory where plots are saved.",
     )
     args = parser.parse_args()
-    plot(args.sigma_dir, args.scalability, args.output_dir)
+    output_dir = create_module_output_dir(
+        module_name="plot_sigma_vs_time",
+        requested_output_dir=args.output_dir,
+    )
+    plot(args.sigma_dir, args.scalability, output_dir)
 
 
 if __name__ == "__main__":

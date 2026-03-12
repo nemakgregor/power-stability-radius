@@ -3,7 +3,7 @@
 # Each entry defines a PGLib case to evaluate.
 # The experiment script iterates over these cases, computes both DC and AC
 # radii in a single call (shared base point), and writes per-case JSON
-# results to experiments/output/pglib_sweep/.
+# results to runs/run_pglib_sweep/.
 #
 # Cases are grouped by source:
 #   IEEE PF   — classic IEEE power flow cases (TL-Stat thermal limits)
@@ -188,5 +188,5 @@ compute:
 
 allow_download: true
 data_dir: data/input
-output_dir: experiments/output/test_run_6
+output_dir: runs/run_pglib_sweep/test_run_6
 case_timeout_sec: 1200    # per-case subprocess timeout (seconds); 0 = no timeout

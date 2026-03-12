@@ -242,7 +242,7 @@ power-stability-radius/
 
 #### `matpower.py`
 - **Purpose**: MATPOWER .m file → pandapower network conversion
-- **Key function**: `load_network(path)` — uses pandapower.from_mpc() with regex fallback
+- **Key function**: `load_network(path)` — uses the repository MATPOWER parser, then pandapower `from_ppc()`
 
 #### `uc_jl.py`
 - **Purpose**: UnitCommitment.jl JSON → per-bus sigma arrays from hourly demand data
@@ -281,7 +281,7 @@ power-stability-radius/
 ### `experiments/configs/`
 Experiment-specific YAML configurations (case lists, sigma settings, data paths).
 
-### `experiments/output/`
+### `runs/`
 Generated experiment outputs (JSON results, plots, CSV tables, logs). Contains completed experiment runs in named subdirectories.
 
 ---

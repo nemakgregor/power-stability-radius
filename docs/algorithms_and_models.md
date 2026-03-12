@@ -1196,7 +1196,7 @@ python -m stability_radius.metrics_analysis \
     --slack-bus 0 \
     --sigma-p 1.0 --sigma-q 1.0 \
     --mc-samples 10000 \
-    --output-dir analysis_output/case30
+    --output-dir case30
 ```
 
 ---

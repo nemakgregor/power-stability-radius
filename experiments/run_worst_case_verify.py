@@ -16,9 +16,9 @@ Requires a prior run of ``run_pglib_sweep.py`` with ``save_h_vectors=true``
 Usage::
 
     python -m experiments.run_worst_case_verify \\
-        --sweep-dir experiments/output/pglib_sweep_good_v2
+        --sweep-dir runs/run_pglib_sweep
     python -m experiments.run_worst_case_verify \\
-        --results experiments/output/pglib_sweep/pglib_opf_case30_ieee.json
+        --results runs/run_pglib_sweep/pglib_opf_case30_ieee.json
 """
 
 from __future__ import annotations
@@ -41,6 +41,7 @@ from stability_radius.base_point.ac import solve_ac_fpf_base_point
 from stability_radius.base_point.pandapower_tools import resolve_slack_bus_id
 from stability_radius.parsers.matpower import load_network
 from stability_radius.radii.ac_l2 import compute_ac_l2_radius
+from stability_radius.utils import create_module_output_dir
 from stability_radius.verification.verify_worst_case import verify_worst_case
 from stability_radius.workflows import _expand_h_reduced_to_full
 
@@ -759,7 +760,7 @@ def main() -> None:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("experiments/output/worst_case_verify"),
+        default=Path(""),
         help="Output directory.",
     )
     parser.add_argument(
@@ -807,9 +808,14 @@ def main() -> None:
 
     logger.info("Processing %d case(s)", len(results_paths))
 
+    output_dir = create_module_output_dir(
+        module_name="run_worst_case_verify",
+        requested_output_dir=args.output_dir,
+    )
+
     run(
         results_paths=results_paths,
-        output_dir=args.output_dir,
+        output_dir=output_dir,
         scales=args.scales,
         top_k=args.top_k,
         recompute=args.recompute,

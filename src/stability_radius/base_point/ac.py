@@ -112,6 +112,10 @@ def solve_ac_pf_base_point(
         else (),
         pf_attempt=str(getattr(base_pf, "pf_attempt", "primary")),
         pf_repairs=tuple(getattr(base_pf, "pf_repairs", None) or ()),
+        distributed_slack_requested=bool(
+            getattr(base_pf, "distributed_slack_requested", False)
+        ),
+        distributed_slack_used=bool(getattr(base_pf, "distributed_slack_used", False)),
         bus_p_mw=np.asarray(base_pf.bus_p_mw, dtype=float)
         if base_pf.bus_p_mw is not None
         else None,
@@ -196,6 +200,10 @@ def solve_ac_fpf_base_point(
         gen_dispatch_mw_by_name=gen_dispatch_tuple,
         pf_attempt=str(getattr(base_pf, "pf_attempt", "primary")),
         pf_repairs=tuple(getattr(base_pf, "pf_repairs", None) or ()),
+        distributed_slack_requested=bool(
+            getattr(base_pf, "distributed_slack_requested", False)
+        ),
+        distributed_slack_used=bool(getattr(base_pf, "distributed_slack_used", False)),
         bus_p_mw=np.asarray(base_pf.bus_p_mw, dtype=float)
         if base_pf.bus_p_mw is not None
         else None,

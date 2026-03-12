@@ -8,6 +8,8 @@ from io import StringIO
 from pathlib import Path
 from typing import Any, Iterable, List, Sequence, Tuple
 
+from stability_radius.utils import create_module_output_dir
+
 # AC-focused defaults: keep DC table minimal by default.
 DEFAULT_DC_COLUMNS: Tuple[str, ...] = (
     "flow0_mw",
@@ -343,12 +345,22 @@ def main(argv: Iterable[str] | None = None) -> int:
     print(format_radius_summary(results, radius_field=str(args.radius_field)))
 
     if str(args.table_out).strip():
-        Path(str(args.table_out)).write_text(table_str + "\n", encoding="utf-8")
+        table_dir = create_module_output_dir(
+            module_name="table",
+            requested_output_dir=Path(str(args.table_out)).parent,
+        )
+        (table_dir / Path(str(args.table_out)).name).write_text(
+            table_str + "\n", encoding="utf-8"
+        )
 
     if str(args.csv_out).strip():
         if not csv_str:
             raise ValueError("--csv-out is only supported in flat mode.")
-        Path(str(args.csv_out)).write_text(csv_str, encoding="utf-8")
+        csv_dir = create_module_output_dir(
+            module_name="table",
+            requested_output_dir=Path(str(args.csv_out)).parent,
+        )
+        (csv_dir / Path(str(args.csv_out)).name).write_text(csv_str, encoding="utf-8")
 
     return 0
 

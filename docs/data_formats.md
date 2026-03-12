@@ -393,7 +393,7 @@ ac:
 
 opf:
   solver_name: highs               # str - must be "highs"
-  threads: 1                       # int - HiGHS threads
+  threads: 4                       # int - HiGHS threads
   random_seed: 42                  # int - HiGHS random seed
   headroom_factor: 0.98            # float - OPF line constraint security margin
   unconstrained_line_nom_mw: 1.0e5 # float - finite surrogate for unconstrained lines
@@ -622,13 +622,14 @@ Top-level JSON object with two kinds of keys:
 | `pf_solver` | string | `"pandapower"` or `"pypsa"`. |
 | `pf_init` | string | `"flat"`, `"dc"`, or `"pp"`. |
 | `lossless` | bool | Whether series resistance was zeroed. |
-| `distributed_slack` | bool | Whether distributed slack was used. |
+| `distributed_slack_requested` | bool | Whether distributed slack was requested in config/CLI. |
+| `distributed_slack` | bool | Whether distributed slack was actually used by the successful solve. |
 | `trafo_model` | string | Transformer model type (e.g., `"pi"`). |
 | `chunk_size` | int | AC computation batch size. |
 | `balance` | bool | Whether `sum(dp)=0` projection was applied. |
 | `pf_status` | string | Power flow convergence status. |
 | `pf_attempt` | string | Which PF attempt succeeded. |
-| `pf_repairs` | string[] | List of PF repair actions applied. |
+| `pf_repairs` | string[] | List of PF repair actions applied (for example `distributed_slack_auto_disabled_large_network`). |
 | `feasibility` | object\|null | AC base point feasibility check result. |
 | `sigma_source` | string\|null | `"uniform"`, `"uc_jl"`, or null. |
 | `sigma_p_mw` | float\|float[]\|null | Per-bus sigma_P (scalar if uniform, array if uc_jl). |
@@ -1078,7 +1079,7 @@ Output location: `<output_dir>/precision_at_k.csv`
 
 **Producer:** `experiments/collect_results.py` (`collect()`)
 
-Output location: `experiments/output/all_results.csv`
+Output location: `runs/collect_results/all_results.csv`
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -1177,8 +1178,8 @@ when `run_dir_mode=overwrite`).
 #### Location
 
 ```
-runs/<timestamp>/    # when run_dir_mode=timestamp
-runs/<run_name>/     # when run_dir_mode=overwrite
+runs/<module>/<timestamp>/    # when run_dir_mode=timestamp
+runs/<module>/<run_name>/     # when run_dir_mode=overwrite
 ```
 
 #### Contents
@@ -1207,7 +1208,7 @@ runs/<run_name>/     # when run_dir_mode=overwrite
 
 #### 2.9.1 PGLib Sweep (`run_pglib_sweep.py`)
 
-Output directory: configured via `output_dir` in YAML (e.g., `experiments/output/test_run_6/`)
+Output directory: configured via `output_dir` in YAML (e.g., `runs/run_pglib_sweep/test_run_6/`)
 
 | File | Format | Description |
 |------|--------|-------------|
@@ -1217,7 +1218,7 @@ Output directory: configured via `output_dir` in YAML (e.g., `experiments/output
 
 #### 2.9.2 Sigma-Radius Experiment (`run_sigma_radius.py`)
 
-Output directory: configured via `output_dir` in YAML (e.g., `experiments/output/sigma_radius_hourly/`)
+Output directory: configured via `output_dir` in YAML (e.g., `runs/run_sigma_radius/sigma_radius_hourly/`)
 
 | File | Format | Description |
 |------|--------|-------------|

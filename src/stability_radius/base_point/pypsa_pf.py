@@ -94,6 +94,8 @@ class PyPSAAPFResult:
     status: str
     pf_attempt: str = "primary"  # "primary" | "alt_init" | "relaxed"
     pf_repairs: list[str] | None = None  # list of repair actions applied
+    distributed_slack_requested: bool = False
+    distributed_slack_used: bool = False
     bus_p_mw: np.ndarray | None = None  # (n_bus,) net P injection per bus from AC PF
     bus_q_mvar: np.ndarray | None = None  # (n_bus,) net Q injection per bus from AC PF
     opp_gen_dispatch: dict[str, float] | None = None  # gen_id -> P_mw from OPP
@@ -300,16 +302,13 @@ def _solve_ac_pf_with_pandapower(
     slack_bus_id = resolve_slack_bus_id(net, int(slack_bus))
     ensure_ext_grid_at_slack(net, int(slack_bus_id))
 
+    n_buses = int(len(bus_ids))
     nn = (
         apply_lossless_policy_to_pandapower_net(net)
         if bool(lossless)
         else copy.deepcopy(net)
     )
     apply_gen_dispatch_to_pandapower_net(nn, gen_dispatch_mw_by_name)
-
-    # ---- Distributed slack: set participation weights based on headroom ----
-    if bool(distributed_slack):
-        _apply_distributed_slack_weights(nn)
 
     init_eff = str(init).strip().lower()
     if init_eff not in {"flat", "dc", "pp"}:
@@ -339,6 +338,7 @@ def _solve_ac_pf_with_pandapower(
     # Track which solver attempt succeeded for repair metadata.
     pf_attempt: str = "primary"  # "primary" | "alt_init" | "relaxed"
     pf_repairs: list[str] = []
+    distributed_slack_requested = bool(distributed_slack)
 
     # Guard against pandapower realloc corruption with distributed_slack on
     # large networks.  Known bug: the distributed_slack Newton-Raphson path
@@ -356,6 +356,11 @@ def _solve_ac_pf_with_pandapower(
         )
         distributed_slack = False
         pf_repairs.append("distributed_slack_auto_disabled_large_network")
+    distributed_slack_used = bool(distributed_slack)
+
+    # ---- Distributed slack: set participation weights based on headroom ----
+    if bool(distributed_slack):
+        _apply_distributed_slack_weights(nn)
 
     runpp_kwargs: dict[str, Any] = dict(
         calculate_voltage_angles=True,
@@ -445,6 +450,7 @@ def _solve_ac_pf_with_pandapower(
                     _time.perf_counter() - t_pf3,
                 )
                 pf_attempt = "relaxed"
+                distributed_slack_used = False
                 pf_repairs.extend(
                     [
                         "enforce_q_lims_disabled",
@@ -539,6 +545,8 @@ def _solve_ac_pf_with_pandapower(
         status=status,
         pf_attempt=pf_attempt,
         pf_repairs=list(pf_repairs),
+        distributed_slack_requested=bool(distributed_slack_requested),
+        distributed_slack_used=bool(distributed_slack_used),
         bus_p_mw=bus_p_mw_arr,
         bus_q_mvar=bus_q_mvar_arr,
     )
