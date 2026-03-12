@@ -40,7 +40,11 @@ import yaml  # noqa: E402
 
 from stability_radius.config import OPFConfig
 from stability_radius.parsers.matpower import load_network
-from stability_radius.utils import create_module_output_dir, resolve_artifacts_root
+from stability_radius.utils import (
+    create_module_output_dir,
+    numpy_to_builtin,
+    resolve_artifacts_root,
+)
 from stability_radius.utils.download import ensure_case_file
 from stability_radius.workflows import (
     DCExtensionsConfig,
@@ -57,17 +61,6 @@ _DEFAULT_CONFIG = (
 def _load_config(path: Path) -> dict:
     with path.open(encoding="utf-8") as fh:
         return yaml.safe_load(fh)
-
-
-def _numpy_serialiser(obj: object) -> object:
-    """JSON serialiser for numpy types."""
-    if isinstance(obj, (np.integer,)):
-        return int(obj)
-    if isinstance(obj, (np.floating,)):
-        return float(obj)
-    if isinstance(obj, np.ndarray):
-        return obj.tolist()
-    raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
 
 
 def _detect_slack_bus(net) -> int:
@@ -456,7 +449,7 @@ def _update_summary_and_plot(summary_rows: list[dict], output_dir: Path) -> None
     sorted_rows = sorted(summary_rows, key=lambda r: (r["n_buses"], r["case"]))
     summary_path = output_dir / "summary.json"
     with summary_path.open("w", encoding="utf-8") as fh:
-        json.dump(sorted_rows, fh, indent=2, default=_numpy_serialiser)
+        json.dump(sorted_rows, fh, indent=2, default=numpy_to_builtin)
     try:
         _plot_bar_chart(sorted_rows, output_dir)
     except Exception:
@@ -943,7 +936,7 @@ def run(config_path: Path, reuse_dir: Path | None = None) -> None:
 
         case_output = output_dir / f"{name}.json"
         with case_output.open("w", encoding="utf-8") as fh:
-            json.dump(combined, fh, indent=2, default=_numpy_serialiser)
+            json.dump(combined, fh, indent=2, default=numpy_to_builtin)
         logger.info("Results written: %s", case_output)
 
         # ---- Extract metrics ----

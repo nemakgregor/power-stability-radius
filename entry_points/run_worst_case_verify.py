@@ -41,23 +41,17 @@ from stability_radius.base_point.ac import solve_ac_fpf_base_point
 from stability_radius.base_point.pandapower_tools import resolve_slack_bus_id
 from stability_radius.parsers.matpower import load_network
 from stability_radius.radii.ac_l2 import compute_ac_l2_radius
-from stability_radius.utils import create_module_output_dir, setup_output_dir_logging
+from stability_radius.utils import (
+    create_module_output_dir,
+    numpy_to_builtin,
+    setup_output_dir_logging,
+)
 from stability_radius.verification.verify_worst_case import verify_worst_case
 from stability_radius.workflows import _expand_h_reduced_to_full
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_SCALES = [0.5, 0.8, 0.9, 0.95, 1.0, 1.05, 1.1, 1.2, 1.5]
-
-
-def _numpy_serialiser(obj: object) -> object:
-    if isinstance(obj, (np.integer,)):
-        return int(obj)
-    if isinstance(obj, (np.floating,)):
-        return float(obj)
-    if isinstance(obj, np.ndarray):
-        return obj.tolist()
-    raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
 
 
 # ---------------------------------------------------------------------------
@@ -150,139 +144,157 @@ def _verify_case(
     h_to_full: np.ndarray,
     line_ids: list[int],
     scales: list[float],
+    top_k: int = 1,
     lossless: bool = True,
     balance: bool = True,
 ) -> dict[str, Any]:
-    """Run multi-scale verification for the bottleneck line of one case.
+    """Run multi-scale verification for the top-k tightest AC lines of one case."""
+    if top_k < 1:
+        raise ValueError("top_k must be >= 1")
 
-    Returns a dict with per-scale results, crossing alpha, and summary.
-    """
-    # Find bottleneck line (smallest finite AC L2 radius)
-    best_lid = -1
-    best_r_ac = float("inf")
-    best_data: dict[str, Any] = {}
-
+    candidates: list[tuple[float, int, dict[str, Any]]] = []
     for pos, lid in enumerate(line_ids):
         key = f"line_{lid}"
         row = results.get(key, {})
-        r_ac = row.get("radius_ac_l2", float("inf"))
+        r_ac = float(row.get("radius_ac_l2", float("nan")))
         if not np.isfinite(r_ac) or r_ac <= 0:
             continue
-        if r_ac < best_r_ac:
-            best_r_ac = float(r_ac)
-            best_lid = int(lid)
-            best_data = dict(row)
-            best_data["_pos"] = pos
+        row_with_pos = dict(row)
+        row_with_pos["_pos"] = pos
+        candidates.append((r_ac, int(lid), row_with_pos))
 
-    if best_lid < 0:
+    candidates.sort(key=lambda item: (item[0], item[1]))
+    selected = candidates[:top_k]
+
+    if not selected:
         logger.warning("Case %s: no lines with finite AC L2 radius.", case_name)
         return {"case": case_name, "status": "no_finite_radius"}
 
-    binding_end = str(best_data.get("binding_end", "from"))
-    pos = best_data["_pos"]
-    h_vec = h_from_full[pos] if binding_end == "from" else h_to_full[pos]
+    line_results: list[dict[str, Any]] = []
+    for rank_idx, (radius_ac_l2, line_id, line_data) in enumerate(selected, start=1):
+        binding_end = str(line_data.get("binding_end", "from"))
+        pos = int(line_data["_pos"])
+        h_vec = h_from_full[pos] if binding_end == "from" else h_to_full[pos]
 
-    s0_mva = float(best_data.get(f"ac_s0_{binding_end}_mva", float("nan")))
-    limit_mva = float(best_data.get("ac_s_limit_mva", float("nan")))
-    margin_mva = (
-        limit_mva - s0_mva
-        if np.isfinite(limit_mva) and np.isfinite(s0_mva)
-        else float("nan")
-    )
-
-    logger.info(
-        "Case %s: bottleneck=line_%d, r_AC=%.4f MVA, s0=%.2f, limit=%.2f, margin=%.2f",
-        case_name,
-        best_lid,
-        best_r_ac,
-        s0_mva,
-        limit_mva,
-        margin_mva,
-    )
-
-    # Run verification at each scale
-    scale_results: list[dict] = []
-    for scale in sorted(scales):
-        vr = verify_worst_case(
-            net=net,
-            line_id=best_lid,
-            h_vec=h_vec,
-            radius=best_r_ac,
-            s0_mva=s0_mva,
-            limit_mva=limit_mva,
-            scale=scale,
-            balance=balance,
-            lossless=lossless,
-        )
-
-        # Predicted flow from linearized model: s0 + alpha * (c - s0) = s0 + alpha * margin
-        predicted_normalized = (
-            s0_mva / limit_mva + scale * (1.0 - s0_mva / limit_mva)
-            if limit_mva > 0
+        s0_mva = float(line_data.get(f"ac_s0_{binding_end}_mva", float("nan")))
+        limit_mva = float(line_data.get("ac_s_limit_mva", float("nan")))
+        margin_mva = (
+            limit_mva - s0_mva
+            if np.isfinite(limit_mva) and np.isfinite(s0_mva)
             else float("nan")
-        )
-        actual_normalized = (
-            vr.actual_s_mva / limit_mva
-            if vr.pf_converged and limit_mva > 0
-            else float("nan")
-        )
-
-        scale_results.append(
-            {
-                "scale": scale,
-                "pf_converged": vr.pf_converged,
-                "actual_s_mva": vr.actual_s_mva,
-                "predicted_s_mva": vr.predicted_s_mva,
-                "actual_normalized": actual_normalized,
-                "predicted_normalized": predicted_normalized,
-                "violated": vr.violated,
-                "relative_error": vr.relative_error,
-            }
         )
 
         logger.info(
-            "  scale=%.2f: converged=%s actual=%.4f predicted=%.4f violated=%s",
-            scale,
-            vr.pf_converged,
-            vr.actual_s_mva,
-            vr.predicted_s_mva,
-            vr.violated,
+            "Case %s: [%d/%d] line_%d, r_AC=%.4f MVA, s0=%.2f, limit=%.2f, margin=%.2f",
+            case_name,
+            rank_idx,
+            len(selected),
+            line_id,
+            radius_ac_l2,
+            s0_mva,
+            limit_mva,
+            margin_mva,
         )
 
-    # Compute scale_at_crossing: interpolate where |S_actual| / c = 1.0
-    crossing_alpha = _interpolate_crossing(scale_results, limit_mva)
+        scale_results: list[dict[str, Any]] = []
+        for scale in sorted(scales):
+            vr = verify_worst_case(
+                net=net,
+                line_id=line_id,
+                h_vec=h_vec,
+                radius=radius_ac_l2,
+                s0_mva=s0_mva,
+                limit_mva=limit_mva,
+                scale=scale,
+                balance=balance,
+                lossless=lossless,
+            )
 
-    # Linearization error at alpha=1.0
-    alpha_1_result = next((r for r in scale_results if r["scale"] == 1.0), None)
-    if alpha_1_result and alpha_1_result["pf_converged"] and limit_mva > 0:
-        lin_error_pct = (
-            (alpha_1_result["predicted_s_mva"] - alpha_1_result["actual_s_mva"])
-            / limit_mva
-            * 100.0
+            predicted_normalized = (
+                s0_mva / limit_mva + scale * (1.0 - s0_mva / limit_mva)
+                if limit_mva > 0
+                else float("nan")
+            )
+            actual_normalized = (
+                vr.actual_s_mva / limit_mva
+                if vr.pf_converged and limit_mva > 0
+                else float("nan")
+            )
+            scale_results.append(
+                {
+                    "scale": scale,
+                    "pf_converged": vr.pf_converged,
+                    "actual_s_mva": vr.actual_s_mva,
+                    "predicted_s_mva": vr.predicted_s_mva,
+                    "actual_normalized": actual_normalized,
+                    "predicted_normalized": predicted_normalized,
+                    "violated": vr.violated,
+                    "relative_error": vr.relative_error,
+                }
+            )
+
+            logger.info(
+                "  line_%d scale=%.2f: converged=%s actual=%.4f predicted=%.4f violated=%s",
+                line_id,
+                scale,
+                vr.pf_converged,
+                vr.actual_s_mva,
+                vr.predicted_s_mva,
+                vr.violated,
+            )
+
+        crossing_alpha = _interpolate_crossing(scale_results, limit_mva)
+        alpha_1_result = next((r for r in scale_results if r["scale"] == 1.0), None)
+        if alpha_1_result and alpha_1_result["pf_converged"] and limit_mva > 0:
+            lin_error_pct = (
+                (alpha_1_result["predicted_s_mva"] - alpha_1_result["actual_s_mva"])
+                / limit_mva
+                * 100.0
+            )
+        else:
+            lin_error_pct = float("nan")
+
+        n_pf_failures = sum(1 for r in scale_results if not r["pf_converged"])
+        line_results.append(
+            {
+                "line_id": line_id,
+                "binding_end": binding_end,
+                "radius_ac_l2": float(radius_ac_l2),
+                "s0_mva": s0_mva,
+                "limit_mva": limit_mva,
+                "margin_mva": margin_mva,
+                "crossing_alpha": crossing_alpha,
+                "linearization_error_pct": lin_error_pct,
+                "n_pf_failures": n_pf_failures,
+                "actual_s_at_alpha1": (
+                    alpha_1_result["actual_s_mva"] if alpha_1_result else float("nan")
+                ),
+                "predicted_s_at_alpha1": (
+                    alpha_1_result["predicted_s_mva"] if alpha_1_result else float("nan")
+                ),
+                "scale_results": scale_results,
+                "status": "ok",
+            }
         )
-    else:
-        lin_error_pct = float("nan")
 
-    n_pf_failures = sum(1 for r in scale_results if not r["pf_converged"])
-
+    primary = line_results[0]
     return {
         "case": case_name,
-        "bottleneck_line": best_lid,
-        "binding_end": binding_end,
-        "radius_ac_l2": best_r_ac,
-        "s0_mva": s0_mva,
-        "limit_mva": limit_mva,
-        "margin_mva": margin_mva,
-        "crossing_alpha": crossing_alpha,
-        "linearization_error_pct": lin_error_pct,
-        "n_pf_failures": n_pf_failures,
-        "actual_s_at_alpha1": alpha_1_result["actual_s_mva"]
-        if alpha_1_result
-        else float("nan"),
-        "predicted_s_at_alpha1": alpha_1_result["predicted_s_mva"]
-        if alpha_1_result
-        else float("nan"),
-        "scale_results": scale_results,
+        "bottleneck_line": int(primary["line_id"]),
+        "binding_end": str(primary["binding_end"]),
+        "radius_ac_l2": float(primary["radius_ac_l2"]),
+        "s0_mva": float(primary["s0_mva"]),
+        "limit_mva": float(primary["limit_mva"]),
+        "margin_mva": float(primary["margin_mva"]),
+        "crossing_alpha": float(primary["crossing_alpha"]),
+        "linearization_error_pct": float(primary["linearization_error_pct"]),
+        "n_pf_failures": int(primary["n_pf_failures"]),
+        "actual_s_at_alpha1": float(primary["actual_s_at_alpha1"]),
+        "predicted_s_at_alpha1": float(primary["predicted_s_at_alpha1"]),
+        "scale_results": primary["scale_results"],
+        "verified_lines": line_results,
+        "n_verified_lines": len(line_results),
+        "top_k_requested": int(top_k),
         "status": "ok",
     }
 
@@ -525,24 +537,32 @@ def _run_validation_checks(case_results: list[dict], output_dir: Path) -> dict:
 
     ok_cases = [cr for cr in case_results if cr.get("status") == "ok"]
 
-    # 1. Check crossing >= 0.95 for all cases
+    # 1. Check crossing >= 0.95 for all verified lines.
     crossing_details: list[dict] = []
     for cr in ok_cases:
-        crossing = cr["crossing_alpha"]
-        if np.isfinite(crossing):
-            is_sound = crossing >= 0.95
-            is_dangerous = crossing < 0.9
-        else:
-            is_sound = True  # no crossing found = conservative
-            is_dangerous = False
-        crossing_details.append(
-            {
-                "case": cr["case"],
-                "crossing_alpha": crossing,
-                "is_sound": is_sound,
-                "is_dangerous": is_dangerous,
-            }
-        )
+        line_rows = cr.get("verified_lines")
+        if not isinstance(line_rows, list) or not line_rows:
+            line_rows = [cr]
+
+        for lr in line_rows:
+            crossing = float(lr.get("crossing_alpha", float("nan")))
+            line_id = int(lr.get("line_id", cr.get("bottleneck_line", -1)))
+            if np.isfinite(crossing):
+                is_sound = crossing >= 0.95
+                is_dangerous = crossing < 0.9
+            else:
+                is_sound = True  # no crossing found = conservative
+                is_dangerous = False
+
+            crossing_details.append(
+                {
+                    "case": cr["case"],
+                    "line_id": line_id,
+                    "crossing_alpha": crossing,
+                    "is_sound": is_sound,
+                    "is_dangerous": is_dangerous,
+                }
+            )
 
     all_sound = all(d["is_sound"] for d in crossing_details)
     any_dangerous = any(d["is_dangerous"] for d in crossing_details)
@@ -552,15 +572,25 @@ def _run_validation_checks(case_results: list[dict], output_dir: Path) -> dict:
         "details": crossing_details,
     }
 
-    # 2. PF divergence at alpha=1.0
+    # 2. PF divergence at alpha=1.0 for all verified lines.
     divergence_at_1: list[dict] = []
     for cr in ok_cases:
-        alpha_1 = next((r for r in cr["scale_results"] if r["scale"] == 1.0), None)
-        if alpha_1 is not None:
+        line_rows = cr.get("verified_lines")
+        if not isinstance(line_rows, list) or not line_rows:
+            line_rows = [cr]
+
+        for lr in line_rows:
+            alpha_1 = next(
+                (r for r in lr.get("scale_results", []) if r.get("scale") == 1.0),
+                None,
+            )
+            if alpha_1 is None:
+                continue
             divergence_at_1.append(
                 {
                     "case": cr["case"],
-                    "pf_converged": alpha_1["pf_converged"],
+                    "line_id": int(lr.get("line_id", cr.get("bottleneck_line", -1))),
+                    "pf_converged": bool(alpha_1["pf_converged"]),
                 }
             )
     checks["pf_divergence_at_1"] = {
@@ -578,13 +608,16 @@ def _run_validation_checks(case_results: list[dict], output_dir: Path) -> dict:
         print("  WARNING: Some crossings < 0.90 (dangerously optimistic linearization)")
         for d in crossing_details:
             if d["is_dangerous"]:
-                print(f"    {d['case']}: crossing_alpha={d['crossing_alpha']:.3f}")
+                print(
+                    f"    {d['case']} line_{d['line_id']}: "
+                    f"crossing_alpha={d['crossing_alpha']:.3f}"
+                )
     pf_div = checks["pf_divergence_at_1"]
     if pf_div["any_diverged"]:
         print("  WARNING: PF diverged at alpha=1.0 for some cases:")
         for d in pf_div["details"]:
             if not d["pf_converged"]:
-                print(f"    {d['case']}")
+                print(f"    {d['case']} line_{d['line_id']}")
     else:
         print("  PF converged at alpha=1.0: PASS (all cases)")
     print("=" * 60)
@@ -592,7 +625,7 @@ def _run_validation_checks(case_results: list[dict], output_dir: Path) -> dict:
 
     val_path = output_dir / "validation_worst_case.json"
     with val_path.open("w", encoding="utf-8") as fh:
-        json.dump(checks, fh, indent=2, default=_numpy_serialiser)
+        json.dump(checks, fh, indent=2, default=numpy_to_builtin)
     logger.info("Validation checks saved: %s", val_path)
 
     return checks
@@ -632,6 +665,9 @@ def run(
     balance:
         Whether the certificate used balanced projections.
     """
+    if top_k < 1:
+        raise ValueError("top_k must be >= 1")
+
     output_dir.mkdir(parents=True, exist_ok=True)
     all_case_results: list[dict] = []
 
@@ -709,6 +745,7 @@ def run(
             h_to_full=h_to,
             line_ids=line_ids,
             scales=scales,
+            top_k=top_k,
             lossless=lossless,
             balance=balance,
         )
@@ -717,7 +754,7 @@ def run(
         # Save per-case results
         case_out = output_dir / f"{rpath.stem}_worst_case.json"
         with case_out.open("w", encoding="utf-8") as fh:
-            json.dump(case_result, fh, indent=2, default=_numpy_serialiser)
+            json.dump(case_result, fh, indent=2, default=numpy_to_builtin)
 
     # Table 3
     _print_table3(all_case_results)
@@ -731,7 +768,7 @@ def run(
     # Save combined results
     combined_path = output_dir / "table3_summary.json"
     with combined_path.open("w", encoding="utf-8") as fh:
-        json.dump(all_case_results, fh, indent=2, default=_numpy_serialiser)
+        json.dump(all_case_results, fh, indent=2, default=numpy_to_builtin)
     logger.info("All results saved: %s", combined_path)
 
 

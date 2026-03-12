@@ -23,11 +23,14 @@ from datetime import datetime
 from pathlib import Path
 
 from stability_radius.config import DEFAULT_LOGGING, LoggingConfig
+from .json_utils import NumpyJSONEncoder, numpy_to_builtin
 
 __all__ = [
     "ARTIFACTS_ROOT_NAME",
+    "NumpyJSONEncoder",
     "create_module_output_dir",
     "log_stage",
+    "numpy_to_builtin",
     "resolve_artifacts_root",
     "setup_logging",
     "setup_output_dir_logging",

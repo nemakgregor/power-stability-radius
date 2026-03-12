@@ -25,6 +25,7 @@ import yaml
 from stability_radius.parsers.matpower import load_network
 from stability_radius.utils import (
     create_module_output_dir,
+    numpy_to_builtin,
     resolve_artifacts_root,
     setup_output_dir_logging,
 )
@@ -43,16 +44,6 @@ _DEFAULT_CONFIG = (
 def _load_config(path: Path) -> dict:
     with path.open(encoding="utf-8") as fh:
         return yaml.safe_load(fh)
-
-
-def _numpy_serialiser(obj: object) -> object:
-    if isinstance(obj, (np.integer,)):
-        return int(obj)
-    if isinstance(obj, (np.floating,)):
-        return float(obj)
-    if isinstance(obj, np.ndarray):
-        return obj.tolist()
-    raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
 
 
 def run(config_path: Path, *, repeats: int = 3) -> None:
@@ -169,7 +160,7 @@ def run(config_path: Path, *, repeats: int = 3) -> None:
     # Write results.
     out_path = output_dir / "scalability.json"
     with out_path.open("w", encoding="utf-8") as fh:
-        json.dump(records, fh, indent=2, default=_numpy_serialiser)
+        json.dump(records, fh, indent=2, default=numpy_to_builtin)
     logger.info("Scalability results written: %s", out_path)
 
 

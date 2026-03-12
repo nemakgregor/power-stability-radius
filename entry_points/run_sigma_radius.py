@@ -45,6 +45,7 @@ import yaml
 from stability_radius.base_point.ac import solve_ac_fpf_base_point
 from stability_radius.utils import (
     create_module_output_dir,
+    numpy_to_builtin,
     resolve_artifacts_root,
     setup_output_dir_logging,
 )
@@ -88,17 +89,6 @@ _SIGMA_FLOOR = 1e-6
 def _load_config(path: Path) -> dict:
     with path.open(encoding="utf-8") as fh:
         return yaml.safe_load(fh)
-
-
-def _numpy_serialiser(obj: object) -> object:
-    if isinstance(obj, (np.integer,)):
-        return int(obj)
-    if isinstance(obj, (np.floating,)):
-        return float(obj)
-    if isinstance(obj, np.ndarray):
-        return obj.tolist()
-    raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
-
 
 def _clamp_sigma(sigma: np.ndarray, floor: float = _SIGMA_FLOOR) -> np.ndarray:
     out = sigma.copy()
@@ -877,7 +867,7 @@ def _run_worst_case_verification(
     # Save
     vr_path = output_dir / "verification_results.json"
     with vr_path.open("w", encoding="utf-8") as fh:
-        json.dump(verification_results, fh, indent=2, default=_numpy_serialiser)
+        json.dump(verification_results, fh, indent=2, default=numpy_to_builtin)
     logger.info("Verification results saved: %s", vr_path)
 
     return verification_results
@@ -1202,7 +1192,7 @@ def _run_tightened_limit_mc(
 
     mc_tight_path = output_dir / "mc_tightened_limit.json"
     with mc_tight_path.open("w", encoding="utf-8") as fh:
-        json.dump(result, fh, indent=2, default=_numpy_serialiser)
+        json.dump(result, fh, indent=2, default=numpy_to_builtin)
     logger.info("Tightened-limit MC results saved: %s", mc_tight_path)
 
     return result
@@ -1306,7 +1296,7 @@ def _run_validation_checks(
     # Save
     val_path = output_dir / "validation.json"
     with val_path.open("w", encoding="utf-8") as fh:
-        json.dump(checks, fh, indent=2, default=_numpy_serialiser)
+        json.dump(checks, fh, indent=2, default=numpy_to_builtin)
     logger.info("Validation results saved: %s", val_path)
 
     return checks
@@ -2057,7 +2047,7 @@ def run(config_path: Path) -> None:
     }
     results_path = output_dir / "results.json"
     with results_path.open("w", encoding="utf-8") as fh:
-        json.dump(results_out, fh, indent=2, default=_numpy_serialiser)
+        json.dump(results_out, fh, indent=2, default=numpy_to_builtin)
     logger.info("Results written: %s", results_path)
 
     # Summary
@@ -2084,7 +2074,7 @@ def run(config_path: Path) -> None:
     }
     summary_path = output_dir / "summary.json"
     with summary_path.open("w", encoding="utf-8") as fh:
-        json.dump(summary, fh, indent=2, default=_numpy_serialiser)
+        json.dump(summary, fh, indent=2, default=numpy_to_builtin)
     logger.info("Summary written: %s", summary_path)
 
     # ------------------------------------------------------------------
@@ -2158,37 +2148,6 @@ def run(config_path: Path) -> None:
     logger.info("Experiment complete. Output: %s", output_dir)
 
 
-def _setup_logging(output_dir: Path) -> None:
-    """Configure root logger: console (INFO) + debug.log file (DEBUG)."""
-    setup_output_dir_logging(output_dir)
-    return
-    root = logging.getLogger()
-    root.setLevel(logging.DEBUG)
-
-    # Remove existing handlers to avoid duplicates on re-runs
-    for h in root.handlers[:]:
-        root.removeHandler(h)
-
-    # Console handler: INFO
-    console = logging.StreamHandler()
-    console.setLevel(logging.INFO)
-    console.setFormatter(
-        logging.Formatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s")
-    )
-    root.addHandler(console)
-
-    # File handler: DEBUG → output_dir/debug.log
-    output_dir.mkdir(parents=True, exist_ok=True)
-    fh = logging.FileHandler(
-        str(output_dir / "debug.log"), mode="w", encoding="utf-8",
-    )
-    fh.setLevel(logging.DEBUG)
-    fh.setFormatter(
-        logging.Formatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s")
-    )
-    root.addHandler(fh)
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Experiment 2: sigma-radius at average operating point.",
@@ -2200,17 +2159,6 @@ def main() -> None:
         help="Path to YAML config file.",
     )
     args = parser.parse_args()
-
-    # Pre-read config to get output_dir before run() starts
-    with args.config.open(encoding="utf-8") as fh:
-        _pre_cfg = yaml.safe_load(fh)
-    _artifacts_root = resolve_artifacts_root(_pre_cfg)
-    _out_dir = create_module_output_dir(
-        module_name="run_sigma_radius",
-        runs_dir=_artifacts_root,
-        requested_output_dir=_pre_cfg.get("output_dir", None),
-    )
-    _setup_logging(_out_dir)
 
     run(args.config)
 

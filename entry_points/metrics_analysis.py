@@ -48,7 +48,11 @@ from stability_radius.metrics.ac_baselines import (
     compute_practical_metrics,
     transfer_margin_linearized,
 )
-from stability_radius.utils import create_module_output_dir, setup_output_dir_logging
+from stability_radius.utils import (
+    NumpyJSONEncoder,
+    create_module_output_dir,
+    setup_output_dir_logging,
+)
 from stability_radius.verification.monte_carlo import run_monte_carlo_verification
 from stability_radius.workflows import (
     ACExtensionsConfig,
@@ -64,22 +68,6 @@ _NEGATE_FOR_CORRELATION: set[str] = {
     "radius_ac_metric",
     "headroom_mva",
 }
-
-
-# ---------------------------------------------------------------------------
-# JSON encoder for numpy types
-# ---------------------------------------------------------------------------
-
-
-class _NumpyEncoder(json.JSONEncoder):
-    def default(self, obj: Any) -> Any:
-        if isinstance(obj, np.ndarray):
-            return obj.tolist()
-        if isinstance(obj, np.integer):
-            return int(obj)
-        if isinstance(obj, np.floating):
-            return float(obj)
-        return super().default(obj)
 
 
 # ---------------------------------------------------------------------------
@@ -1814,7 +1802,7 @@ def main(argv: list[str] | None = None) -> int:
     results_path = output_dir / "results.json"
     results_path.write_text(
         json.dumps(
-            results_serialisable, indent=2, ensure_ascii=False, cls=_NumpyEncoder
+            results_serialisable, indent=2, ensure_ascii=False, cls=NumpyJSONEncoder
         )
         + "\n",
         encoding="utf-8",
@@ -1852,7 +1840,7 @@ def main(argv: list[str] | None = None) -> int:
 
     mc_path = output_dir / "mc_verification.json"
     mc_path.write_text(
-        json.dumps(vr.to_dict(), indent=2, ensure_ascii=False, cls=_NumpyEncoder)
+        json.dumps(vr.to_dict(), indent=2, ensure_ascii=False, cls=NumpyJSONEncoder)
         + "\n",
         encoding="utf-8",
     )
