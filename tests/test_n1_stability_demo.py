@@ -2,14 +2,18 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import numpy as np
 import pandas as pd
 import pytest
 
 from stability_radius import n1_stability_demo as demo
 from stability_radius.n1_stability_demo import (
+    _align_line_limit_proxy_with_opf_model,
     _build_comparison_text,
     _opf_constraint_summary,
+    _opf_line_limit_consistency_summary,
     _plot_cost_security_tradeoff,
+    _plot_multi_regime_n1_overloads,
     _resolve_output_dir,
     _solve_cost_opf,
     _total_generation_dispatch_mw,
@@ -172,6 +176,15 @@ def test_build_comparison_text_includes_scopf_and_proxy_headroom_note() -> None:
     text = _build_comparison_text(
         regime_order=regime_order,
         dispatch_summaries=dispatch,
+        limit_consistency_summaries={
+            key: {
+                "n_lines_checked": 10,
+                "n_limit_mismatch": 0,
+                "max_abs_limit_diff_mva": 0.0,
+                "max_rel_limit_diff_pct": 0.0,
+            }
+            for key, _ in regime_order
+        },
         constraint_summaries=constraints,
         radius_summaries=radius,
         ac_n1_radius_summaries=ac_n1,
@@ -188,6 +201,62 @@ def test_build_comparison_text_includes_scopf_and_proxy_headroom_note() -> None:
     assert "Min headroom vs MVA proxy" in text
     assert "apparent-power branch limits" in text
     assert "post-PF current-based diagnostic" in text
+
+
+class _FakeNet(SimpleNamespace):
+    def get(self, key, default=None):
+        return getattr(self, key, default)
+
+
+def test_align_line_limit_proxy_with_opf_model_overwrites_explicit_rating() -> None:
+    net = _FakeNet(
+        bus=pd.DataFrame({"vn_kv": [110.0]}, index=[0]),
+        line=pd.DataFrame(
+            {
+                "from_bus": [0],
+                "max_i_ka": [1.0],
+                "df": [1.0],
+                "parallel": [1.0],
+                "max_loading_percent": [100.0],
+                "rateA": [50.0],
+            },
+            index=[7],
+        ),
+    )
+
+    summary = _align_line_limit_proxy_with_opf_model(net)
+
+    expected_nominal = np.sqrt(3.0) * 110.0 * 1.0
+    assert net.line.at[7, "rateA"] == pytest.approx(expected_nominal)
+    assert net.line.at[7, "rate_a_mva"] == pytest.approx(expected_nominal)
+    assert summary["n_lines_checked"] == 1
+    assert summary["n_lines_aligned"] == 1
+
+
+def test_opf_line_limit_consistency_summary_reports_zero_mismatch_after_alignment() -> None:
+    net = _FakeNet(
+        bus=pd.DataFrame({"vn_kv": [110.0]}, index=[0]),
+        line=pd.DataFrame(
+            {
+                "from_bus": [0],
+                "max_i_ka": [1.0],
+                "df": [0.5],
+                "parallel": [2.0],
+                "max_loading_percent": [99.0],
+                "rateA": [25.0],
+                "rate_a_mva": [25.0],
+            },
+            index=[5],
+        ),
+        _ppc_opf={"branch": np.array([[9999.0, 9999.0, 9999.0]])},
+    )
+
+    _align_line_limit_proxy_with_opf_model(net)
+    summary = _opf_line_limit_consistency_summary(net, "cost_opf")
+
+    assert summary["n_lines_checked"] == 1
+    assert summary["n_limit_mismatch"] == 0
+    assert summary["max_abs_limit_diff_mva"] == pytest.approx(0.0)
 
 
 def test_solve_cost_opf_accepts_pf_replay_with_current_gap(monkeypatch) -> None:
@@ -223,6 +292,74 @@ def test_solve_cost_opf_accepts_pf_replay_with_current_gap(monkeypatch) -> None:
     assert total_cost == pytest.approx(123.4)
     assert calls["run_cost_opf"] == 1
     assert calls["validate"] == 1
+
+
+def test_plot_multi_regime_n1_overloads_writes_png(tmp_path) -> None:
+    output_path = tmp_path / "n1_overloads.png"
+    regime_records = {
+        "cost_opf": (
+            "Cost OPF",
+            [
+                {
+                    "contingency_line": 1,
+                    "pf_converged": True,
+                    "n1_feasible": False,
+                    "n_overloads": 4,
+                    "max_loading_percent": 121.0,
+                },
+                {
+                    "contingency_line": 2,
+                    "pf_converged": True,
+                    "n1_feasible": True,
+                    "n_overloads": 0,
+                    "max_loading_percent": 98.0,
+                },
+            ],
+        ),
+        "radius_opf": (
+            "Radius OPF",
+            [
+                {
+                    "contingency_line": 1,
+                    "pf_converged": True,
+                    "n1_feasible": False,
+                    "n_overloads": 2,
+                    "max_loading_percent": 108.0,
+                },
+                {
+                    "contingency_line": 2,
+                    "pf_converged": True,
+                    "n1_feasible": True,
+                    "n_overloads": 0,
+                    "max_loading_percent": 94.0,
+                },
+            ],
+        ),
+        "scopf": (
+            "SCOPF",
+            [
+                {
+                    "contingency_line": 1,
+                    "pf_converged": True,
+                    "n1_feasible": True,
+                    "n_overloads": 0,
+                    "max_loading_percent": 99.0,
+                },
+                {
+                    "contingency_line": 2,
+                    "pf_converged": True,
+                    "n1_feasible": True,
+                    "n_overloads": 0,
+                    "max_loading_percent": 91.0,
+                },
+            ],
+        ),
+    }
+
+    _plot_multi_regime_n1_overloads(regime_records, output_path)
+
+    assert output_path.exists()
+    assert output_path.stat().st_size > 0
 
 
 def test_plot_cost_security_tradeoff_writes_png(tmp_path) -> None:

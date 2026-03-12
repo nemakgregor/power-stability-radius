@@ -83,6 +83,151 @@ def _lid_str(lid_int: int) -> str:
     return f"line_{lid_int}"
 
 
+def _line_loading_limit_pct(net, line_id: int) -> float:
+    if not hasattr(net, "line") or net.line is None or int(line_id) not in net.line.index:
+        return float("nan")
+
+    row = net.line.loc[int(line_id)]
+    try:
+        max_loading_percent = float(row.get("max_loading_percent", 100.0))
+    except (TypeError, ValueError):
+        max_loading_percent = 100.0
+    if not math.isfinite(max_loading_percent) or max_loading_percent <= 0.0:
+        max_loading_percent = 100.0
+    return float(max_loading_percent)
+
+
+def _line_opf_nominal_limit_mva(net, line_id: int) -> float:
+    """Return the pandapower OPF nominal line limit before max_loading scaling.
+
+    This mirrors pandapower's branch RATE_A construction for lines:
+    sqrt(3) * vn_kv(from_bus) * max_i_ka * df * parallel.
+    """
+    if not hasattr(net, "line") or net.line is None or int(line_id) not in net.line.index:
+        return float("nan")
+
+    row = net.line.loc[int(line_id)]
+    try:
+        max_i_ka = float(row.get("max_i_ka", float("nan")))
+    except (TypeError, ValueError):
+        return float("nan")
+    if not math.isfinite(max_i_ka) or max_i_ka <= 0.0:
+        return float("nan")
+
+    try:
+        from_bus = int(row.get("from_bus"))
+        vn_kv = float(net.bus.at[from_bus, "vn_kv"])
+    except (KeyError, TypeError, ValueError):
+        return float("nan")
+    if not math.isfinite(vn_kv) or vn_kv <= 0.0:
+        return float("nan")
+
+    try:
+        df = float(row.get("df", 1.0))
+    except (TypeError, ValueError):
+        df = 1.0
+    if not math.isfinite(df) or df <= 0.0:
+        df = 1.0
+
+    try:
+        parallel = float(row.get("parallel", 1.0))
+    except (TypeError, ValueError):
+        parallel = 1.0
+    if not math.isfinite(parallel) or parallel <= 0.0:
+        parallel = 1.0
+
+    return float(math.sqrt(3.0) * vn_kv * max_i_ka * df * parallel)
+
+
+def _line_opf_effective_limit_mva(net, line_id: int) -> float:
+    """Return the pandapower OPF effective line limit after max_loading scaling."""
+    nominal_limit = _line_opf_nominal_limit_mva(net, line_id)
+    if not math.isfinite(nominal_limit) or nominal_limit <= 0.0:
+        return float("nan")
+
+    max_loading_percent = _line_loading_limit_pct(net, line_id)
+    if not math.isfinite(max_loading_percent) or max_loading_percent <= 0.0:
+        return float("nan")
+
+    return float(nominal_limit * max_loading_percent / 100.0)
+
+
+def _align_line_limit_proxy_with_opf_model(net) -> dict:
+    """Align demo proxy line limits with pandapower OPF branch limits.
+
+    The stability-radius utilities read explicit MVA ratings first (``rateA`` /
+    ``rate_a_mva``), while pandapower OPF for lines builds branch RATE_A from
+    current ratings. On imported MATPOWER cases these can differ materially.
+    For the demo, overwrite the explicit line MVA rating with the OPF-equivalent
+    current-based nominal limit so security metrics and OPF constraints refer to
+    the same branch model.
+    """
+    from stability_radius.radii.common import estimate_line_limit_mva_with_flag
+
+    if not hasattr(net, "line") or net.line is None or len(net.line) == 0:
+        return {
+            "n_lines_checked": 0,
+            "n_lines_aligned": 0,
+            "max_pre_align_abs_diff_mva": float("nan"),
+            "median_pre_align_abs_diff_mva": float("nan"),
+            "worst_line_id": None,
+        }
+
+    if "rateA" not in net.line.columns:
+        net.line["rateA"] = np.nan
+    if "rate_a_mva" not in net.line.columns:
+        net.line["rate_a_mva"] = np.nan
+
+    abs_diffs: list[float] = []
+    worst_line_id: int | None = None
+    worst_abs_diff = -1.0
+    aligned = 0
+    checked = 0
+
+    for lid in sorted(int(x) for x in net.line.index):
+        opf_nominal_limit = _line_opf_nominal_limit_mva(net, lid)
+        if not math.isfinite(opf_nominal_limit) or opf_nominal_limit <= 0.0:
+            continue
+
+        row = net.line.loc[lid]
+        max_loading_percent = _line_loading_limit_pct(net, lid)
+        mult = max_loading_percent / 100.0
+
+        proxy_limit_mva, _ = estimate_line_limit_mva_with_flag(net, row)
+        proxy_nominal_limit = (
+            float(proxy_limit_mva) / mult if mult > 0.0 and math.isfinite(proxy_limit_mva) else float("nan")
+        )
+        abs_diff = abs(proxy_nominal_limit - opf_nominal_limit)
+        abs_diffs.append(abs_diff)
+        checked += 1
+        if abs_diff > worst_abs_diff:
+            worst_abs_diff = abs_diff
+            worst_line_id = int(lid)
+        if abs_diff > 1e-6:
+            aligned += 1
+
+        net.line.at[lid, "rateA"] = float(opf_nominal_limit)
+        net.line.at[lid, "rate_a_mva"] = float(opf_nominal_limit)
+
+    summary = {
+        "n_lines_checked": checked,
+        "n_lines_aligned": aligned,
+        "max_pre_align_abs_diff_mva": float(max(abs_diffs)) if abs_diffs else float("nan"),
+        "median_pre_align_abs_diff_mva": float(np.median(abs_diffs)) if abs_diffs else float("nan"),
+        "worst_line_id": worst_line_id,
+    }
+    if checked:
+        logger.info(
+            "[limits] Aligned %d/%d line proxy limits with pandapower OPF branch limits; "
+            "max pre-align diff=%.4f MVA (line=%s).",
+            aligned,
+            checked,
+            summary["max_pre_align_abs_diff_mva"],
+            worst_line_id,
+        )
+    return summary
+
+
 # ---------------------------------------------------------------------------
 # Phase 1: Load network
 # ---------------------------------------------------------------------------
@@ -108,6 +253,7 @@ def _load_and_prepare(input_path: str, slack_bus_override: int | None):
 
     net_lossless = apply_lossless_policy_to_pandapower_net(net)
     ensure_ext_grid_at_slack(net_lossless, slack_bus)
+    _align_line_limit_proxy_with_opf_model(net_lossless)
 
     line_indices = sorted(net_lossless.line.index.tolist())  # list of ints
     return net_lossless, slack_bus, line_indices
@@ -1225,6 +1371,119 @@ def _opf_constraint_summary(nn, label: str) -> dict:
     }
 
 
+def _opf_line_limit_consistency_df(nn) -> "DataFrame":
+    import pandas as pd
+
+    from stability_radius.radii.common import estimate_line_limit_mva_with_flag
+
+    if not hasattr(nn, "line") or nn.line is None or len(nn.line) == 0:
+        return pd.DataFrame(
+            columns=[
+                "line_id",
+                "max_loading_percent",
+                "opf_nominal_limit_mva",
+                "opf_limit_mva",
+                "proxy_nominal_limit_mva",
+                "proxy_limit_mva",
+                "abs_diff_mva",
+                "rel_diff_pct",
+                "is_unconstrained_proxy",
+                "limit_mismatch",
+            ]
+        ).set_index("line_id")
+
+    rows: list[dict[str, object]] = []
+    for lid in sorted(int(x) for x in nn.line.index):
+        opf_nominal_limit_mva = _line_opf_nominal_limit_mva(nn, lid)
+        opf_limit_mva = _line_opf_effective_limit_mva(nn, lid)
+        if not math.isfinite(opf_limit_mva) or opf_limit_mva <= 0.0:
+            continue
+
+        max_loading_percent = _line_loading_limit_pct(nn, lid)
+        row = nn.line.loc[lid]
+        proxy_limit_mva, is_unconstrained = estimate_line_limit_mva_with_flag(nn, row)
+        mult = max_loading_percent / 100.0
+        proxy_nominal_limit_mva = (
+            float(proxy_limit_mva) / mult if mult > 0.0 and math.isfinite(proxy_limit_mva) else float("nan")
+        )
+        abs_diff_mva = float(proxy_limit_mva) - float(opf_limit_mva)
+        rel_diff_pct = (
+            100.0 * abs_diff_mva / float(opf_limit_mva)
+            if math.isfinite(opf_limit_mva) and abs(opf_limit_mva) > 1e-12
+            else float("nan")
+        )
+        rows.append(
+            {
+                "line_id": lid,
+                "max_loading_percent": float(max_loading_percent),
+                "opf_nominal_limit_mva": float(opf_nominal_limit_mva),
+                "opf_limit_mva": float(opf_limit_mva),
+                "proxy_nominal_limit_mva": float(proxy_nominal_limit_mva),
+                "proxy_limit_mva": float(proxy_limit_mva),
+                "abs_diff_mva": float(abs_diff_mva),
+                "rel_diff_pct": float(rel_diff_pct),
+                "is_unconstrained_proxy": bool(is_unconstrained),
+                "limit_mismatch": not np.isclose(
+                    float(proxy_limit_mva),
+                    float(opf_limit_mva),
+                    rtol=1e-9,
+                    atol=1e-6,
+                ),
+            }
+        )
+    if not rows:
+        return pd.DataFrame(
+            columns=[
+                "line_id",
+                "max_loading_percent",
+                "opf_nominal_limit_mva",
+                "opf_limit_mva",
+                "proxy_nominal_limit_mva",
+                "proxy_limit_mva",
+                "abs_diff_mva",
+                "rel_diff_pct",
+                "is_unconstrained_proxy",
+                "limit_mismatch",
+            ]
+        ).set_index("line_id")
+    return pd.DataFrame(rows).set_index("line_id").sort_index()
+
+
+def _opf_line_limit_consistency_summary(nn, label: str) -> dict:
+    df = _opf_line_limit_consistency_df(nn)
+    if df.empty:
+        return {"label": label, "n_lines_checked": 0}
+
+    abs_diff = df["abs_diff_mva"].abs()
+    rel_diff = df["rel_diff_pct"].abs()
+    worst_line = int(abs_diff.idxmax()) if len(abs_diff) else None
+    summary = {
+        "label": label,
+        "n_lines_checked": int(len(df)),
+        "n_limit_mismatch": int(df["limit_mismatch"].sum()),
+        "max_abs_limit_diff_mva": float(abs_diff.max()),
+        "median_abs_limit_diff_mva": float(abs_diff.median()),
+        "max_rel_limit_diff_pct": float(rel_diff.max()) if len(rel_diff) else float("nan"),
+        "worst_line_id": worst_line,
+    }
+    if summary["n_limit_mismatch"] > 0:
+        logger.warning(
+            "[%s] Proxy-vs-OPF line limit mismatch: %d/%d lines, max_abs_diff=%.6f MVA (line=%s).",
+            label,
+            summary["n_limit_mismatch"],
+            summary["n_lines_checked"],
+            summary["max_abs_limit_diff_mva"],
+            worst_line,
+        )
+    else:
+        logger.info(
+            "[%s] Proxy-vs-OPF line limits are consistent across %d lines.",
+            label,
+            summary["n_lines_checked"],
+        )
+    return summary
+
+
 def _solve_scopf(
     net_lossless,
     slack_bus: int,
@@ -2032,6 +2291,7 @@ def _build_comparison_text(
     *,
     regime_order: list[tuple[str, str]],
     dispatch_summaries: Mapping[str, Mapping[str, object]],
+    limit_consistency_summaries: Mapping[str, Mapping[str, object]],
     constraint_summaries: Mapping[str, Mapping[str, object]],
     radius_summaries: Mapping[str, Mapping[str, object]],
     ac_n1_radius_summaries: Mapping[str, Mapping[str, object]],
@@ -2061,6 +2321,18 @@ def _build_comparison_text(
             ("total_cost_eur_h", "Total generation cost ($/h)", ".2f"),
             ("generation_dispatch_mw", "Net generation dispatch (MW)", ".2f"),
             ("cost_increase_pct", "Cost increase vs Cost OPF (%)", ".3f"),
+        ],
+    )
+    _append_metric_table(
+        lines,
+        title="Line Limit Consistency (proxy vs OPF)",
+        regime_order=regime_order,
+        summaries=limit_consistency_summaries,
+        metrics=[
+            ("n_lines_checked", "Lines checked", "d"),
+            ("n_limit_mismatch", "Lines with mismatch", "d"),
+            ("max_abs_limit_diff_mva", "Max abs limit diff (MVA)", ".6f"),
+            ("max_rel_limit_diff_pct", "Max rel limit diff (%)", ".6f"),
         ],
     )
     _append_metric_table(
@@ -2168,6 +2440,22 @@ def _build_comparison_text(
         ]
 
     if any(
+        float(
+            limit_consistency_summaries.get(regime_key, {}).get(
+                "n_limit_mismatch", float("nan")
+            )
+        )
+        > 0.0
+        for regime_key, _ in regime_order
+    ):
+        lines += [
+            "",
+            "Warning:",
+            "  The stability-radius proxy branch limit does not match the OPF branch limit on at least one line.",
+            "  Interpret headroom- and radius-based metrics with caution for that regime.",
+        ]
+
+    if any(
         float(sigma_summaries.get(regime_key, {}).get("min_headroom_mva", float("nan"))) < 0.0
         or float(
             constraint_summaries.get(regime_key, {}).get(
@@ -2195,6 +2483,7 @@ def _write_comparison(
     output_path: Path,
     regime_order: list[tuple[str, str]],
     dispatch_summaries: Mapping[str, Mapping[str, object]],
+    limit_consistency_summaries: Mapping[str, Mapping[str, object]],
     constraint_summaries: Mapping[str, Mapping[str, object]],
     radius_summaries: Mapping[str, Mapping[str, object]],
     ac_n1_radius_summaries: Mapping[str, Mapping[str, object]],
@@ -2209,6 +2498,7 @@ def _write_comparison(
     text = _build_comparison_text(
         regime_order=regime_order,
         dispatch_summaries=dispatch_summaries,
+        limit_consistency_summaries=limit_consistency_summaries,
         constraint_summaries=constraint_summaries,
         radius_summaries=radius_summaries,
         ac_n1_radius_summaries=ac_n1_radius_summaries,
@@ -2344,23 +2634,155 @@ def _plot_multi_regime_n1_overloads(
         logger.warning("No common contingencies available for %s", output_path.name)
         return
 
-    x = np.arange(len(common))
-    width = 0.8 / len(frames)
-    fig, ax = plt.subplots(figsize=(12, 5))
-    for idx, (_, display_name, frame) in enumerate(frames):
-        values = frame.loc[common, "n_overloads"].clip(lower=0).values
-        offset = (idx - (len(frames) - 1) / 2.0) * width
-        ax.bar(x + offset, values, width, label=display_name, alpha=0.85)
+    contingency_ids = list(common)
+    overload_matrix = []
+    loading_matrix = []
+    for _, _, frame in frames:
+        overload_matrix.append(
+            frame.loc[common, "n_overloads"].clip(lower=0).to_numpy(dtype=float)
+        )
+        if "max_loading_percent" in frame.columns:
+            loading_matrix.append(
+                frame.loc[common, "max_loading_percent"].to_numpy(dtype=float)
+            )
+        else:
+            loading_matrix.append(np.full(len(common), float("nan")))
 
-    ax.set_xlabel("Contingency line index")
-    ax.set_ylabel("Overloaded lines")
-    ax.set_title("AC N-1 Screening: Overloads per Contingency")
-    ax.legend(fontsize=10)
-    step = max(1, len(common) // 20)
-    ax.set_xticks(x[::step])
-    ax.set_xticklabels([str(common[i]) for i in range(0, len(common), step)], rotation=45, ha="right", fontsize=8)
-    ax.grid(True, axis="y", alpha=0.3)
-    fig.tight_layout()
+    overload_arr = np.vstack(overload_matrix)
+    loading_arr = np.vstack(loading_matrix)
+    worst_score = np.nanmax(np.nan_to_num(overload_arr, nan=0.0), axis=0) * 1000.0 + np.nanmax(
+        np.nan_to_num(loading_arr, nan=0.0),
+        axis=0,
+    )
+    top_k = min(10, len(contingency_ids))
+    top_idx = np.argsort(worst_score)[::-1][:top_k]
+    top_contingencies = [contingency_ids[int(i)] for i in top_idx]
+    max_overload_count = float(np.nanmax(np.nan_to_num(overload_arr, nan=0.0)))
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 9))
+    ax_counts, ax_loading, ax_topk, ax_status = axes.flatten()
+
+    for color_idx, (_, display_name, frame) in enumerate(frames):
+        overload_values = frame.loc[common, "n_overloads"].clip(lower=0).to_numpy(dtype=float)
+        sorted_overloads = np.sort(overload_values)[::-1]
+        ax_counts.step(
+            np.arange(1, len(sorted_overloads) + 1),
+            sorted_overloads,
+            where="mid",
+            linewidth=2.0,
+            color=f"C{color_idx}",
+            label=display_name,
+        )
+
+        if "max_loading_percent" in frame.columns:
+            loading_values = np.nan_to_num(
+                frame.loc[common, "max_loading_percent"].to_numpy(dtype=float),
+                nan=0.0,
+            )
+            sorted_loading = np.sort(loading_values)[::-1]
+            ax_loading.step(
+                np.arange(1, len(sorted_loading) + 1),
+                sorted_loading,
+                where="mid",
+                linewidth=2.0,
+                color=f"C{color_idx}",
+                label=display_name,
+            )
+
+    ax_counts.set_title("Sorted Overload Count per Contingency")
+    ax_counts.set_xlabel("Contingency rank")
+    ax_counts.set_ylabel("Overloaded lines")
+    ax_counts.grid(True, alpha=0.25)
+    ax_counts.legend(fontsize=9)
+
+    ax_loading.axhline(100.0, color="tab:red", linestyle="--", linewidth=1.2, label="100% loading")
+    ax_loading.set_title("Sorted Peak Loading per Contingency")
+    ax_loading.set_xlabel("Contingency rank")
+    ax_loading.set_ylabel("Peak loading (%)")
+    ax_loading.grid(True, alpha=0.25)
+    finite_loading = np.asarray(loading_arr[np.isfinite(loading_arr)], dtype=float)
+    if finite_loading.size:
+        lower = max(0.0, min(95.0, float(np.floor(finite_loading.min() - 5.0))))
+        upper = max(105.0, float(np.ceil(finite_loading.max() + 5.0)))
+        if upper > lower:
+            ax_loading.set_ylim(lower, upper)
+    ax_loading.legend(fontsize=9)
+
+    width = 0.8 / len(frames)
+    x = np.arange(len(top_contingencies))
+    if max_overload_count <= 0.0:
+        for idx, (_, display_name, frame) in enumerate(frames):
+            values = np.nan_to_num(
+                frame.loc[top_contingencies, "max_loading_percent"].to_numpy(dtype=float),
+                nan=0.0,
+            )
+            offset = (idx - (len(frames) - 1) / 2.0) * width
+            ax_topk.bar(
+                x + offset,
+                values,
+                width,
+                alpha=0.9,
+                color=f"C{idx}",
+                label=display_name,
+            )
+        ax_topk.axhline(100.0, color="tab:red", linestyle="--", linewidth=1.2)
+        ax_topk.set_title("Top Contingencies by Peak Loading")
+        ax_topk.set_ylabel("Peak loading (%)")
+    else:
+        for idx, (_, display_name, frame) in enumerate(frames):
+            values = frame.loc[top_contingencies, "n_overloads"].clip(lower=0).to_numpy(dtype=float)
+            offset = (idx - (len(frames) - 1) / 2.0) * width
+            ax_topk.bar(
+                x + offset,
+                values,
+                width,
+                alpha=0.9,
+                color=f"C{idx}",
+                label=display_name,
+            )
+        ax_topk.set_title("Top Contingencies by Screening Severity")
+        ax_topk.set_ylabel("Overloaded lines")
+    ax_topk.set_xlabel("Outaged line")
+    ax_topk.set_xticks(x)
+    ax_topk.set_xticklabels([str(v) for v in top_contingencies], rotation=45, ha="right", fontsize=8)
+    ax_topk.grid(True, axis="y", alpha=0.25)
+    ax_topk.legend(fontsize=9)
+
+    y = np.arange(len(frames))
+    pass_share = []
+    fail_share = []
+    diverged_share = []
+    labels = []
+    for _, display_name, frame in frames:
+        total = len(common)
+        passed = int(frame.loc[common, "n1_feasible"].fillna(False).astype(bool).sum())
+        diverged = int((~frame.loc[common, "pf_converged"].fillna(False).astype(bool)).sum())
+        failed = max(total - passed - diverged, 0)
+        labels.append(display_name)
+        pass_share.append(100.0 * passed / total if total else 0.0)
+        fail_share.append(100.0 * failed / total if total else 0.0)
+        diverged_share.append(100.0 * diverged / total if total else 0.0)
+
+    ax_status.barh(y, pass_share, color="#2E8B57", alpha=0.9, label="Pass")
+    ax_status.barh(y, fail_share, left=pass_share, color="#D95F02", alpha=0.9, label="Overload fail")
+    ax_status.barh(
+        y,
+        diverged_share,
+        left=np.asarray(pass_share) + np.asarray(fail_share),
+        color="#7570B3",
+        alpha=0.9,
+        label="Diverged",
+    )
+    ax_status.set_yticks(y)
+    ax_status.set_yticklabels(labels)
+    ax_status.set_xlim(0.0, 100.0)
+    ax_status.set_xlabel("Contingency share (%)")
+    ax_status.set_title("AC N-1 Screening Outcome Mix")
+    ax_status.grid(True, axis="x", alpha=0.25)
+    ax_status.legend(fontsize=9, loc="lower right")
+
+    fig.suptitle("AC N-1 Screening Summary", fontsize=14)
+    fig.tight_layout(rect=(0, 0, 1, 0.97))
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     logger.info("Saved: %s", output_path)
@@ -2669,11 +3091,19 @@ def main() -> None:
             out_dir / f"{regime_key}_radii.csv",
             f"{regime_key} radii",
         )
+        limit_df = _opf_line_limit_consistency_df(regimes[regime_key]["nn"])
+        if not limit_df.empty:
+            _save_csv(
+                limit_df,
+                out_dir / f"opf_line_limit_consistency_{regime_key}.csv",
+                f"{regime_key} limit consistency",
+            )
 
     # Phase 8: AC sigma-radius and summaries
     sigma_p_mw = float(args.sigma_p)
     sigma_q_mvar = float(args.sigma_q)
     dispatch_summaries: dict[str, dict[str, object]] = {}
+    limit_consistency_summaries: dict[str, dict[str, object]] = {}
     constraint_summaries: dict[str, dict[str, object]] = {}
     radius_summaries: dict[str, dict[str, object]] = {}
     ac_n1_radius_summaries: dict[str, dict[str, object]] = {}
@@ -2694,6 +3124,9 @@ def main() -> None:
                 else float("nan")
             ),
         }
+        limit_consistency_summaries[regime_key] = _opf_line_limit_consistency_summary(
+            regime["nn"], regime_key
+        )
         constraint_summaries[regime_key] = _opf_constraint_summary(
             regime["nn"], regime_key
         )
@@ -2718,6 +3151,7 @@ def main() -> None:
         output_path=out_dir / "comparison_summary.txt",
         regime_order=regime_order,
         dispatch_summaries=dispatch_summaries,
+        limit_consistency_summaries=limit_consistency_summaries,
         constraint_summaries=constraint_summaries,
         radius_summaries=radius_summaries,
         ac_n1_radius_summaries=ac_n1_radius_summaries,
