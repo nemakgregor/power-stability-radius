@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`python -m stability_radius.n1_stability_demo` compares three operating regimes
+`python entry_points/n1_stability_demo.py` compares three operating regimes
 on the same MATPOWER case:
 
 1. `Cost OPF` - AC cost-minimizing OPF, then replayed with AC PF for a
@@ -17,26 +17,26 @@ screening-based SCOPF regime.
 
 ## Output Location
 
-All demo artifacts are written under the unified `runs/` tree:
+All demo artifacts are written under the unified `run_artifacts/` tree:
 
 ```text
-runs/n1_stability_demo/<requested-name>/
+run_artifacts/n1_stability_demo/<requested-name>/
 ```
 
 Examples:
 
-- `--output-dir n1_demo_case118` -> `runs/n1_stability_demo/n1_demo_case118/`
+- `--output-dir n1_demo_case118` -> `run_artifacts/n1_stability_demo/n1_demo_case118/`
 - `--output-dir analysis_output/legacy_case118` -> normalized to
-  `runs/n1_stability_demo/legacy_case118/`
-- `--output-dir runs/custom_bucket/demo_a` -> preserved as-is under `runs/`
+  `run_artifacts/n1_stability_demo/legacy_case118/`
+- `--output-dir run_artifacts/custom_bucket/demo_a` -> preserved as-is under `run_artifacts/`
 
-Each run directory contains `run.log`, CSV artifacts, `comparison_summary.txt`,
+Each run directory contains `debug.log`, CSV artifacts, `comparison_summary.txt`,
 and the generated plots.
 
 ## Command
 
 ```bash
-python -m stability_radius.n1_stability_demo \
+python entry_points/n1_stability_demo.py \
     --input data/input/pglib_opf_case118_ieee.m \
     --output-dir n1_demo_case118 \
     --n-iter 2 \
@@ -111,3 +111,4 @@ through pandapower, so the demo uses an iterative tighten-screen-resolve loop:
 
 This keeps the demo reproducible and comparable to the radius-guided regime while
 still giving a practical SCOPF-style baseline.
+

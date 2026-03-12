@@ -17,21 +17,21 @@ The project is organized into twelve distinct subsystems, each encapsulated in i
 
 ### 1.1 Entry Point (`power_stability_radius.py`)
 
-**File:** `src/power_stability_radius.py`
+**File:** `entry_points/power_stability_radius.py`
 
-A deliberately thin script that imports `stability_radius.cli.main` and delegates to it. This separation keeps the repository usable as a library (via `stability_radius.workflows.compute_results_for_case`) without importing CLI-only dependencies at import time.
+Main operational CLI module. It contains the full argparse command surface and run orchestration while the library API remains available via `stability_radius.workflows.compute_results_for_case`.
 
 ```python
 # Library API:
 from stability_radius.workflows import compute_results_for_case
 
 # CLI API:
-from stability_radius.cli import main as cli_main
+from entry_points.power_stability_radius import main as cli_main
 ```
 
-### 1.2 CLI Layer (`cli.py`)
+### 1.2 CLI Layer (`power_stability_radius.py`)
 
-**File:** `src/stability_radius/cli.py`
+**File:** `entry_points/power_stability_radius.py`
 
 The command-line interface is built on `argparse` and provides four subcommands:
 
@@ -249,7 +249,7 @@ These metrics serve as empirical baselines for validating the analytic certifica
 
 ### 1.12 Statistics and Experiments
 
-**Statistics** (`src/stability_radius/statistics/table.py`):
+**Statistics** (`entry_points/table.py`):
 ASCII and CSV table formatter for `results.json` files. Supports both flat and sectioned (DC + AC) output formats with configurable column selection.
 
 **Experiments** (`experiments/`):
@@ -351,7 +351,7 @@ Verification modules (`monte_carlo.py`, `generate_report.py`) are invoked indepe
 ### 3.1 CLI Entry
 
 ```
-python src/power_stability_radius.py [--config conf/config.yaml] <command> [options]
+python entry_points/power_stability_radius.py [--config conf/config.yaml] <command> [options]
 ```
 
 **Control flow in `main()`:**
@@ -717,3 +717,4 @@ The verification modules are architecturally independent from the computation mo
 ### 7.10 Extension via Configuration, Not Code Modification
 
 New radius variants (sigma, metric, N-1) are controlled by flags (`--compute-dc-probabilistic`, `--ac-metric-enabled`, `--compute-nminus1`) rather than requiring code changes. The `DCExtensionsConfig` and `ACExtensionsConfig` dataclasses group these flags, and the workflow orchestrator conditionally executes the corresponding computation blocks. See [developer_guide.md](developer_guide.md) for guidance on adding new radius variants.
+

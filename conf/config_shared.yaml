@@ -7,12 +7,12 @@ io:
   allow_download: false
 
 logging:
-  runs_dir: runs
+  runs_dir: run_artifacts
   level_console: INFO
   level_file: DEBUG
 
-  # timestamp  -> runs/<module>/<timestamp>/
-  # overwrite  -> runs/<module>/<run_name>/  (folder is deleted/recreated each run)
+  # timestamp  -> run_artifacts/<module>/<timestamp>/
+  # overwrite  -> run_artifacts/<module>/<run_name>/  (folder is deleted/recreated each run)
   run_dir_mode: timestamp
   run_name: latest
 

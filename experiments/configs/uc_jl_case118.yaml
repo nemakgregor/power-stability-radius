@@ -48,4 +48,5 @@ plot:
 
 allow_download: true
 data_dir: data/input
-output_dir: runs/run_sigma_radius/sigma_radius_hourly
+artifacts_root: run_artifacts
+output_dir: sigma_radius_hourly

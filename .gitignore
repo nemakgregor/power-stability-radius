@@ -5,6 +5,7 @@ openapi
 
 
 runs/
+run_artifacts/
 outputs/
 verification/
 analysis_output/
@@ -20,4 +21,3 @@ experiments/output/
 # Python bytecode
 __pycache__/
 *.pyc
-

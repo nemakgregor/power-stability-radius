@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 """
 Tests for Experiment 2 (run_sigma_radius) helper functions.
@@ -104,7 +104,7 @@ def _make_res(
     n_bus: int = 3,
 ) -> dict:
     """Build a result dict via _build_result_dict from synthetic avg_result."""
-    from experiments.run_sigma_radius import _build_result_dict
+    from entry_points.run_sigma_radius import _build_result_dict
 
     if l2_radii is None:
         l2_radii = [10.0] * len(sigma_radii)
@@ -128,7 +128,7 @@ def _make_res(
 
 class TestBuildResultDict:
     def test_extracts_sigma_radius_per_line(self) -> None:
-        from experiments.run_sigma_radius import _build_result_dict
+        from entry_points.run_sigma_radius import _build_result_dict
 
         avg = _make_avg_result(n_lines=3, sigma_radii=[2.0, -1.0, 5.0])
         res = _build_result_dict(avg)
@@ -139,7 +139,7 @@ class TestBuildResultDict:
         assert res["sigma_radius"]["line_2"] == pytest.approx(5.0)
 
     def test_base_infeasible_flag_for_negative(self) -> None:
-        from experiments.run_sigma_radius import _build_result_dict
+        from entry_points.run_sigma_radius import _build_result_dict
 
         avg = _make_avg_result(n_lines=3, sigma_radii=[-2.0, 3.0, 5.0])
         res = _build_result_dict(avg)
@@ -148,7 +148,7 @@ class TestBuildResultDict:
         assert res["base_infeasible"]["line_1"] is False
 
     def test_nan_sigma_excluded(self) -> None:
-        from experiments.run_sigma_radius import _build_result_dict
+        from entry_points.run_sigma_radius import _build_result_dict
 
         avg = _make_avg_result(n_lines=3, sigma_radii=[float("nan"), 3.0, 5.0])
         res = _build_result_dict(avg)
@@ -164,14 +164,14 @@ class TestBuildResultDict:
 
 class TestBuildTable2Rows:
     def test_returns_all_rows(self) -> None:
-        from experiments.run_sigma_radius import _build_table2_rows
+        from entry_points.run_sigma_radius import _build_table2_rows
 
         res = _make_res([1.0, 2.0, 3.0, 4.0, 5.0])
         rows = _build_table2_rows(res)
         assert len(rows) == 5
 
     def test_rows_sorted_ascending_by_r_sigma(self) -> None:
-        from experiments.run_sigma_radius import _build_table2_rows
+        from entry_points.run_sigma_radius import _build_table2_rows
 
         res = _make_res([5.0, 1.0, 3.0, 2.0, 4.0])
         rows = _build_table2_rows(res)
@@ -179,7 +179,7 @@ class TestBuildTable2Rows:
         assert r_values == sorted(r_values)
 
     def test_negative_r_sigma_lines_flagged_infeasible(self) -> None:
-        from experiments.run_sigma_radius import _build_table2_rows
+        from entry_points.run_sigma_radius import _build_table2_rows
 
         res = _make_res([-2.0, 1.0, 3.0])
         rows = _build_table2_rows(res)
@@ -189,7 +189,7 @@ class TestBuildTable2Rows:
         assert rows[2]["base_infeasible"] is False
 
     def test_mc_and_verified_fields_are_none_initially(self) -> None:
-        from experiments.run_sigma_radius import _build_table2_rows
+        from entry_points.run_sigma_radius import _build_table2_rows
 
         res = _make_res([1.0, 2.0])
         rows = _build_table2_rows(res)
@@ -198,7 +198,7 @@ class TestBuildTable2Rows:
             assert row["verified"] is None
 
     def test_margin_computed_correctly(self) -> None:
-        from experiments.run_sigma_radius import _build_table2_rows
+        from entry_points.run_sigma_radius import _build_table2_rows
 
         res = _make_res([5.0], s0_values=[80.0], limit_values=[100.0])
         rows = _build_table2_rows(res)
@@ -213,7 +213,7 @@ class TestBuildTable2Rows:
 class TestWorstCaseVerificationSkipsInfeasible:
     def test_negative_r_sigma_lines_are_skipped(self) -> None:
         """Lines with r_sigma <= 0 should be skipped in verification."""
-        from experiments.run_sigma_radius import (
+        from entry_points.run_sigma_radius import (
             _build_table2_rows,
             _run_worst_case_verification,
         )
@@ -240,10 +240,10 @@ class TestWorstCaseVerificationSkipsInfeasible:
         output_dir = Path("/tmp/test_verify")
 
         with (
-            patch("experiments.run_sigma_radius.copy") as mock_copy,
-            patch("experiments.run_sigma_radius.verify_worst_case") as mock_verify,
+            patch("entry_points.run_sigma_radius.copy") as mock_copy,
+            patch("entry_points.run_sigma_radius.verify_worst_case") as mock_verify,
             patch.object(Path, "open", create=True),
-            patch("experiments.run_sigma_radius.json"),
+            patch("entry_points.run_sigma_radius.json"),
         ):
             mock_copy.deepcopy.return_value = mock_net
 
@@ -323,7 +323,7 @@ class TestScatterPlotFiltering:
 
 class TestValidationChecks:
     def test_feasibility_summary_counts_negative_lines(self) -> None:
-        from experiments.run_sigma_radius import (
+        from entry_points.run_sigma_radius import (
             _build_table2_rows,
             _run_validation_checks,
         )
@@ -334,7 +334,7 @@ class TestValidationChecks:
             s0_values=[110.0, 105.0, 80.0, 60.0],
             limit_values=[100.0, 100.0, 100.0, 100.0],
         )
-        from experiments.run_sigma_radius import _build_result_dict
+        from entry_points.run_sigma_radius import _build_result_dict
 
         res = _build_result_dict(avg_result)
         rows = _build_table2_rows(res)
@@ -344,7 +344,7 @@ class TestValidationChecks:
 
         with (
             patch.object(Path, "open", create=True),
-            patch("experiments.run_sigma_radius.json"),
+            patch("entry_points.run_sigma_radius.json"),
         ):
             checks = _run_validation_checks(
                 res=res,
@@ -360,13 +360,13 @@ class TestValidationChecks:
         assert checks["feasibility"]["n_top_k_infeasible"] == 2
 
     def test_balance_check_passes_for_zero_sum_dp(self) -> None:
-        from experiments.run_sigma_radius import (
+        from entry_points.run_sigma_radius import (
             _build_table2_rows,
             _run_validation_checks,
         )
 
         avg_result = _make_avg_result(n_lines=1, line_ids=[0], sigma_radii=[5.0])
-        from experiments.run_sigma_radius import _build_result_dict
+        from entry_points.run_sigma_radius import _build_result_dict
 
         res = _build_result_dict(avg_result)
         rows = _build_table2_rows(res)
@@ -376,7 +376,7 @@ class TestValidationChecks:
 
         with (
             patch.object(Path, "open", create=True),
-            patch("experiments.run_sigma_radius.json"),
+            patch("entry_points.run_sigma_radius.json"),
         ):
             checks = _run_validation_checks(
                 res=res,
@@ -397,7 +397,7 @@ class TestValidationChecks:
 
 class TestCSVExport:
     def test_csv_includes_base_infeasible_column(self, tmp_path: Path) -> None:
-        from experiments.run_sigma_radius import (
+        from entry_points.run_sigma_radius import (
             _build_table2_rows,
             _export_table2_csv,
         )
@@ -427,7 +427,7 @@ class TestCSVExport:
 
 class TestSaveHvectorsNPZ:
     def test_hvectors_saved_and_loadable(self, tmp_path: Path) -> None:
-        from experiments.run_sigma_radius import _save_hvectors_npz
+        from entry_points.run_sigma_radius import _save_hvectors_npz
 
         res = _make_res([5.0, 3.0, 7.0])
         _save_hvectors_npz(res, output_dir=tmp_path)
@@ -585,7 +585,7 @@ class TestNegativeSigmaRadius:
 
 class TestMultiScaleVerification:
     def test_verification_produces_per_scale_results(self) -> None:
-        from experiments.run_sigma_radius import (
+        from entry_points.run_sigma_radius import (
             _build_table2_rows,
             _run_worst_case_verification,
         )
@@ -611,10 +611,10 @@ class TestMultiScaleVerification:
         mock_net = MagicMock()
 
         with (
-            patch("experiments.run_sigma_radius.copy") as mock_copy,
-            patch("experiments.run_sigma_radius.verify_worst_case") as mock_verify,
+            patch("entry_points.run_sigma_radius.copy") as mock_copy,
+            patch("entry_points.run_sigma_radius.verify_worst_case") as mock_verify,
             patch.object(Path, "open", create=True),
-            patch("experiments.run_sigma_radius.json"),
+            patch("entry_points.run_sigma_radius.json"),
         ):
             mock_copy.deepcopy.return_value = mock_net
 
@@ -651,3 +651,5 @@ class TestMultiScaleVerification:
         assert len(ok_results[0]["scale_results"]) == 3
         # 1 BP check + 3 scale verifications (FD skipped: zero worst-case vectors)
         assert mock_verify.call_count == 4
+
+

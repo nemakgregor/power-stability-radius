@@ -4,26 +4,30 @@ from __future__ import annotations
 import copy
 import logging
 import math
-import sys
 
 import numpy as np
-
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-logger = logging.getLogger(__name__)
-
-try:
-    import pandapower as pp
-except ImportError:
-    sys.exit(1)
 
 from stability_radius.ac.ac_model import build_ac_operator
 from stability_radius.base_point.pandapower_tools import (
     apply_lossless_policy_to_pandapower_net,
     resolve_slack_bus_id,
 )
+from stability_radius.utils import create_module_output_dir, setup_output_dir_logging
+
+logger = logging.getLogger(__name__)
 
 
-def main() -> None:
+def main() -> int:
+    artifact_dir = create_module_output_dir(module_name="debug_jacobian_case118")
+    setup_output_dir_logging(artifact_dir)
+    logger.info("Artifact directory: %s", str(artifact_dir))
+
+    try:
+        import pandapower as pp
+    except ImportError:
+        logger.error("pandapower not available")
+        return 1
+
     from pandapower.networks import case118
 
     net_raw = case118()
@@ -229,7 +233,4 @@ def main() -> None:
     # So h^T du = b^T dx_pred
     ds_via_b = float(rhs @ dx_pred)
     logger.info("  ds_via_b = b^T * dx = %.6e (should match ds_pred)", ds_via_b)
-
-
-if __name__ == "__main__":
-    main()
+    return 0

@@ -59,7 +59,7 @@ From `experiments/configs/pglib_sweep.yaml`:
 
 ### Output
 
-- `runs/run_pglib_sweep/...` directories
+- `run_artifacts/run_pglib_sweep/...` directories
 - `summary.json`: Aggregated metrics per case
 - `fig1_dc_vs_ac_radius.png/pdf`: Scatter plot of DC vs AC radius
 

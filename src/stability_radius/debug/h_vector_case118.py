@@ -8,18 +8,8 @@ from __future__ import annotations
 import copy
 import logging
 import math
-import sys
 
 import numpy as np
-
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-logger = logging.getLogger(__name__)
-
-try:
-    import pandapower as pp
-except ImportError:
-    logger.error("pandapower not available")
-    sys.exit(1)
 
 from stability_radius.base_point.pandapower_opp import solve_ac_fpf
 from stability_radius.base_point.pandapower_tools import (
@@ -29,10 +19,23 @@ from stability_radius.base_point.pandapower_tools import (
     resolve_slack_bus_id,
 )
 from stability_radius.radii.ac_l2 import compute_ac_l2_radius
+from stability_radius.utils import create_module_output_dir, setup_output_dir_logging
 from stability_radius.workflows import _expand_h_reduced_to_full
 
+logger = logging.getLogger(__name__)
 
-def main() -> None:
+
+def main() -> int:
+    artifact_dir = create_module_output_dir(module_name="debug_h_vector_case118")
+    setup_output_dir_logging(artifact_dir)
+    logger.info("Artifact directory: %s", str(artifact_dir))
+
+    try:
+        import pandapower as pp
+    except ImportError:
+        logger.error("pandapower not available")
+        return 1
+
     # Load case118
     from pandapower.networks import case118
 
@@ -229,8 +232,9 @@ def main() -> None:
                                float(np.linalg.norm(h_from_full[pos, :] if end == "from" else h_to_full[pos, :])),
                                rel_err, " FAIL" if rel_err > 0.05 else "")
 
-    logger.info("\nBalanced perturbation: %d / %d line-ends passed (<5%% rel_err)", n_pass, n_checked)
-
-
-if __name__ == "__main__":
-    main()
+    logger.info(
+        "\nBalanced perturbation: %d / %d line-ends passed (<5%% rel_err)",
+        n_pass,
+        n_checked,
+    )
+    return 0

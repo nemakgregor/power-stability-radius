@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 
@@ -13,7 +13,7 @@ def test_report_requires_cases_in_config_and_fails_fast_without_side_effects(
     - `report` must not silently assume a hard-coded case list.
     - If cfg_loaded is None (no YAML), it must fail before creating run artifacts.
     """
-    from stability_radius.cli import build_parser, run_report
+    from entry_points.power_stability_radius import build_parser, run_report
 
     monkeypatch.chdir(tmp_path)
 
@@ -38,3 +38,4 @@ def test_report_requires_cases_in_config_and_fails_fast_without_side_effects(
         )
 
     assert not (tmp_path / "runs").exists()
+

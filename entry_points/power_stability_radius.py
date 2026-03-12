@@ -35,15 +35,26 @@ from stability_radius.config import (
     OmegaConf,
     load_project_config,
 )
-from stability_radius.statistics.table import (
-    DEFAULT_AC_COLUMNS,
-    DEFAULT_DC_COLUMNS,
-    format_radius_summary,
-    format_results_csv_sections,
-    format_results_table,
-    format_results_table_sections,
-    infer_default_flat_columns,
-)
+try:  # Support both `python -m entry_points.power_stability_radius` and script execution.
+    from .table import (
+        DEFAULT_AC_COLUMNS,
+        DEFAULT_DC_COLUMNS,
+        format_radius_summary,
+        format_results_csv_sections,
+        format_results_table,
+        format_results_table_sections,
+        infer_default_flat_columns,
+    )
+except ImportError:  # pragma: no cover - direct script fallback
+    from table import (
+        DEFAULT_AC_COLUMNS,
+        DEFAULT_DC_COLUMNS,
+        format_radius_summary,
+        format_results_csv_sections,
+        format_results_table,
+        format_results_table_sections,
+        infer_default_flat_columns,
+    )
 from stability_radius.utils import create_module_output_dir, log_stage, setup_logging
 from stability_radius.workflows import (
     ACExtensionsConfig,
@@ -51,7 +62,7 @@ from stability_radius.workflows import (
     compute_results_for_case,
 )
 
-logger = logging.getLogger("stability_radius.cli")
+logger = logging.getLogger("entry_points.power_stability_radius")
 
 _SUPPORTED_COMMANDS: tuple[str, ...] = (
     "compute",
@@ -881,6 +892,7 @@ def run_compute(
     if str(args.export_results).strip():
         export_dir = create_module_output_dir(
             module_name="compute_exports",
+            runs_dir=str(args.runs_dir),
             requested_output_dir=Path(str(args.export_results)).parent,
         )
         export_path_abs = str((export_dir / Path(str(args.export_results)).name).resolve())
@@ -956,6 +968,7 @@ def run_report(
     results_dir = Path(_resolve_path(str(args.results_dir)))
     report_dir = create_module_output_dir(
         module_name="report",
+        runs_dir=str(args.runs_dir),
         requested_output_dir=Path(str(args.out)).parent,
     )
     out_path = report_dir / Path(str(args.out)).name
@@ -966,6 +979,9 @@ def run_report(
     )
 
     run_dir = _setup_run_and_logging(args)
+    _write_run_artifacts(
+        run_dir=run_dir, cfg_source_path=cfg_path, cfg_used={"report": vars(args)}, argv=argv
+    )
 
     from stability_radius.verification.generate_report import (
         ReportCaseSpec,
@@ -1030,6 +1046,9 @@ def run_monte_carlo(
     input_case_path = Path(_resolve_path(input_path_raw))
 
     run_dir = _setup_run_and_logging(args)
+    _write_run_artifacts(
+        run_dir=run_dir, cfg_source_path=cfg_path, cfg_used={"table": vars(args)}, argv=argv
+    )
 
     cfg_used: dict[str, Any] = {
         "config_path": str(cfg_path),
@@ -1185,7 +1204,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args = parser.parse_args(argv_list)
 
     if bool(getattr(args, "run_tests", 0)):
-        project_root = Path(__file__).resolve().parents[2]
+        project_root = Path(__file__).resolve().parents[1]
         code = _run_self_tests(project_root=project_root)
         if code != 0:
             print(
@@ -1211,3 +1230,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
     raise AssertionError(f"Unhandled command: {args.command}")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

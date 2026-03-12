@@ -17,16 +17,28 @@ import os
 import re
 import shutil
 import time
+from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
-from stability_radius.config import LoggingConfig
+from stability_radius.config import DEFAULT_LOGGING, LoggingConfig
+from .json_utils import NumpyJSONEncoder, numpy_to_builtin
 
-__all__ = ["create_module_output_dir", "log_stage", "setup_logging"]
+__all__ = [
+    "ARTIFACTS_ROOT_NAME",
+    "NumpyJSONEncoder",
+    "create_module_output_dir",
+    "log_stage",
+    "numpy_to_builtin",
+    "resolve_artifacts_root",
+    "setup_logging",
+    "setup_output_dir_logging",
+]
 
 _LOGGER_ROOT_NAME = "stability_radius"
 _LOGGER_FILE_ONLY_NAME = "stability_radius.fileonly"
+ARTIFACTS_ROOT_NAME = DEFAULT_LOGGING.runs_dir
 
 
 def _level_from_str(level: str) -> int:
@@ -101,18 +113,20 @@ def _make_unique_run_dir(runs_dir: Path, *, prefix: str) -> Path:
 def create_module_output_dir(
     *,
     module_name: str,
-    runs_dir: str | Path = "runs",
+    runs_dir: str | Path | None = None,
     requested_output_dir: str | Path | None = None,
 ) -> Path:
     """
-    Resolve a module-specific artifact directory under `runs/`.
+    Resolve a module-specific artifact directory under the configured artifact root.
 
     Rules:
-    - default: `runs/<module_name>`
-    - if `requested_output_dir` already points inside `runs/`, keep it
-    - otherwise normalize it to `runs/<module_name>/<basename>`
+    - default: `<artifacts_root>/<module_name>`
+    - if `requested_output_dir` already points inside `<artifacts_root>/`, keep it
+    - otherwise normalize it to `<artifacts_root>/<module_name>/<basename>`
     """
-    runs_root = _resolve_base_dir(runs_dir)
+    runs_root = _resolve_base_dir(
+        DEFAULT_LOGGING.runs_dir if runs_dir is None else runs_dir
+    )
     module_dir = runs_root / _sanitize_path_component(module_name)
 
     requested_raw = "" if requested_output_dir is None else str(requested_output_dir).strip()
@@ -133,6 +147,37 @@ def create_module_output_dir(
     target = module_dir / _sanitize_path_component(requested.name or module_name)
     target.mkdir(parents=True, exist_ok=True)
     return target.resolve()
+
+
+def resolve_artifacts_root(
+    cfg: Mapping[str, object] | None = None,
+    *,
+    runs_dir: str | Path | None = None,
+) -> Path:
+    """
+    Resolve the shared artifact root for an entry point.
+
+    Priority:
+    1. explicit `runs_dir` argument
+    2. config mapping key `logging.runs_dir`
+    3. config mapping key `artifacts_root`
+    4. project default (`DEFAULT_LOGGING.runs_dir`)
+    """
+    if runs_dir is not None and str(runs_dir).strip():
+        return _resolve_base_dir(runs_dir)
+
+    if cfg is not None:
+        logging_cfg = cfg.get("logging")
+        if isinstance(logging_cfg, Mapping):
+            logging_runs_dir = logging_cfg.get("runs_dir")
+            if logging_runs_dir is not None and str(logging_runs_dir).strip():
+                return _resolve_base_dir(str(logging_runs_dir))
+
+        artifacts_root = cfg.get("artifacts_root")
+        if artifacts_root is not None and str(artifacts_root).strip():
+            return _resolve_base_dir(str(artifacts_root))
+
+    return _resolve_base_dir(DEFAULT_LOGGING.runs_dir)
 
 
 @contextmanager
@@ -195,6 +240,10 @@ def setup_logging(cfg: LoggingConfig) -> str:
     if mode not in {"timestamp", "overwrite"}:
         raise ValueError("run_dir_mode must be 'timestamp' or 'overwrite'.")
 
+    log_filename = Path(
+        str(getattr(cfg, "log_filename", "debug.log")).strip() or "debug.log"
+    ).name
+
     if mode == "overwrite":
         run_name = str(getattr(cfg, "run_name", "latest")).strip() or "latest"
         run_dir = module_dir / _sanitize_path_component(run_name)
@@ -207,7 +256,7 @@ def setup_logging(cfg: LoggingConfig) -> str:
 
     fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
-    file_handler = logging.FileHandler(run_dir / "run.log", encoding="utf-8")
+    file_handler = logging.FileHandler(run_dir / log_filename, encoding="utf-8")
     file_handler.setLevel(_level_from_str(cfg.level_file))
     file_handler.setFormatter(fmt)
 
@@ -240,5 +289,55 @@ def setup_logging(cfg: LoggingConfig) -> str:
     project_logger.info("Run directory mode: %s", mode)
     if mode == "overwrite":
         project_logger.info("Run name: %s", str(getattr(cfg, "run_name", "latest")))
-    project_logger.info("Log file: %s", str(run_dir / "run.log"))
+    project_logger.info("Log file: %s", str(run_dir / log_filename))
     return str(run_dir.resolve())
+
+
+def setup_output_dir_logging(
+    output_dir: str | Path,
+    *,
+    level_console: str = "INFO",
+    level_file: str = "DEBUG",
+    log_filename: str = "debug.log",
+    quiet_loggers: Sequence[str] = ("pandapower", "numba", "urllib3", "matplotlib"),
+) -> Path:
+    """
+    Configure console + file logging for scripts that write into a fixed output directory.
+
+    Unlike `setup_logging()`, this helper does not create a timestamped run directory.
+    It writes directly into `output_dir/log_filename`.
+    """
+    target_dir = _resolve_base_dir(output_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    log_path = target_dir / (Path(log_filename).name or "debug.log")
+
+    fmt = logging.Formatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s")
+
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(_level_from_str(level_console))
+    console_handler.setFormatter(fmt)
+
+    file_handler = logging.FileHandler(log_path, mode="w", encoding="utf-8")
+    file_handler.setLevel(_level_from_str(level_file))
+    file_handler.setFormatter(fmt)
+
+    root = logging.getLogger()
+    _close_and_clear_handlers(root)
+    root.setLevel(logging.DEBUG)
+    root.addHandler(console_handler)
+    root.addHandler(file_handler)
+
+    project_logger = logging.getLogger(_LOGGER_ROOT_NAME)
+    _close_and_clear_handlers(project_logger)
+    project_logger.setLevel(logging.DEBUG)
+    project_logger.propagate = True
+
+    file_only_logger = logging.getLogger(_LOGGER_FILE_ONLY_NAME)
+    _close_and_clear_handlers(file_only_logger)
+    file_only_logger.setLevel(logging.DEBUG)
+    file_only_logger.propagate = True
+
+    for name in quiet_loggers:
+        logging.getLogger(str(name)).setLevel(logging.WARNING)
+
+    return log_path.resolve()

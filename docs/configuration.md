@@ -328,7 +328,7 @@ class ACFPFConfig:
 | Runs directory | `logging.runs_dir` | `--runs-dir` | str | `"runs"` | Base directory for run output folders |
 | Console log level | `logging.level_console` | `--log-level` | str | `"INFO"` | Python logging level for console output |
 | File log level | `logging.level_file` | `--log-file-level` | str | `"DEBUG"` | Python logging level for the run log file |
-| Run directory mode | `logging.run_dir_mode` | `--run-dir-mode` | str | `"timestamp"` | `"timestamp"`: create `runs/<module>/<timestamp>/`. `"overwrite"`: create/recreate `runs/<module>/<run_name>/` |
+| Run directory mode | `logging.run_dir_mode` | `--run-dir-mode` | str | `"timestamp"` | `"timestamp"`: create `run_artifacts/<module>/<timestamp>/`. `"overwrite"`: create/recreate `run_artifacts/<module>/<run_name>/` |
 | Run name | `logging.run_name` | `--run-name` | str | `"latest"` | Folder name when `run_dir_mode="overwrite"` |
 | Run tests | `run_tests` | `--run-tests` | int | `1` | If 1, run the test suite before the main command |
 
@@ -555,7 +555,7 @@ compute:
 
 allow_download: true
 data_dir: data/input
-output_dir: runs/run_pglib_sweep/test_run_6
+output_dir: run_artifacts/run_pglib_sweep/test_run_6
 case_timeout_sec: 1200
 ```
 

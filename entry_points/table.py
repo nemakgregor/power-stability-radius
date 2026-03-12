@@ -3,12 +3,13 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import logging
 import math
 from io import StringIO
 from pathlib import Path
 from typing import Any, Iterable, List, Sequence, Tuple
 
-from stability_radius.utils import create_module_output_dir
+from stability_radius.utils import create_module_output_dir, setup_output_dir_logging
 
 # AC-focused defaults: keep DC table minimal by default.
 DEFAULT_DC_COLUMNS: Tuple[str, ...] = (
@@ -29,6 +30,8 @@ DEFAULT_AC_COLUMNS: Tuple[str, ...] = (
     "binding_end",
     "radius_ac_l2",
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _line_sort_key(line_key: str) -> Tuple[int, str]:
@@ -325,6 +328,17 @@ def main(argv: Iterable[str] | None = None) -> int:
         "--csv-out", type=str, default="", help="Write CSV here (flat mode)."
     )
     args = parser.parse_args(list(argv) if argv is not None else None)
+    requested_output_dir = None
+    if str(args.table_out).strip():
+        requested_output_dir = Path(str(args.table_out)).parent
+    elif str(args.csv_out).strip():
+        requested_output_dir = Path(str(args.csv_out)).parent
+
+    artifact_dir = create_module_output_dir(
+        module_name="table",
+        requested_output_dir=requested_output_dir,
+    )
+    setup_output_dir_logging(artifact_dir)
 
     results = _load_results_json(Path(args.results_json))
     max_rows = int(args.max_rows) if args.max_rows is not None else None
@@ -343,24 +357,23 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     print(table_str)
     print(format_radius_summary(results, radius_field=str(args.radius_field)))
+    default_table_path = artifact_dir / "results_table.txt"
+    default_table_path.write_text(table_str + "\n", encoding="utf-8")
+    logger.info("Wrote table artifact: %s", str(default_table_path))
 
     if str(args.table_out).strip():
-        table_dir = create_module_output_dir(
-            module_name="table",
-            requested_output_dir=Path(str(args.table_out)).parent,
-        )
-        (table_dir / Path(str(args.table_out)).name).write_text(
+        table_path = artifact_dir / Path(str(args.table_out)).name
+        table_path.write_text(
             table_str + "\n", encoding="utf-8"
         )
+        logger.info("Wrote explicit table output: %s", str(table_path))
 
     if str(args.csv_out).strip():
         if not csv_str:
             raise ValueError("--csv-out is only supported in flat mode.")
-        csv_dir = create_module_output_dir(
-            module_name="table",
-            requested_output_dir=Path(str(args.csv_out)).parent,
-        )
-        (csv_dir / Path(str(args.csv_out)).name).write_text(csv_str, encoding="utf-8")
+        csv_path = artifact_dir / Path(str(args.csv_out)).name
+        csv_path.write_text(csv_str, encoding="utf-8")
+        logger.info("Wrote CSV output: %s", str(csv_path))
 
     return 0
 

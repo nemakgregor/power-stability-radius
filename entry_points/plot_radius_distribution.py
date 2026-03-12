@@ -1,12 +1,12 @@
 """Plot radius distributions (DC vs AC) across PGLib cases.
 
-Reads per-case JSON results from ``runs/run_pglib_sweep/`` and
+Reads per-case JSON results from ``run_artifacts/run_pglib_sweep/`` and
 produces box-plots / violin-plots of DC and AC L2 radii.
 
 Usage::
 
-    python -m experiments.plot_radius_distribution
-    python -m experiments.plot_radius_distribution --input-dir runs/run_pglib_sweep
+    python entry_points/plot_radius_distribution.py
+    python entry_points/plot_radius_distribution.py --input-dir run_artifacts/run_pglib_sweep
 """
 
 from __future__ import annotations
@@ -18,11 +18,15 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-from stability_radius.utils import create_module_output_dir
+from stability_radius.utils import (
+    ARTIFACTS_ROOT_NAME,
+    create_module_output_dir,
+    setup_output_dir_logging,
+)
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_INPUT_DIR = Path("runs/run_pglib_sweep")
+_DEFAULT_INPUT_DIR = Path(ARTIFACTS_ROOT_NAME) / "run_pglib_sweep"
 
 
 def _load_json(path: Path) -> dict:
@@ -146,8 +150,9 @@ def main() -> None:
         module_name="plot_radius_distribution",
         requested_output_dir=args.output_dir,
     )
+    setup_output_dir_logging(output_dir)
     plot(args.input_dir, output_dir)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

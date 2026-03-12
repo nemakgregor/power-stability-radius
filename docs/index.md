@@ -84,7 +84,7 @@ poetry install
 ### Run a basic computation
 
 ```bash
-poetry run python src/power_stability_radius.py \
+poetry run python entry_points/power_stability_radius.py \
     --config conf/config.yaml \
     compute \
     --input data/input/pglib_opf_case30_ieee.m \
@@ -96,7 +96,7 @@ poetry run python src/power_stability_radius.py \
 ### Run Monte Carlo verification
 
 ```bash
-poetry run python src/power_stability_radius.py \
+poetry run python entry_points/power_stability_radius.py \
     --config conf/config.yaml \
     monte-carlo \
     --results-path results.json \
@@ -109,21 +109,21 @@ poetry run python src/power_stability_radius.py \
 ### Run experiments for paper
 
 ```bash
-python -m experiments.run_pglib_sweep
-python -m experiments.run_sigma_radius --config experiments/configs/sigma_case2000_goc.yaml
+python entry_points/run_pglib_sweep.py
+python entry_points/run_sigma_radius.py --config experiments/configs/sigma_case2000_goc.yaml
 ```
 
 ### Run the three-regime N-1 demo
 
 ```bash
-python -m stability_radius.n1_stability_demo \
+python entry_points/n1_stability_demo.py \
     --input data/input/pglib_opf_case118_ieee.m \
     --output-dir n1_demo_case118 \
     --n-iter 2 \
     --scopf-iter 2
 ```
 
-Artifacts are written to `runs/n1_stability_demo/n1_demo_case118/`. See
+Artifacts are written to `run_artifacts/n1_stability_demo/n1_demo_case118/`. See
 [n1_demo.md](n1_demo.md) for the output files, plots, and the interpretation of
 proxy headroom, post-PF current-loading diagnostics, pandapower's
 apparent-power OPF branch constraints, and the new proxy-vs-OPF limit

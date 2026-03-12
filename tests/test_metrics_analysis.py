@@ -1,4 +1,4 @@
-"""Tests for stability_radius.metrics_analysis — DataFrame, correlations, precision-at-k."""
+﻿"""Tests for entry_points.metrics_analysis â€” DataFrame, correlations, precision-at-k."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from stability_radius.metrics_analysis import (
+from entry_points.metrics_analysis import (
     _aggregate_bus_loads_sorted,
     _resolve_metrics_analysis_slack_bus,
     build_unified_dataframe,
@@ -118,10 +118,10 @@ class TestBuildUnifiedDataframe:
             baselines={},
             mc_per_line_fractions={},
         )
-        # line_0 binding_end="from" → s0_binding_mva=ac_s0_from_mva=30.0
+        # line_0 binding_end="from" â†’ s0_binding_mva=ac_s0_from_mva=30.0
         row0 = df[df["line_key"] == "line_0"].iloc[0]
         assert row0["s0_binding_mva"] == 30.0
-        # line_1 binding_end="to" → s0_binding_mva=ac_s0_to_mva=90.0
+        # line_1 binding_end="to" â†’ s0_binding_mva=ac_s0_to_mva=90.0
         row1 = df[df["line_key"] == "line_1"].iloc[0]
         assert row1["s0_binding_mva"] == 90.0
 
@@ -195,7 +195,7 @@ class TestComputePrecisionAtK:
         assert len(pak) == 1
         assert pak.iloc[0]["k"] == 3
         # loading_ratio is NOT in _NEGATE_FOR_CORRELATION, so higher = more dangerous
-        # top-3 by loading_ratio desc: 0.9, 0.8, 0.5 → probs 0.10, 0.08, 0.05
+        # top-3 by loading_ratio desc: 0.9, 0.8, 0.5 â†’ probs 0.10, 0.08, 0.05
         expected_mean = (0.10 + 0.08 + 0.05) / 3
         assert pak.iloc[0]["mean_empirical_prob"] == pytest.approx(expected_mean)
 
@@ -266,3 +266,4 @@ def test_metrics_analysis_load_aggregation_uses_sorted_bus_order() -> None:
     assert list(bus_load_q.index) == [1, 3, 5]
     assert bus_load_p.to_list() == pytest.approx([10.0, 35.0, 50.0])
     assert bus_load_q.to_list() == pytest.approx([1.0, 3.5, 5.0])
+

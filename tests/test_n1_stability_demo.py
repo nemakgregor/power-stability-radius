@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from types import SimpleNamespace
 
@@ -6,8 +6,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from stability_radius import n1_stability_demo as demo
-from stability_radius.n1_stability_demo import (
+import entry_points.n1_stability_demo as demo
+from entry_points.n1_stability_demo import (
     _align_line_limit_proxy_with_opf_model,
     _build_comparison_text,
     _opf_constraint_summary,
@@ -28,7 +28,9 @@ def test_resolve_output_dir_normalizes_legacy_analysis_output_under_runs(
 
     out_dir = _resolve_output_dir("analysis_output/n1_demo_case118")
 
-    assert out_dir == (tmp_path / "runs" / "n1_stability_demo" / "n1_demo_case118").resolve()
+    assert out_dir == (
+        tmp_path / "run_artifacts" / "n1_stability_demo" / "n1_demo_case118"
+    ).resolve()
 
 
 def test_update_scopf_line_limits_tightens_only_violating_lines() -> None:
@@ -392,3 +394,4 @@ def test_plot_cost_security_tradeoff_writes_png(tmp_path) -> None:
 
     assert output_path.exists()
     assert output_path.stat().st_size > 0
+

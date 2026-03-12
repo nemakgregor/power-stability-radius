@@ -1,13 +1,13 @@
 """Aggregate experiment JSON outputs into a CSV summary table.
 
-Scans ``runs/`` subdirectories for ``summary.json`` and
+Scans ``run_artifacts/`` subdirectories for ``summary.json`` and
 per-case result JSON files, then produces a single CSV suitable for
 inclusion in the paper.
 
 Usage::
 
-    python -m experiments.collect_results
-    python -m experiments.collect_results --output-dir runs --csv runs/collect_results/all_results.csv
+    python entry_points/collect_results.py
+    python entry_points/collect_results.py --output-dir run_artifacts --csv run_artifacts/collect_results/all_results.csv
 """
 
 from __future__ import annotations
@@ -19,12 +19,16 @@ import logging
 from pathlib import Path
 
 import numpy as np
-from stability_radius.utils import create_module_output_dir
+from stability_radius.utils import (
+    ARTIFACTS_ROOT_NAME,
+    create_module_output_dir,
+    setup_output_dir_logging,
+)
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_OUTPUT_DIR = Path("runs")
-_DEFAULT_CSV_PATH = Path("runs/collect_results/all_results.csv")
+_DEFAULT_OUTPUT_DIR = Path(ARTIFACTS_ROOT_NAME)
+_DEFAULT_CSV_PATH = Path(ARTIFACTS_ROOT_NAME) / "collect_results" / "all_results.csv"
 
 
 def _load_json(path: Path) -> dict | list:
@@ -162,8 +166,9 @@ def main() -> None:
         module_name="collect_results",
         requested_output_dir=args.csv.parent,
     )
+    setup_output_dir_logging(csv_dir)
     collect(args.output_dir, csv_dir / args.csv.name)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
