@@ -933,7 +933,7 @@ and are essential for sigma-radius computation and worst-case analysis.
 
 #### Producer
 
-**Module:** `src/stability_radius/cli.py` (via `run_compute()`)
+**Module:** `entry_points/power_stability_radius.py` (via `run_compute()`)
 
 **Function:** Saved when `compute.ac.save_h_vectors=true`
 
@@ -969,7 +969,7 @@ and archival.
 
 #### Producer
 
-**Module:** `src/stability_radius/helpers/reporting/table.py`
+**Module:** `entry_points/table.py`
 
 **Key functions:**
 
@@ -1010,7 +1010,7 @@ Several CSV formats are produced by different components:
 #### 2.6.1 Per-Line Results CSV
 
 **Producer:** `format_results_csv()` and `format_results_csv_sections()` in
-`src/stability_radius/helpers/reporting/table.py`
+`entry_points/table.py`
 
 Output locations:
 - `<runs_dir>/<run_id>/results_table_dc.csv` -- DC columns
@@ -1028,7 +1028,7 @@ line_1,-56.789,56.789,426.0,369.211,0.31456,1173.83
 
 #### 2.6.2 Unified Per-Line Metrics CSV
 
-**Producer:** `src/stability_radius/analysis/metrics_analysis.py` (`main()`)
+**Producer:** `entry_points/metrics_analysis.py` (`main()`)
 
 Output location: `<output_dir>/unified_per_line_metrics.csv`
 
@@ -1052,7 +1052,7 @@ Output location: `<output_dir>/unified_per_line_metrics.csv`
 
 #### 2.6.3 Spearman Correlations CSV
 
-**Producer:** `src/stability_radius/analysis/metrics_analysis.py`
+**Producer:** `entry_points/metrics_analysis.py`
 
 Output location: `<output_dir>/spearman_correlations.csv`
 
@@ -1064,7 +1064,7 @@ Output location: `<output_dir>/spearman_correlations.csv`
 
 #### 2.6.4 Precision-at-k CSV
 
-**Producer:** `src/stability_radius/analysis/metrics_analysis.py`
+**Producer:** `entry_points/metrics_analysis.py`
 
 Output location: `<output_dir>/precision_at_k.csv`
 
@@ -1077,7 +1077,7 @@ Output location: `<output_dir>/precision_at_k.csv`
 
 #### 2.6.5 Experiment Summary CSV
 
-**Producer:** `src/stability_radius/helpers/experiments/collect_results.py` (`collect()`)
+**Producer:** `entry_points/collect_results.py` (`collect()`)
 
 Output location: `run_artifacts/collect_results/all_results.csv`
 
@@ -1106,7 +1106,7 @@ Output location: `run_artifacts/collect_results/all_results.csv`
 
 #### 2.6.6 Sigma-Radius Table CSV
 
-**Producer:** `src/stability_radius/experiments/run_sigma_radius.py`
+**Producer:** `entry_points/run_sigma_radius.py`
 
 Output location: `<output_dir>/table2_sigma_radius.csv`
 
@@ -1121,7 +1121,7 @@ All plots are generated with matplotlib using the `Agg` backend (no display).
 
 #### 2.7.1 Metrics Analysis Plots
 
-**Producer:** `src/stability_radius/analysis/metrics_analysis.py`
+**Producer:** `entry_points/metrics_analysis.py`
 
 | File | Description |
 |------|-------------|
@@ -1133,7 +1133,7 @@ DPI: 150 for scatter plots, 150 for bar and histogram charts.
 
 #### 2.7.2 Experiment Plots
 
-**Producer:** `src/stability_radius/experiments/run_sigma_radius.py`
+**Producer:** `entry_points/run_sigma_radius.py`
 
 | File | Description |
 |------|-------------|
@@ -1141,7 +1141,7 @@ DPI: 150 for scatter plots, 150 for bar and histogram charts.
 | `fig2b_sigma_heatmap.png` / `.pdf` | Per-bus sigma value heatmap. |
 | `topology_sigma_radius.png` / `.pdf` | Network topology graph colored by sigma-radius. Node size proportional to bus sigma, edge color mapped from sigma-radius (tighter = red, looser = blue). |
 
-**Producer:** `src/stability_radius/experiments/run_pglib_sweep.py`
+**Producer:** `entry_points/run_pglib_sweep.py`
 
 | File | Description |
 |------|-------------|
@@ -1150,19 +1150,19 @@ DPI: 150 for scatter plots, 150 for bar and histogram charts.
 | `fig_flow_vs_limit.png` / `.pdf` | Base flow vs thermal limit scatter. |
 | `fig_violation_scale.png` / `.pdf` | Violation scale analysis. |
 
-**Producer:** `src/stability_radius/helpers/experiments/plot_radius_distribution.py`
+**Producer:** `entry_points/plot_radius_distribution.py`
 
 | File | Description |
 |------|-------------|
 | Output varies | Distribution plots for radius values. |
 
-**Producer:** `src/stability_radius/helpers/experiments/plot_sigma_vs_time.py`
+**Producer:** `entry_points/plot_sigma_vs_time.py`
 
 | File | Description |
 |------|-------------|
 | Output varies | Sigma-radius evolution over hourly timesteps. |
 
-**Producer:** `src/stability_radius/helpers/experiments/plot_worst_case_heatmap.py`
+**Producer:** `entry_points/plot_worst_case_heatmap.py`
 
 | File | Description |
 |------|-------------|
@@ -1200,7 +1200,7 @@ run_artifacts/<module>/<run_name>/     # when run_dir_mode=overwrite
 | `verification_report.md` | Markdown | Verification report (report command). |
 | `debug.log` | Text | Detailed timestamped log (level=DEBUG). |
 
-**Producer:** `src/stability_radius/cli.py` (`_write_run_artifacts()`)
+**Producer:** `entry_points/power_stability_radius.py` (`_write_run_artifacts()`)
 
 ---
 

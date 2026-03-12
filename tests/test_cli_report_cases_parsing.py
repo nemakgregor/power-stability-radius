@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 
@@ -17,7 +17,7 @@ def test_parse_report_cases_accepts_omegaconf_listconfig(tmp_path: Path) -> None
 
     from omegaconf import OmegaConf
 
-    from stability_radius.cli import _parse_report_cases_from_cfg
+    from entry_points.power_stability_radius import _parse_report_cases_from_cfg
 
     cfg = OmegaConf.create(
         {
@@ -49,3 +49,4 @@ def test_parse_report_cases_accepts_omegaconf_listconfig(tmp_path: Path) -> None
     assert Path(c0["results"]).name == "caseA.json"
     assert str(Path(c0["input"])).endswith(str(Path("data/input/caseA.m")))
     assert c0["known_critical_pairs"] == [[1, 2]]
+

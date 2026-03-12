@@ -1,10 +1,10 @@
-"""Tests for stability_radius.helpers.reporting.table — ASCII/CSV table formatting."""
+﻿"""Tests for entry_points.table table formatting."""
 
 from __future__ import annotations
 
 import math
 
-from stability_radius.helpers.reporting.table import (
+from entry_points.table import (
     _format_float,
     _line_sort_key,
     format_radius_summary,
@@ -218,3 +218,4 @@ class TestFormatRadiusSummary:
         results = {"line_0": {"radius_l2": float("inf")}}
         summary = format_radius_summary(results, radius_field="radius_l2")
         assert "finite_radii=0" in summary
+

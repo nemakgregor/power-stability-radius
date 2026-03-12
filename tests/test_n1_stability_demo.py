@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from types import SimpleNamespace
 
@@ -6,8 +6,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from stability_radius.demos import n1_stability_demo as demo
-from stability_radius.demos.n1_stability_demo import (
+import entry_points.n1_stability_demo as demo
+from entry_points.n1_stability_demo import (
     _align_line_limit_proxy_with_opf_model,
     _build_comparison_text,
     _opf_constraint_summary,
@@ -394,3 +394,4 @@ def test_plot_cost_security_tradeoff_writes_png(tmp_path) -> None:
 
     assert output_path.exists()
     assert output_path.stat().st_size > 0
+

@@ -810,8 +810,8 @@ PROCEDURE solve_dc_opf(net, line_indices, line_limits_mw, opf_cfg):
            (same treatment as gen)
        FOR each in-service ext_grid:
            Two components per ext_grid:
-             ext_{eid}        — generation (sign=+1, high cost)
-             ext_{eid}_absorb — absorption (sign=-1, higher cost)
+             ext_{eid}        â€” generation (sign=+1, high cost)
+             ext_{eid}_absorb â€” absorption (sign=-1, higher cost)
 
     5. ADD LINES AND TRANSFORMERS
        FOR each monitored line:
@@ -1135,7 +1135,7 @@ robustness metrics, producing correlation analyses, precision-at-k rankings,
 and visualizations.
 
 **Implementation file:**
-`src/stability_radius/analysis/metrics_analysis.py` (line 386)
+`entry_points/metrics_analysis.py` (line 386)
 
 ### Pipeline Steps
 

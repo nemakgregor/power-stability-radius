@@ -57,8 +57,8 @@ from stability_radius.base_point.pandapower_tools import (
 )
 from stability_radius.config import DEFAULT_OPF, OPFConfig
 from stability_radius.dc.dc_model import trafo_tap_ratio
-from stability_radius.pp_helpers import bus_vn_kv as _bus_vn_kv_canon
-from stability_radius.pp_helpers import is_in_service as _is_in_service_canon
+from stability_radius.pp_helpers import bus_vn_kv as _bus_vn_kv
+from stability_radius.pp_helpers import is_in_service as _is_in_service
 
 logger = logging.getLogger(__name__)
 
@@ -100,17 +100,6 @@ class PyPSAAPFResult:
     bus_q_mvar: np.ndarray | None = None  # (n_bus,) net Q injection per bus from AC PF
     opp_gen_dispatch: dict[str, float] | None = None  # gen_id -> P_mw from OPP
     opp_vm_pu: dict[int, float] | None = None  # bus_id -> Vm from OPP
-
-
-def _is_in_service(row: Any) -> bool:
-    # Backwards-compatible local name, canonical implementation lives in pp_helpers.py
-    return bool(_is_in_service_canon(row))
-
-
-def _bus_vn_kv(net: Any, bus_id: int) -> float:
-    # Backwards-compatible local name, canonical implementation lives in pp_helpers.py
-    return float(_bus_vn_kv_canon(net, int(bus_id)))
-
 
 def _ensure_carrier_table(n: Any, carrier_name: str) -> None:
     """

@@ -119,7 +119,7 @@ constraint violation. The gap arises from:
    feasible polytope. An L-infinity or ellipsoidal certificate would give
    different (possibly tighter) bounds for specific perturbation structures.
 
-The worst-case verification experiments (`src/stability_radius/experiments/run_worst_case_verify.py`)
+The worst-case verification experiments (`entry_points/run_worst_case_verify.py`)
 are designed to quantify this gap empirically -- see Section 12.1.
 
 ---
@@ -189,7 +189,7 @@ and function `build_ac_operator`)
 ### 3.3 The Design Choice: When to Use Which?
 
 The project deliberately supports both models to enable **comparative
-analysis**. The research question (addressed by `src/stability_radius/experiments/run_pglib_sweep.py`)
+analysis**. The research question (addressed by `entry_points/run_pglib_sweep.py`)
 is: *How different are DC and AC radii in practice?*
 
 If they agree closely, the cheaper DC model suffices. If they disagree, the
@@ -526,7 +526,7 @@ the scale factor at which the actual flow first reaches the limit -- measures
 the tightness of the linear certificate.
 
 **Implemented in:** `src/stability_radius/verification/verify_worst_case.py`
-and `src/stability_radius/experiments/run_worst_case_verify.py`.
+and `entry_points/run_worst_case_verify.py`.
 
 **Level 3: Monte Carlo simulation.** Sample random perturbations from a
 specified distribution (typically Gaussian), apply each to the nonlinear PF
@@ -541,7 +541,7 @@ naive metrics (loading ratio, headroom, Cantelli bound) using Spearman rank
 correlation with empirical overload probabilities. This tests the research
 hypothesis that stability radii are better predictors of danger.
 
-**Implemented in:** `src/stability_radius/analysis/metrics_analysis.py`.
+**Implemented in:** `entry_points/metrics_analysis.py`.
 
 ### 9.2 Soundness vs Usefulness
 
@@ -668,7 +668,7 @@ For "lower-is-more-dangerous" metrics (radii, headroom), the sign is flipped
 before computing correlation so that a positive rho consistently means
 "correctly identifies danger."
 
-**Implemented in:** `src/stability_radius/analysis/metrics_analysis.py`, function
+**Implemented in:** `entry_points/metrics_analysis.py`, function
 `compute_rank_correlations()`.
 
 ### 11.4 Precision-at-k
@@ -687,7 +687,7 @@ This evaluation is more practically relevant than overall correlation because
 grid operators typically focus on the most critical lines, not the full
 ranking.
 
-**Implemented in:** `src/stability_radius/analysis/metrics_analysis.py`, function
+**Implemented in:** `entry_points/metrics_analysis.py`, function
 `compute_precision_at_k()`.
 
 ---

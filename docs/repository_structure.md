@@ -33,7 +33,7 @@ power-stability-radius/
 - **Category**: Entry points
 - **Purpose**: Unified home for every runnable script in the repository
 - **Examples**: `power_stability_radius.py`, `run_pglib_sweep.py`, `metrics_analysis.py`, `n1_stability_demo.py`
-- **Dependencies**: import and execute modules from `src/stability_radius/...`
+- **Dependencies**: full runnable modules in `entry_points/` import reusable core APIs from `src/stability_radius/`
 
 ### `src/stability_radius/` ? Core Package
 
@@ -41,25 +41,25 @@ power-stability-radius/
 - **Purpose**: Package initialization, exports `compute_results_for_case` as the public API
 - **Lines**: ~17
 
-#### `cli.py`
+#### `entry_points/power_stability_radius.py`
 - **Category**: Presentation layer
 - **Purpose**: Full argparse CLI with 4 subcommands: `compute` (alias `demo`), `monte-carlo`, `report`, `table`
 - **Key functions**: `main()`, `_handle_compute()`, `_handle_monte_carlo()`, `_handle_report()`, `_handle_table()`
-- **Dependencies**: `config`, `workflows`, `verification`, `helpers.reporting`
+- **Dependencies**: `stability_radius.config`, `stability_radius.workflows`, `stability_radius.verification`, `entry_points.table`
 - **Lines**: ~1200
 
 #### `config.py`
 - **Category**: Infrastructure
 - **Purpose**: Configuration dataclasses and YAML loading with `extends` inheritance
 - **Key classes**: `ProjectConfig`, `OPFConfig`, `ACFPFConfig`
-- **Key function**: `load_config(path)` — loads YAML with `extends` resolution
+- **Key function**: `load_config(path)` â€” loads YAML with `extends` resolution
 - **Dependencies**: None (stand-alone)
 - **Lines**: ~262
 
 #### `workflows.py`
 - **Category**: Core orchestration
-- **Purpose**: Main computation pipeline orchestrating all phases (parse → base point → operators → radii)
-- **Key function**: `compute_results_for_case()` — the central pipeline
+- **Purpose**: Main computation pipeline orchestrating all phases (parse â†’ base point â†’ operators â†’ radii)
+- **Key function**: `compute_results_for_case()` â€” the central pipeline
 - **Key classes**: `ACExtensionsConfig`, `DCExtensionsConfig`
 - **Dependencies**: All other modules (parsers, base_point, dc, ac, radii)
 - **Lines**: ~1400
@@ -71,14 +71,14 @@ power-stability-radius/
 - **Dependencies**: None (dependency-light by design)
 - **Lines**: ~116
 
-#### `analysis/metrics_analysis.py`
+#### `entry_points/metrics_analysis.py`
 - **Category**: Experiment / analysis
 - **Purpose**: Comparative evaluation pipeline ? stability radii vs baseline metrics with Spearman correlation and precision-at-k
 - **Key functions**: `build_unified_dataframe()`, `compute_rank_correlations()`, `compute_precision_at_k()`, `main()`
 - **Dependencies**: `workflows`, `verification.monte_carlo`, `metrics.ac_baselines`
 - **Lines**: ~2100
 
-#### `demos/n1_stability_demo.py`
+#### `entry_points/n1_stability_demo.py`
 - **Category**: Demonstration workflow
 - **Purpose**: Three-regime N-1 comparison for Cost OPF, Radius OPF, and screening-based SCOPF proxy
 - **Key functions**: `main()`, `_solve_cost_opf()`, `_plot_cost_security_tradeoff()`, `_resolve_output_dir()`
@@ -100,32 +100,32 @@ power-stability-radius/
 
 ---
 
-### `src/stability_radius/ac/` — AC Model
+### `src/stability_radius/ac/` â€” AC Model
 
 #### `ac_model.py`
 - **Category**: Core domain logic
-- **Purpose**: AC power flow operator — Ybus construction, reduced PF Jacobian with PV/PQ bus handling, LU factorization, adjoint solves
-- **Key class**: `ACOperator` — sparse Ybus, Jacobian, LU, adjoint solve methods
-- **Key function**: `build_ac_operator()` — constructs ACOperator from pandapower network and AC PF base point
+- **Purpose**: AC power flow operator â€” Ybus construction, reduced PF Jacobian with PV/PQ bus handling, LU factorization, adjoint solves
+- **Key class**: `ACOperator` â€” sparse Ybus, Jacobian, LU, adjoint solve methods
+- **Key function**: `build_ac_operator()` â€” constructs ACOperator from pandapower network and AC PF base point
 - **Internal functions**: `_build_ybus_pu()`, `_build_reduced_pf_jacobian_mw_per_unit()`, `_detect_pv_buses()`
 - **Dependencies**: `dc.dc_model` (for trafo helpers), `pp_helpers`, `scipy.sparse`
 - **Lines**: ~824
 
 ---
 
-### `src/stability_radius/dc/` — DC Model
+### `src/stability_radius/dc/` â€” DC Model
 
 #### `dc_model.py`
 - **Category**: Core domain logic
-- **Purpose**: DC power flow operator — B-matrix assembly (lines + trafos + impedances), PTDF computation, phase-shifter support
-- **Key class**: `DCOperator` — sparse B_red LU, incidence matrix W, sensitivity methods
+- **Purpose**: DC power flow operator â€” B-matrix assembly (lines + trafos + impedances), PTDF computation, phase-shifter support
+- **Key class**: `DCOperator` â€” sparse B_red LU, incidence matrix W, sensitivity methods
 - **Key functions**: `build_dc_operator()`, `build_dc_matrices()`, `trafo_tap_ratio()`, `trafo_x_total_ohm()`
 - **Dependencies**: `pp_helpers`, `scipy.sparse`
 - **Lines**: ~957
 
 ---
 
-### `src/stability_radius/base_point/` — Base Point Computation
+### `src/stability_radius/base_point/` â€” Base Point Computation
 
 #### `types.py`
 - **Purpose**: Frozen dataclasses `BasePointDC` and `BasePointAC` storing computed base operating points
@@ -142,7 +142,7 @@ power-stability-radius/
 - **Dependencies**: `pypsa_pf`, `pandapower_tools`
 
 #### `pypsa_opf.py`
-- **Purpose**: DC OPF via PyPSA + HiGHS solver (converts pandapower → PyPSA network)
+- **Purpose**: DC OPF via PyPSA + HiGHS solver (converts pandapower â†’ PyPSA network)
 - **Key function**: `solve_dc_opf_base_flows_from_pandapower()`
 - **Key class**: `PyPSAOPFResult`
 - **Dependencies**: `pypsa`, `linopy`, pandapower
@@ -163,21 +163,21 @@ power-stability-radius/
 - **Lines**: ~742
 
 #### `pandapower_tools.py`
-- **Purpose**: Shared pandapower utilities — lossless policy, slack bus resolution, generator dispatch application
+- **Purpose**: Shared pandapower utilities â€” lossless policy, slack bus resolution, generator dispatch application
 - **Key functions**: `apply_lossless_policy_to_pandapower_net()`, `resolve_slack_bus_id()`, `ensure_ext_grid_at_slack()`, `apply_gen_dispatch_to_pandapower_net()`
 - **Dependencies**: pandapower (import-time for `create_ext_grid`)
 - **Lines**: ~350
 
 ---
 
-### `src/stability_radius/radii/` — Radius Computation
+### `src/stability_radius/radii/` â€” Radius Computation
 
 #### `__init__.py`
 - **Purpose**: Public API exports: `compute_l2_radius`, `compute_ac_l2_radius`, `compute_sigma_radius`, `compute_ac_sigma_radius`, `compute_ac_metric_radius`
 
 #### `common.py`
 - **Purpose**: Shared per-line data structures and limit estimation
-- **Key class**: `LineBaseQuantities` — per-line base flows, limits, margins
+- **Key class**: `LineBaseQuantities` â€” per-line base flows, limits, margins
 - **Key function**: `estimate_line_limit_mva_with_flag()`, `get_line_base_quantities()`, `line_key()`
 
 #### `core_l2.py`
@@ -219,11 +219,11 @@ power-stability-radius/
 - **Key function**: `compute_nminus1_radius()`
 
 #### `ac_feasibility.py`
-- **Purpose**: AC feasibility check for base operating point (verifies |S0| ≤ S_limit)
+- **Purpose**: AC feasibility check for base operating point (verifies |S0| â‰¤ S_limit)
 
 ---
 
-### `src/stability_radius/verification/` — Verification
+### `src/stability_radius/verification/` â€” Verification
 
 #### `types.py`
 - **Purpose**: `VerificationResult` dataclass with status enums (BASE_OK, RADIUS_OK, SOUND_PASS, etc.)
@@ -250,41 +250,41 @@ power-stability-radius/
 
 ---
 
-### `src/stability_radius/metrics/` — Baseline Metrics
+### `src/stability_radius/metrics/` â€” Baseline Metrics
 
 #### `ac_baselines.py`
-- **Purpose**: Baseline robustness metrics — loading ratio, headroom (MVA), Cantelli upper bound
+- **Purpose**: Baseline robustness metrics â€” loading ratio, headroom (MVA), Cantelli upper bound
 - **Key function**: `compute_baseline_metrics()`
 
 ---
 
-### `src/stability_radius/parsers/` — Input Parsers
+### `src/stability_radius/parsers/` â€” Input Parsers
 
 #### `matpower.py`
-- **Purpose**: MATPOWER .m file → pandapower network conversion
-- **Key function**: `load_network(path)` — uses the repository MATPOWER parser, then pandapower `from_ppc()`
+- **Purpose**: MATPOWER .m file â†’ pandapower network conversion
+- **Key function**: `load_network(path)` â€” uses the repository MATPOWER parser, then pandapower `from_ppc()`
 
 #### `uc_jl.py`
-- **Purpose**: UnitCommitment.jl JSON → per-bus sigma arrays from hourly demand data
+- **Purpose**: UnitCommitment.jl JSON â†’ per-bus sigma arrays from hourly demand data
 - **Key function**: `load_sigma_from_uc_jl()`
 
 ---
 
-### `src/stability_radius/statistics/` — Output Formatting
+### `src/stability_radius/statistics/` â€” Output Formatting
 
 #### `table.py`
 - **Purpose**: ASCII/CSV/Markdown table formatter for results.json
 
 ---
 
-### `src/stability_radius/utils/` — Utilities
+### `src/stability_radius/utils/` â€” Utilities
 
 #### `download.py`
 - **Purpose**: PGLib case file downloader from GitHub
 
 ---
 
-## `experiments/` — Experiment Scripts
+## `experiments/` â€” Experiment Scripts
 
 | File | Purpose | Paper Reference |
 |------|---------|-----------------|
@@ -296,7 +296,7 @@ power-stability-radius/
 | `plot_radius_distribution.py` | Radius distribution visualization | Supplementary |
 | `plot_sigma_vs_time.py` | Sigma vs time plots | Supplementary |
 | `plot_worst_case_heatmap.py` | Worst-case heatmap visualization | Supplementary |
-| `README.md` | Experiment documentation | — |
+| `README.md` | Experiment documentation | â€” |
 
 ### `experiments/configs/`
 Experiment-specific YAML configurations (case lists, sigma settings, data paths).
@@ -306,7 +306,7 @@ Generated experiment outputs (JSON results, plots, CSV tables, logs). Contains c
 
 ---
 
-## `tests/` — Test Suite
+## `tests/` â€” Test Suite
 
 ~40+ test files using pytest. Key test files:
 
@@ -329,7 +329,7 @@ Generated experiment outputs (JSON results, plots, CSV tables, logs). Contains c
 
 ---
 
-## `conf/` — Configuration Files
+## `conf/` â€” Configuration Files
 
 | File | Purpose |
 |------|---------|
@@ -344,7 +344,7 @@ Generated experiment outputs (JSON results, plots, CSV tables, logs). Contains c
 
 ---
 
-## `data/` — Input Data
+## `data/` â€” Input Data
 
 ### `data/input/`
 MATPOWER .m files from the PGLib-OPF benchmark library. Contains 20+ test cases ranging from 5 to 10000 buses:

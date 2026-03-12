@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 
@@ -43,7 +43,7 @@ def test_setup_logging_expands_tilde_runs_dir(
 def test_cli_resolve_path_expands_tilde(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from stability_radius.cli import _resolve_path
+    from entry_points.power_stability_radius import _resolve_path
 
     home = tmp_path / "home"
     _set_home(monkeypatch, home)
@@ -67,3 +67,4 @@ def test_ensure_case_file_expands_tilde(
 
     out = Path(ensure_case_file("~/case14.m")).resolve()
     assert out == case_path.resolve()
+

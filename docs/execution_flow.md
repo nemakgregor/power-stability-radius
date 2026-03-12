@@ -8,13 +8,13 @@ This document describes the step-by-step execution flow for each major entry poi
 
 ## 1. CLI Entry Point
 
-**File**: `entry_points/power_stability_radius.py` → `src/stability_radius/cli.py`
+**File**: `entry_points/power_stability_radius.py` â†’ `entry_points/power_stability_radius.py`
 
 ```
 python entry_points/power_stability_radius.py --config conf/config.yaml <command> [options]
 ```
 
-The `entry_points/power_stability_radius.py` script calls `cli.main()`, which:
+`entry_points/power_stability_radius.py` defines `main()`, which:
 
 1. Creates an `argparse.ArgumentParser` with `--config` (global), `--log-level`
 2. Adds subparsers for four commands: `compute`, `monte-carlo`, `report`, `table`
@@ -31,7 +31,7 @@ The `entry_points/power_stability_radius.py` script calls `cli.main()`, which:
 
 This is the primary computation entry point. Full execution trace:
 
-### Step 2.1 — Argument resolution
+### Step 2.1 â€” Argument resolution
 
 ```
 input_path    = args.input or cfg.input_path
@@ -40,7 +40,7 @@ base_dispatch = args.base_dispatch or cfg.base_dispatch  (case|dc_opf|acpf|ac_fp
 output_path   = args.output or "results.json"
 ```
 
-### Step 2.2 — Build extension configs
+### Step 2.2 â€” Build extension configs
 
 ```python
 ac_ext = ACExtensionsConfig(
@@ -54,11 +54,11 @@ ac_ext = ACExtensionsConfig(
 dc_ext = DCExtensionsConfig(...)
 ```
 
-### Step 2.3 — Call `compute_results_for_case()`
+### Step 2.3 â€” Call `compute_results_for_case()`
 
 This is the core pipeline (see [Section 3](#3-core-computation-pipeline) below).
 
-### Step 2.4 — Save results
+### Step 2.4 â€” Save results
 
 ```python
 # Strip non-serializable numpy arrays
@@ -76,19 +76,19 @@ This is the core pipeline (see [Section 3](#3-core-computation-pipeline) below).
 
 This is the heart of the project. Full step-by-step flow:
 
-### Phase 1 — Input Parsing
+### Phase 1 â€” Input Parsing
 
 ```
 1. Resolve input_path (expand user, resolve absolute)
 2. Load network via parsers.matpower.load_network(path)
-   → pandapower net object
+   â†’ pandapower net object
 3. Resolve slack bus:
    - Auto-detect from ext_grid if -1
    - Validate against ext_grid if specified
    - ensure_ext_grid_at_slack() creates ext_grid if missing
 ```
 
-### Phase 2 — DC Base Point
+### Phase 2 â€” DC Base Point
 
 If `compute_dc=True` or `base_dispatch="dc_opf"`:
 
@@ -98,7 +98,7 @@ If `compute_dc=True` or `base_dispatch="dc_opf"`:
       - Extract bus injections directly from net.res_bus
       - Run pandapower.runpp() for "case" base flows
    b. If base_dispatch == "dc_opf":
-      - Convert pandapower → PyPSA network (pypsa_opf.py)
+      - Convert pandapower â†’ PyPSA network (pypsa_opf.py)
       - Solve DC OPF with HiGHS (linopy model)
       - Apply headroom_factor to line limits
       - Extract generator dispatch, line flows, bus injections
@@ -111,7 +111,7 @@ If `compute_dc=True` or `base_dispatch="dc_opf"`:
    - Compare with OPF-reported flows (tolerance check)
 ```
 
-### Phase 3 — DC Radii Computation
+### Phase 3 â€” DC Radii Computation
 
 ```
 7. Compute DC L2 radius:
@@ -121,7 +121,7 @@ If `compute_dc=True` or `base_dispatch="dc_opf"`:
 8. Optional DC extensions:
    a. Probabilistic (sigma-radius):
       - compute_sigma_radius(net, H_full, Sigma)
-      - Sigma = diag(inj_std_mw²)
+      - Sigma = diag(inj_std_mwÂ²)
    b. N-1 contingency:
       - compute_nminus1_radius(net, op, ...)
       - For each line outage: update sensitivities, recompute radii
@@ -129,7 +129,7 @@ If `compute_dc=True` or `base_dispatch="dc_opf"`:
       - compute_metric_radius(net, H_full, M)
 ```
 
-### Phase 4 — AC Base Point
+### Phase 4 â€” AC Base Point
 
 If `compute_ac=True`:
 
@@ -147,12 +147,12 @@ If `compute_ac=True`:
       - Correct slack loss (distribute losses to maintain P balance)
    c. If base_dispatch == "ac_fpf":
       - Run AC Feasibility Power Flow (pandapower.runopp)
-      - Quadratic cost: min Σ (p_g - p_g0)²
+      - Quadratic cost: min Î£ (p_g - p_g0)Â²
       - Post-OPP PF validation
 10. Extract: V_mag_pu, V_ang_rad, line_p0_mw, line_q0_mvar, line_p1_mw, line_q1_mvar
 ```
 
-### Phase 5 — AC Radii Computation
+### Phase 5 â€” AC Radii Computation
 
 ```
 11. Build ACOperator:
@@ -161,20 +161,20 @@ If `compute_ac=True`:
     - Build reduced PF Jacobian
     - LU-factorize Jacobian
 12. Compute AC L2 radius:
-    - For each line × {from, to}: construct adjoint RHS, solve J^T a = b
+    - For each line Ã— {from, to}: construct adjoint RHS, solve J^T a = b
     - Chunked processing (ac_chunk_size lines per batch)
     - Extract h-vectors if save_h_vectors=True
 13. AC feasibility check:
-    - Verify |S0| ≤ S_limit at each end of each line
+    - Verify |S0| â‰¤ S_limit at each end of each line
 14. Optional AC sigma radius:
     - Build sigma arrays (from uniform or UnitCommitment.jl)
     - compute_ac_sigma_radius(h_vectors, s_limit, s0, sigma_p, sigma_q)
 15. Optional AC metric radius:
-    - M_diag = 1/σ² (inverse variance)
+    - M_diag = 1/ÏƒÂ² (inverse variance)
     - compute_ac_metric_radius(h_vectors, s_limit, s0, M_diag)
 ```
 
-### Phase 6 — Results Assembly
+### Phase 6 â€” Results Assembly
 
 ```
 16. Merge per-line results from all radii computations
@@ -201,10 +201,10 @@ If `compute_ac=True`:
 4. Call run_monte_carlo_verification():
    a. Load base point from results
    b. Generate random perturbations:
-      - DC: Δp ~ N(0, Σ) with balanced projection (sum=0)
-      - AC: ΔP ~ N(0, σ_p²), ΔQ ~ N(0, σ_q²) with balanced projection
+      - DC: Î”p ~ N(0, Î£) with balanced projection (sum=0)
+      - AC: Î”P ~ N(0, Ïƒ_pÂ²), Î”Q ~ N(0, Ïƒ_qÂ²) with balanced projection
    c. For each sample:
-      - DC mode: Δf = H · Δp, check |f0 + Δf| > c
+      - DC mode: Î”f = H Â· Î”p, check |f0 + Î”f| > c
       - AC mode: Apply perturbation to net, run AC PF, check |S| > c
    d. Aggregate: violation count, per-line overload fractions
    e. Compare with analytic certificate:
@@ -273,7 +273,7 @@ If `compute_ac=True`:
 
 ```
 1. Load experiment config (case path, UnitCommitment.jl data path)
-2. Parse UnitCommitment.jl JSON → per-bus sigma arrays
+2. Parse UnitCommitment.jl JSON â†’ per-bus sigma arrays
 3. Run compute_results_for_case() with AC + sigma + metric + h-vectors
 4. Save: results.json, sigma_arrays.json, hvectors.npz
 5. Run AC Monte Carlo verification
@@ -343,7 +343,7 @@ Similar pattern for pandapower.runopp(), with voltage bounds relaxation and conf
 
 ### Error propagation
 
-- Parse errors → immediate `ValueError`
-- PF non-convergence → retry cascade → final `RuntimeError`
-- Singular Jacobian → `RuntimeError` with diagnostic message
-- Disconnected network → `ValueError` from union-find connectivity check
+- Parse errors â†’ immediate `ValueError`
+- PF non-convergence â†’ retry cascade â†’ final `RuntimeError`
+- Singular Jacobian â†’ `RuntimeError` with diagnostic message
+- Disconnected network â†’ `ValueError` from union-find connectivity check
