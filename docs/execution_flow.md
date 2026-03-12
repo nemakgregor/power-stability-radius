@@ -8,13 +8,13 @@ This document describes the step-by-step execution flow for each major entry poi
 
 ## 1. CLI Entry Point
 
-**File**: `src/power_stability_radius.py` → `src/stability_radius/cli.py`
+**File**: `entry_points/power_stability_radius.py` → `src/stability_radius/cli.py`
 
 ```
-python src/power_stability_radius.py --config conf/config.yaml <command> [options]
+python entry_points/power_stability_radius.py --config conf/config.yaml <command> [options]
 ```
 
-The thin entry point `power_stability_radius.py` simply calls `cli.main()`, which:
+The `entry_points/power_stability_radius.py` script calls `cli.main()`, which:
 
 1. Creates an `argparse.ArgumentParser` with `--config` (global), `--log-level`
 2. Adds subparsers for four commands: `compute`, `monte-carlo`, `report`, `table`
@@ -248,7 +248,7 @@ If `compute_ac=True`:
 1. Load results.json
 2. Parse format options: --fmt (ascii|csv|markdown)
 3. Select columns based on available data (DC only, AC only, or both)
-4. Format table via statistics.table module
+4. Format table via helpers.reporting.table module
 5. Print to stdout or save to file
 ```
 
@@ -308,7 +308,7 @@ If `compute_ac=True`:
 
 ## 8. Metrics Analysis Pipeline
 
-**Entry point**: `python -m stability_radius.metrics_analysis`
+**Entry point**: `python entry_points/metrics_analysis.py`
 
 ```
 1. Parse CLI args (--input, --sigma-p, --sigma-q, --mc-samples, etc.)

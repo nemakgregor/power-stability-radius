@@ -1,13 +1,13 @@
 """Plot sigma-radius vs compute time from the sigma-radius experiment.
 
-Reads results from ``runs/run_sigma_radius/`` and produces a
+Reads results from ``run_artifacts/run_sigma_radius/`` and produces a
 scatter plot of per-line sigma-radius values, plus a bar chart of timing
 from the scalability experiment if available.
 
 Usage::
 
-    python -m experiments.plot_sigma_vs_time
-    python -m experiments.plot_sigma_vs_time --sigma-dir runs/run_sigma_radius --scalability runs/run_scalability/scalability.json
+    python entry_points/plot_sigma_vs_time.py
+    python entry_points/plot_sigma_vs_time.py --sigma-dir run_artifacts/run_sigma_radius --scalability run_artifacts/run_scalability/scalability.json
 """
 
 from __future__ import annotations
@@ -19,12 +19,18 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-from stability_radius.utils import create_module_output_dir
+from stability_radius.utils import (
+    ARTIFACTS_ROOT_NAME,
+    create_module_output_dir,
+    setup_output_dir_logging,
+)
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_SIGMA_DIR = Path("runs/run_sigma_radius")
-_DEFAULT_SCALABILITY = Path("runs/run_scalability/scalability.json")
+_DEFAULT_SIGMA_DIR = Path(ARTIFACTS_ROOT_NAME) / "run_sigma_radius"
+_DEFAULT_SCALABILITY = (
+    Path(ARTIFACTS_ROOT_NAME) / "run_scalability" / "scalability.json"
+)
 
 
 def _load_json(path: Path) -> dict | list:
@@ -151,8 +157,5 @@ def main() -> None:
         module_name="plot_sigma_vs_time",
         requested_output_dir=args.output_dir,
     )
+    setup_output_dir_logging(output_dir)
     plot(args.sigma_dir, args.scalability, output_dir)
-
-
-if __name__ == "__main__":
-    main()

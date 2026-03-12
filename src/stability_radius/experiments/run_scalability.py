@@ -7,8 +7,8 @@ Reads ``experiments/configs/pglib_sweep.yaml`` for the case list.
 
 Usage::
 
-    python -m experiments.run_scalability
-    python -m experiments.run_scalability --config experiments/configs/pglib_sweep.yaml --repeats 3
+    python entry_points/run_scalability.py
+    python entry_points/run_scalability.py --config experiments/configs/pglib_sweep.yaml --repeats 3
 """
 
 from __future__ import annotations
@@ -23,7 +23,11 @@ import numpy as np
 import yaml
 
 from stability_radius.parsers.matpower import load_network
-from stability_radius.utils import create_module_output_dir
+from stability_radius.utils import (
+    create_module_output_dir,
+    resolve_artifacts_root,
+    setup_output_dir_logging,
+)
 from stability_radius.workflows import (
     DCExtensionsConfig,
     compute_results_for_case,
@@ -31,7 +35,9 @@ from stability_radius.workflows import (
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_CONFIG = Path(__file__).resolve().parent / "configs" / "pglib_sweep.yaml"
+_DEFAULT_CONFIG = (
+    Path(__file__).resolve().parents[3] / "experiments" / "configs" / "pglib_sweep.yaml"
+)
 
 
 def _load_config(path: Path) -> dict:
@@ -54,11 +60,14 @@ def run(config_path: Path, *, repeats: int = 3) -> None:
     cases = cfg["cases"]
     compute_cfg = cfg.get("compute", {})
     data_dir = Path(cfg.get("data_dir", "data/input"))
+    artifacts_root = resolve_artifacts_root(cfg)
     output_dir = create_module_output_dir(
         module_name="run_scalability",
-        requested_output_dir=cfg.get("output_dir", None),
+        runs_dir=artifacts_root,
+        requested_output_dir=cfg.get("scalability_output_dir", None),
     )
     allow_download = bool(cfg.get("allow_download", False))
+    setup_output_dir_logging(output_dir)
 
     dc_cfg = compute_cfg.get("dc", {})
     ac_cfg = compute_cfg.get("ac", {})
@@ -165,10 +174,6 @@ def run(config_path: Path, *, repeats: int = 3) -> None:
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
-    )
     parser = argparse.ArgumentParser(
         description="Experiment 4: wall-clock time vs network size.",
     )
@@ -186,7 +191,3 @@ def main() -> None:
     )
     args = parser.parse_args()
     run(args.config, repeats=args.repeats)
-
-
-if __name__ == "__main__":
-    main()

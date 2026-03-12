@@ -27,7 +27,7 @@ poetry install
 Запуск CLI:
 
 ```bash
-poetry run python src/power_stability_radius.py --config conf/config.yaml <command> [options...]
+poetry run python entry_points/power_stability_radius.py --config conf/config.yaml <command> [options...]
 ```
 
 Команды:
@@ -95,7 +95,7 @@ poetry run python src/power_stability_radius.py --config conf/config.yaml <comma
 
 ## Архитектура репозитория
 
-- `src/power_stability_radius.py` — тонкий entrypoint.
+- `entry_points/power_stability_radius.py` — тонкий entrypoint.
 - `src/stability_radius/cli.py` — argparse CLI, компоновка YAML, запуск workflow.
 - `src/stability_radius/workflows.py` — основной детерминированный пайплайн.
 - `src/stability_radius/parsers/matpower.py` — детерминированный парсер MATPOWER/PGLib `.m` → pandapower net.
@@ -130,12 +130,12 @@ CLI‑флаги имеют приоритет над YAML.
 
 ## Артефакты запуска (run directory)
 
-Каждая команда создаёт директорию в `runs/<module>/` (см. `logging.run_dir_mode`):
-- `runs/<module>/<timestamp>/` (по умолчанию) или
-- `runs/<module>/<run_name>/` (overwrite)
+Каждая команда создаёт директорию в `run_artifacts/<module>/` (см. `logging.run_dir_mode`):
+- `run_artifacts/<module>/<timestamp>/` (по умолчанию) или
+- `run_artifacts/<module>/<run_name>/` (overwrite)
 
 Типичные файлы:
-- `run.log`
+- `debug.log`
 - `argv.txt`
 - `config_source.yaml` (копия входного YAML)
 - `config.json`, `config.yaml` (эффективная конфигурация)
@@ -163,7 +163,7 @@ CLI‑флаги имеют приоритет над YAML.
 Пример (AC+DC, скачивание разрешено явно):
 
 ```bash
-poetry run python src/power_stability_radius.py \
+poetry run python entry_points/power_stability_radius.py \
   --config conf/config.yaml \
   --run-tests 0 \
   --allow-download 1 \
@@ -187,7 +187,7 @@ poetry run python src/power_stability_radius.py \
 Пример (DC):
 
 ```bash
-poetry run python src/power_stability_radius.py \
+poetry run python entry_points/power_stability_radius.py \
   --config conf/config.yaml \
   --run-tests 0 \
   monte-carlo \
@@ -209,7 +209,7 @@ poetry run python src/power_stability_radius.py \
 Пример:
 
 ```bash
-poetry run python src/power_stability_radius.py \
+poetry run python entry_points/power_stability_radius.py \
   --config conf/config.yaml \
   --run-tests 0 \
   report \
@@ -253,3 +253,4 @@ poetry run python src/power_stability_radius.py \
 - Добавить поддержку `ac.lossless=false` (потребует согласования PF, Якобиана и MC).
 - Сделать AC Monte‑Carlo поддерживающим PyPSA per-sample PF (если появится детерминизм/устойчивость).
 - Вынести генерацию таблиц/CSV в отдельный “export layer” (с минимальным количеством “магических” колонок).
+

@@ -17,7 +17,7 @@ The project is organized into twelve distinct subsystems, each encapsulated in i
 
 ### 1.1 Entry Point (`power_stability_radius.py`)
 
-**File:** `src/power_stability_radius.py`
+**File:** `entry_points/power_stability_radius.py`
 
 A deliberately thin script that imports `stability_radius.cli.main` and delegates to it. This separation keeps the repository usable as a library (via `stability_radius.workflows.compute_results_for_case`) without importing CLI-only dependencies at import time.
 
@@ -249,7 +249,7 @@ These metrics serve as empirical baselines for validating the analytic certifica
 
 ### 1.12 Statistics and Experiments
 
-**Statistics** (`src/stability_radius/statistics/table.py`):
+**Statistics** (`src/stability_radius/helpers/reporting/table.py`):
 ASCII and CSV table formatter for `results.json` files. Supports both flat and sectioned (DC + AC) output formats with configurable column selection.
 
 **Experiments** (`experiments/`):
@@ -351,7 +351,7 @@ Verification modules (`monte_carlo.py`, `generate_report.py`) are invoked indepe
 ### 3.1 CLI Entry
 
 ```
-python src/power_stability_radius.py [--config conf/config.yaml] <command> [options]
+python entry_points/power_stability_radius.py [--config conf/config.yaml] <command> [options]
 ```
 
 **Control flow in `main()`:**

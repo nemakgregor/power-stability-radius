@@ -10,32 +10,32 @@ This document provides an annotated map of the repository layout, explaining the
 
 ```
 power-stability-radius/
-├── src/                           # Main source code
-│   ├── power_stability_radius.py  # CLI entry point
-│   └── stability_radius/          # Core Python package
-├── experiments/                   # Experiment scripts and outputs
-├── tests/                         # pytest test suite
-├── conf/                          # Configuration files
-├── data/                          # Input data (MATPOWER, UnitCommitment.jl)
-├── docs/                          # This documentation
-├── .github/                       # CI configuration
-├── pyproject.toml                 # Poetry project configuration
-├── README.md                      # Project README (Russian)
-├── UNITS_CONTRACT.md              # Units contract documentation
-└── AC Stability Radius TODO.md    # Development roadmap and TODO tracking
+|-- entry_points/                  # All runnable CLI scripts
+|-- src/                           # Main source code
+|   `-- stability_radius/          # Core Python package
+|-- experiments/                   # Experiment configs and legacy outputs
+|-- tests/                         # pytest test suite
+|-- conf/                          # Configuration files
+|-- data/                          # Input data (MATPOWER, UnitCommitment.jl)
+|-- docs/                          # This documentation
+|-- .github/                       # CI configuration
+|-- pyproject.toml                 # Poetry project configuration
+|-- README.md                      # Project README (Russian)
+|-- UNITS_CONTRACT.md              # Units contract documentation
+`-- AC Stability Radius TODO.md    # Development roadmap and TODO tracking
 ```
 
 ---
 
-## `src/` — Source Code
+## `src/` ? Source Code
 
-### `src/power_stability_radius.py`
-- **Category**: Entry point
-- **Purpose**: Thin CLI wrapper that calls `cli.main()`
-- **Dependencies**: `stability_radius.cli`
-- **Lines**: ~41
+### `entry_points/`
+- **Category**: Entry points
+- **Purpose**: Unified home for every runnable script in the repository
+- **Examples**: `power_stability_radius.py`, `run_pglib_sweep.py`, `metrics_analysis.py`, `n1_stability_demo.py`
+- **Dependencies**: import and execute modules from `src/stability_radius/...`
 
-### `src/stability_radius/` — Core Package
+### `src/stability_radius/` ? Core Package
 
 #### `__init__.py`
 - **Purpose**: Package initialization, exports `compute_results_for_case` as the public API
@@ -45,7 +45,7 @@ power-stability-radius/
 - **Category**: Presentation layer
 - **Purpose**: Full argparse CLI with 4 subcommands: `compute` (alias `demo`), `monte-carlo`, `report`, `table`
 - **Key functions**: `main()`, `_handle_compute()`, `_handle_monte_carlo()`, `_handle_report()`, `_handle_table()`
-- **Dependencies**: `config`, `workflows`, `verification`, `statistics`
+- **Dependencies**: `config`, `workflows`, `verification`, `helpers.reporting`
 - **Lines**: ~1200
 
 #### `config.py`
@@ -71,12 +71,32 @@ power-stability-radius/
 - **Dependencies**: None (dependency-light by design)
 - **Lines**: ~116
 
-#### `metrics_analysis.py`
+#### `analysis/metrics_analysis.py`
 - **Category**: Experiment / analysis
-- **Purpose**: Comparative evaluation pipeline — stability radii vs baseline metrics with Spearman correlation and precision-at-k
+- **Purpose**: Comparative evaluation pipeline ? stability radii vs baseline metrics with Spearman correlation and precision-at-k
 - **Key functions**: `build_unified_dataframe()`, `compute_rank_correlations()`, `compute_precision_at_k()`, `main()`
 - **Dependencies**: `workflows`, `verification.monte_carlo`, `metrics.ac_baselines`
-- **Lines**: ~568
+- **Lines**: ~2100
+
+#### `demos/n1_stability_demo.py`
+- **Category**: Demonstration workflow
+- **Purpose**: Three-regime N-1 comparison for Cost OPF, Radius OPF, and screening-based SCOPF proxy
+- **Key functions**: `main()`, `_solve_cost_opf()`, `_plot_cost_security_tradeoff()`, `_resolve_output_dir()`
+- **Dependencies**: `workflows`, `verification`, `utils`, pandapower
+
+#### `experiments/`
+- **Category**: Experiment implementations
+- **Purpose**: Long-running benchmark and evaluation pipelines invoked from `entry_points/`
+- **Key modules**: `run_pglib_sweep.py`, `run_sigma_radius.py`, `run_scalability.py`, `run_worst_case_verify.py`
+
+#### `helpers/`
+- **Category**: Secondary tooling and reporting helpers
+- **Purpose**: Plotting, table export, repository snapshot tooling, and experiment post-processing
+- **Key subpackages**: `helpers/experiments/`, `helpers/reporting/`, `helpers/openapi/`
+
+#### `debug/`
+- **Category**: Developer diagnostics
+- **Purpose**: Focused Case118 checks for AC Jacobian and h-vector correctness
 
 ---
 
@@ -281,7 +301,7 @@ power-stability-radius/
 ### `experiments/configs/`
 Experiment-specific YAML configurations (case lists, sigma settings, data paths).
 
-### `runs/`
+### `run_artifacts/`
 Generated experiment outputs (JSON results, plots, CSV tables, logs). Contains completed experiment runs in named subdirectories.
 
 ---

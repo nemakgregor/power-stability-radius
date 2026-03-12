@@ -1135,7 +1135,7 @@ robustness metrics, producing correlation analyses, precision-at-k rankings,
 and visualizations.
 
 **Implementation file:**
-`src/stability_radius/metrics_analysis.py` (line 386)
+`src/stability_radius/analysis/metrics_analysis.py` (line 386)
 
 ### Pipeline Steps
 
@@ -1191,7 +1191,7 @@ dangerous lines."
 ### CLI Usage
 
 ```bash
-python -m stability_radius.metrics_analysis \
+python entry_points/metrics_analysis.py \
     --input data/input/pglib_opf_case30_ieee.m \
     --slack-bus 0 \
     --sigma-p 1.0 --sigma-q 1.0 \

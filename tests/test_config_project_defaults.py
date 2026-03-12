@@ -90,3 +90,20 @@ def test_project_yaml_monte_carlo_seed_matches_python_default() -> None:
     py_val = int(DEFAULT_MC.seed)
 
     assert yaml_val == py_val
+
+
+def test_project_yaml_logging_runs_dir_matches_python_default() -> None:
+    pytest.importorskip("omegaconf")
+
+    from stability_radius.config import DEFAULT_LOGGING, load_project_config
+
+    repo_root = Path(__file__).resolve().parents[1]
+    cfg_path = repo_root / "conf" / "config.yaml"
+
+    cfg = load_project_config(cfg_path, allow_missing=False)
+    assert cfg is not None
+
+    yaml_val = str(cfg["logging"]["runs_dir"])
+    py_val = str(DEFAULT_LOGGING.runs_dir)
+
+    assert yaml_val == py_val

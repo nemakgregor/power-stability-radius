@@ -44,12 +44,13 @@ DEFAULT_UNCONSTRAINED_LINE_NOM_MW: float = 1.0e5
 class LoggingConfig:
     """Logging defaults for CLI/scripts."""
 
-    runs_dir: str = "runs"
+    runs_dir: str = "run_artifacts"
     module_name: str = "general"
     level_console: str = "INFO"
     level_file: str = "DEBUG"
     run_dir_mode: str = "timestamp"  # "timestamp" | "overwrite"
     run_name: str = "latest"  # used only when run_dir_mode="overwrite"
+    log_filename: str = "debug.log"
 
 
 @dataclass(frozen=True)

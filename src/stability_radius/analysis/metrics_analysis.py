@@ -5,7 +5,7 @@ Comparative evaluation: stability radii vs practical robustness metrics.
 
 Usage::
 
-    python -m stability_radius.metrics_analysis \
+    python entry_points/metrics_analysis.py \
         --input data/input/pglib_opf_case30_ieee.m \
         --slack-bus 0 \
         --sigma-p 1.0 --sigma-q 1.0 \
@@ -30,7 +30,6 @@ import argparse
 import json
 import logging
 import math
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -49,14 +48,14 @@ from stability_radius.metrics.ac_baselines import (
     compute_practical_metrics,
     transfer_margin_linearized,
 )
-from stability_radius.utils import create_module_output_dir
+from stability_radius.utils import create_module_output_dir, setup_output_dir_logging
 from stability_radius.verification.monte_carlo import run_monte_carlo_verification
 from stability_radius.workflows import (
     ACExtensionsConfig,
     compute_results_for_case,
 )
 
-logger = logging.getLogger("stability_radius.metrics_analysis")
+logger = logging.getLogger(__name__)
 
 # Metrics where *lower* value means *more dangerous* (negate for Spearman).
 _NEGATE_FOR_CORRELATION: set[str] = {
@@ -1606,7 +1605,7 @@ def _make_two_bus_direction(
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="python -m stability_radius.metrics_analysis",
+        prog="python entry_points/metrics_analysis.py",
         description="Comparative evaluation of stability radii vs baseline metrics",
     )
     parser.add_argument(
@@ -1675,7 +1674,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--output-dir",
         type=str,
         default="",
-        help="Optional artifact subdirectory name under runs/metrics_analysis/",
+        help="Optional artifact subdirectory name under run_artifacts/metrics_analysis/",
     )
     parser.add_argument("--log-level", type=str, default="INFO")
     return parser.parse_args(argv)
@@ -1684,14 +1683,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
 
-    logging.basicConfig(
-        level=getattr(logging, args.log_level.upper(), logging.INFO),
-        format="%(asctime)s %(name)s %(levelname)s %(message)s",
-    )
-
     output_dir = create_module_output_dir(
         module_name="metrics_analysis",
         requested_output_dir=args.output_dir,
+    )
+    setup_output_dir_logging(
+        output_dir,
+        level_console=str(args.log_level),
+        level_file="DEBUG",
     )
 
     # ------------------------------------------------------------------
@@ -2131,6 +2130,3 @@ def main(argv: list[str] | None = None) -> int:
     print(f"All outputs saved to: {output_dir}")
     return 0
 
-
-if __name__ == "__main__":
-    sys.exit(main())

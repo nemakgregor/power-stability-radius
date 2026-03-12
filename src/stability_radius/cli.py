@@ -35,7 +35,7 @@ from stability_radius.config import (
     OmegaConf,
     load_project_config,
 )
-from stability_radius.statistics.table import (
+from stability_radius.helpers.reporting.table import (
     DEFAULT_AC_COLUMNS,
     DEFAULT_DC_COLUMNS,
     format_radius_summary,
@@ -881,6 +881,7 @@ def run_compute(
     if str(args.export_results).strip():
         export_dir = create_module_output_dir(
             module_name="compute_exports",
+            runs_dir=str(args.runs_dir),
             requested_output_dir=Path(str(args.export_results)).parent,
         )
         export_path_abs = str((export_dir / Path(str(args.export_results)).name).resolve())
@@ -956,6 +957,7 @@ def run_report(
     results_dir = Path(_resolve_path(str(args.results_dir)))
     report_dir = create_module_output_dir(
         module_name="report",
+        runs_dir=str(args.runs_dir),
         requested_output_dir=Path(str(args.out)).parent,
     )
     out_path = report_dir / Path(str(args.out)).name
@@ -966,6 +968,9 @@ def run_report(
     )
 
     run_dir = _setup_run_and_logging(args)
+    _write_run_artifacts(
+        run_dir=run_dir, cfg_source_path=cfg_path, cfg_used={"report": vars(args)}, argv=argv
+    )
 
     from stability_radius.verification.generate_report import (
         ReportCaseSpec,
@@ -1030,6 +1035,9 @@ def run_monte_carlo(
     input_case_path = Path(_resolve_path(input_path_raw))
 
     run_dir = _setup_run_and_logging(args)
+    _write_run_artifacts(
+        run_dir=run_dir, cfg_source_path=cfg_path, cfg_used={"table": vars(args)}, argv=argv
+    )
 
     cfg_used: dict[str, Any] = {
         "config_path": str(cfg_path),

@@ -1,4 +1,4 @@
-"""Tests for stability_radius.metrics_analysis — DataFrame, correlations, precision-at-k."""
+"""Tests for stability_radius.analysis.metrics_analysis — DataFrame, correlations, precision-at-k."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from stability_radius.metrics_analysis import (
+from stability_radius.analysis.metrics_analysis import (
     _aggregate_bus_loads_sorted,
     _resolve_metrics_analysis_slack_bus,
     build_unified_dataframe,

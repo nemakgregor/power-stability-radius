@@ -26,7 +26,7 @@ def test_setup_logging_expands_tilde_runs_dir(
     monkeypatch.chdir(tmp_path)
 
     cfg = LoggingConfig(
-        runs_dir="~/runs",
+        runs_dir="~/run_artifacts",
         level_console="INFO",
         level_file="DEBUG",
         run_dir_mode="overwrite",
@@ -34,10 +34,10 @@ def test_setup_logging_expands_tilde_runs_dir(
     )
     run_dir = Path(setup_logging(cfg)).resolve()
 
-    expected = (home / "runs" / "general" / "run1").resolve()
+    expected = (home / "run_artifacts" / "general" / "run1").resolve()
     assert run_dir == expected
     assert expected.is_dir()
-    assert (expected / "run.log").exists()
+    assert (expected / "debug.log").exists()
 
 
 def test_cli_resolve_path_expands_tilde(

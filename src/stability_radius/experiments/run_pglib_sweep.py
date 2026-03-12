@@ -3,15 +3,15 @@
 Reads ``experiments/configs/pglib_sweep.yaml``, computes DC and AC L2 radii
 for each listed PGLib case, and produces:
 
-- Per-case JSON results in ``runs/run_pglib_sweep/``
+- Per-case JSON results in ``run_artifacts/run_pglib_sweep/``
 - ``summary.json`` with aggregated metrics
 - **Table 1** (printed to stdout): case, n_b, n_l, r*_DC, r*_AC, AC/DC, time, bottleneck
 - **Fig. 1** (saved as PNG): bar chart comparing r*_DC and r*_AC across cases
 
 Usage::
 
-    python -m experiments.run_pglib_sweep
-    python -m experiments.run_pglib_sweep --config experiments/configs/pglib_sweep.yaml
+    python entry_points/run_pglib_sweep.py
+    python entry_points/run_pglib_sweep.py --config experiments/configs/pglib_sweep.yaml
 
 Key design choice
 -----------------
@@ -40,7 +40,7 @@ import yaml  # noqa: E402
 
 from stability_radius.config import OPFConfig
 from stability_radius.parsers.matpower import load_network
-from stability_radius.utils import create_module_output_dir
+from stability_radius.utils import create_module_output_dir, resolve_artifacts_root
 from stability_radius.utils.download import ensure_case_file
 from stability_radius.workflows import (
     DCExtensionsConfig,
@@ -49,7 +49,9 @@ from stability_radius.workflows import (
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_CONFIG = Path(__file__).resolve().parent / "configs" / "pglib_sweep.yaml"
+_DEFAULT_CONFIG = (
+    Path(__file__).resolve().parents[3] / "experiments" / "configs" / "pglib_sweep.yaml"
+)
 
 
 def _load_config(path: Path) -> dict:
@@ -721,8 +723,10 @@ def run(config_path: Path, reuse_dir: Path | None = None) -> None:
     cases = cfg["cases"]
     compute_cfg = cfg.get("compute", {})
     data_dir = Path(cfg.get("data_dir", "data/input"))
+    artifacts_root = resolve_artifacts_root(cfg)
     output_dir = create_module_output_dir(
         module_name="run_pglib_sweep",
+        runs_dir=artifacts_root,
         requested_output_dir=cfg.get("output_dir", None),
     )
     allow_download = bool(cfg.get("allow_download", False))
@@ -1033,7 +1037,3 @@ def main() -> None:
     )
     args = parser.parse_args()
     run(args.config, reuse_dir=args.reuse_dir)
-
-
-if __name__ == "__main__":
-    main()

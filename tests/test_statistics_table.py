@@ -1,10 +1,10 @@
-"""Tests for stability_radius.statistics.table — ASCII/CSV table formatting."""
+"""Tests for stability_radius.helpers.reporting.table — ASCII/CSV table formatting."""
 
 from __future__ import annotations
 
 import math
 
-from stability_radius.statistics.table import (
+from stability_radius.helpers.reporting.table import (
     _format_float,
     _line_sort_key,
     format_radius_summary,

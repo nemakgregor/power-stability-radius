@@ -15,10 +15,10 @@ Requires a prior run of ``run_pglib_sweep.py`` with ``save_h_vectors=true``
 
 Usage::
 
-    python -m experiments.run_worst_case_verify \\
-        --sweep-dir runs/run_pglib_sweep
-    python -m experiments.run_worst_case_verify \\
-        --results runs/run_pglib_sweep/pglib_opf_case30_ieee.json
+    python entry_points/run_worst_case_verify.py \\
+        --sweep-dir run_artifacts/run_pglib_sweep
+    python entry_points/run_worst_case_verify.py \\
+        --results run_artifacts/run_pglib_sweep/pglib_opf_case30_ieee.json
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ from stability_radius.base_point.ac import solve_ac_fpf_base_point
 from stability_radius.base_point.pandapower_tools import resolve_slack_bus_id
 from stability_radius.parsers.matpower import load_network
 from stability_radius.radii.ac_l2 import compute_ac_l2_radius
-from stability_radius.utils import create_module_output_dir
+from stability_radius.utils import create_module_output_dir, setup_output_dir_logging
 from stability_radius.verification.verify_worst_case import verify_worst_case
 from stability_radius.workflows import _expand_h_reduced_to_full
 
@@ -812,6 +812,7 @@ def main() -> None:
         module_name="run_worst_case_verify",
         requested_output_dir=args.output_dir,
     )
+    setup_output_dir_logging(output_dir)
 
     run(
         results_paths=results_paths,
@@ -820,7 +821,3 @@ def main() -> None:
         top_k=args.top_k,
         recompute=args.recompute,
     )
-
-
-if __name__ == "__main__":
-    main()

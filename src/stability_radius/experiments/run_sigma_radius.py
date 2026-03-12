@@ -16,8 +16,8 @@ Produces:
 
 Usage::
 
-    python -m experiments.run_sigma_radius
-    python -m experiments.run_sigma_radius --config experiments/configs/uc_jl_case118.yaml
+    python entry_points/run_sigma_radius.py
+    python entry_points/run_sigma_radius.py --config experiments/configs/uc_jl_case118.yaml
 """
 
 from __future__ import annotations
@@ -43,7 +43,11 @@ import pandapower.topology as pt
 import yaml
 
 from stability_radius.base_point.ac import solve_ac_fpf_base_point
-from stability_radius.utils import create_module_output_dir
+from stability_radius.utils import (
+    create_module_output_dir,
+    resolve_artifacts_root,
+    setup_output_dir_logging,
+)
 from stability_radius.base_point.pandapower_opp import ACFPFConfig
 from stability_radius.base_point.pandapower_tools import (
     apply_lossless_policy_to_pandapower_net,
@@ -67,7 +71,12 @@ from stability_radius.workflows import (
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_CONFIG = Path(__file__).resolve().parent / "configs" / "uc_jl_case118.yaml"
+_DEFAULT_CONFIG = (
+    Path(__file__).resolve().parents[3]
+    / "experiments"
+    / "configs"
+    / "uc_jl_case118.yaml"
+)
 _SIGMA_FLOOR = 1e-6
 
 
@@ -1760,8 +1769,10 @@ def run(config_path: Path) -> None:
     fpf_cfg_dict = ac_cfg.get("fpf", {})
     plot_cfg = cfg.get("plot", {})
     data_dir = Path(cfg.get("data_dir", "data/input"))
+    artifacts_root = resolve_artifacts_root(cfg)
     output_dir = create_module_output_dir(
         module_name="run_sigma_radius",
+        runs_dir=artifacts_root,
         requested_output_dir=cfg.get("output_dir", None),
     )
     allow_download = bool(cfg.get("allow_download", False))
@@ -2149,6 +2160,8 @@ def run(config_path: Path) -> None:
 
 def _setup_logging(output_dir: Path) -> None:
     """Configure root logger: console (INFO) + debug.log file (DEBUG)."""
+    setup_output_dir_logging(output_dir)
+    return
     root = logging.getLogger()
     root.setLevel(logging.DEBUG)
 
@@ -2191,14 +2204,12 @@ def main() -> None:
     # Pre-read config to get output_dir before run() starts
     with args.config.open(encoding="utf-8") as fh:
         _pre_cfg = yaml.safe_load(fh)
+    _artifacts_root = resolve_artifacts_root(_pre_cfg)
     _out_dir = create_module_output_dir(
         module_name="run_sigma_radius",
+        runs_dir=_artifacts_root,
         requested_output_dir=_pre_cfg.get("output_dir", None),
     )
     _setup_logging(_out_dir)
 
     run(args.config)
-
-
-if __name__ == "__main__":
-    main()

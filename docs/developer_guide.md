@@ -200,7 +200,7 @@ def compute_baseline_metrics(results: dict) -> dict:
 
 1. **Create experiment script** in `experiments/`:
    ```python
-   # experiments/run_my_experiment.py
+   # src/stability_radius/experiments/run_my_experiment.py
    """Experiment N: Description."""
 
    from stability_radius.workflows import compute_results_for_case
@@ -219,7 +219,7 @@ def compute_baseline_metrics(results: dict) -> dict:
 2. **Create experiment config** in `experiments/configs/my_experiment.yaml`
 
 3. **Follow conventions**:
-   - Save outputs to `runs/<module>/<name>/` (or directly `runs/<module>/`)
+   - Save outputs to `run_artifacts/<module>/<name>/` (or directly `run_artifacts/<module>/`)
    - Include `debug.log` with detailed logs
    - Save `summary.json` for aggregated results
    - Generate `.png` and `.pdf` versions of plots
@@ -279,8 +279,8 @@ def compute_baseline_metrics(results: dict) -> dict:
 ### Debug test scripts
 
 Two debug scripts exist in `tests/`:
-- `tests/debug_h_vector_case118.py` — Validates h-vector computation for case118
-- `tests/debug_jacobian_case118.py` — Validates Jacobian vs pandapower for case118
+- `src/stability_radius/debug/h_vector_case118.py` — Validates h-vector computation for case118
+- `src/stability_radius/debug/jacobian_case118.py` — Validates Jacobian vs pandapower for case118
 
 ---
 

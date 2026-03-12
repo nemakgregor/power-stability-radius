@@ -10,11 +10,11 @@ Pipeline
 6. Compute AC L2 radii for radius-OPF regime.
 7. Solve a screening-based SCOPF proxy and compare all three regimes.
 8. DC/AC N-1 post-processing and brute-force AC N-1 screening.
-9. Save CSV tables, summary text, and plots under `runs/`.
+9. Save CSV tables, summary text, plots, and `debug.log` under `run_artifacts/`.
 
 Usage
 -----
-python -m stability_radius.n1_stability_demo \\
+python entry_points/n1_stability_demo.py \\
     --input data/input/pglib_opf_case118_ieee.m \\
     --r-target 0.5 --n-iter 2 --scopf-iter 2 \\
     --output-dir n1_demo_case118
@@ -69,7 +69,6 @@ def _resolve_output_dir(requested_output_dir: str | None) -> Path:
 
     return create_module_output_dir(
         module_name="n1_stability_demo",
-        runs_dir="runs",
         requested_output_dir=requested_output_dir,
     )
 
@@ -2842,7 +2841,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         default="n1_demo",
-        help="Artifact directory name; non-runs paths are normalized under runs/n1_stability_demo/",
+        help="Artifact directory name; non-artifact paths are normalized under run_artifacts/n1_stability_demo/",
     )
     parser.add_argument(
         "--slack-bus", type=int, default=None, help="Slack bus index (None = auto)"
@@ -2891,7 +2890,7 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     args = _parse_args()
     out_dir = _resolve_output_dir(args.output_dir)
-    _setup_logging(args.verbose, log_file=out_dir / "run.log")
+    _setup_logging(args.verbose, log_file=out_dir / "debug.log")
     logger.info("Output directory: %s", out_dir.resolve())
 
     regime_order = [
@@ -3195,6 +3194,3 @@ def main() -> None:
 
     logger.info("Done. All outputs in: %s", out_dir.resolve())
 
-
-if __name__ == "__main__":
-    main()
