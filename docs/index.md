@@ -1,131 +1,56 @@
-# Power Stability Radius — Documentation Index
+# Power Stability Radius Documentation
 
-## Project Overview
+This directory is the documentation source of truth for the repository. The project uses a docs-as-code workflow: docs live in Git, the main entry points are documented explicitly, and tests verify that the docs index, entry-point inventory, and CI workflow stay in sync.
 
-**Power Stability Radius** is a Python toolkit for computing **robustness certificates** for power system operating points with respect to **line thermal limit violations**. It answers the practical question:
+## Core References
 
-> *How far (in the norm of bus injection perturbations) can the system deviate from a given base dispatch before any transmission line exceeds its thermal rating?*
+| File | Purpose |
+|------|---------|
+| [entry_points.md](entry_points.md) | Authoritative reference for every runnable script under `entry_points/` |
+| [execution_flow.md](execution_flow.md) | Accurate runtime flow for the main CLI and experiment scripts |
+| [repository_structure.md](repository_structure.md) | Current repository map and package ownership |
+| [testing_and_ci.md](testing_and_ci.md) | Local verification commands, docs-as-code checks, and GitHub Actions details |
+| [configuration.md](configuration.md) | YAML configuration structure and parameter behavior |
+| [data_formats.md](data_formats.md) | Input and output file contracts |
+| [architecture.md](architecture.md) | Conceptual component boundaries and interaction model |
+| [developer_guide.md](developer_guide.md) | Extension guidance for new algorithms, metrics, and parsers |
+| [mathematical_foundations.md](mathematical_foundations.md) | Formal derivations and notation |
+| [algorithms_and_models.md](algorithms_and_models.md) | Algorithmic details for DC, AC, and verification routines |
+| [experiments_and_evaluation.md](experiments_and_evaluation.md) | Benchmarking and experimental framing |
+| [metrics.md](metrics.md) | Metric definitions and interpretation |
+| [limitations_and_assumptions.md](limitations_and_assumptions.md) | Known modeling and implementation limits |
+| [reproducibility_and_fallbacks.md](reproducibility_and_fallbacks.md) | Determinism and fallback policy |
+| [n1_demo.md](n1_demo.md) | Details for the dedicated `n1_stability_demo` workflow |
+| [glossary.md](glossary.md) | Terminology and symbols |
 
-The answer is produced **per line** and aggregated as a global minimum across all lines. The project supports two physical models:
+## Suggested Reading Paths
 
-| Model | Description | Scalability |
-|-------|-------------|-------------|
-| **DC (linear)** | Lossless DC power flow with PTDF sensitivities | Fast, scales to 10 000+ bus networks |
-| **AC (linearized)** | AC power flow Jacobian / adjoint sensitivities around an AC PF base point | Moderate, requires sparse LU factorization |
+For a new contributor:
 
-Several **radius variants** are implemented:
+1. [repository_structure.md](repository_structure.md)
+2. [entry_points.md](entry_points.md)
+3. [execution_flow.md](execution_flow.md)
+4. [testing_and_ci.md](testing_and_ci.md)
 
-- **L2 radius** — worst-case under Euclidean-norm-bounded perturbations (Cauchy–Schwarz certificate)
-- **Sigma radius** — worst-case in "number of standard deviations" units, accounting for heterogeneous per-bus uncertainty
-- **Metric radius** — worst-case under an arbitrary symmetric positive-definite (SPD) weight matrix
-- **Probabilistic (DC)** — Gaussian overload probability via the Q-function
-- **N-1 (DC)** — L2 radius under single-line contingencies with updated sensitivities
+For a workflow/debugging task:
 
-Verification is provided through:
+1. [entry_points.md](entry_points.md)
+2. [execution_flow.md](execution_flow.md)
+3. [configuration.md](configuration.md)
+4. [data_formats.md](data_formats.md)
 
-- **Monte Carlo simulation** (both DC and AC)
-- **Deterministic certificate verification** (soundness check against analytic worst-case perturbations)
-- **Comparative metrics analysis** (Spearman rank correlation with empirical overload probabilities)
+For an algorithm or research review:
 
----
+1. [mathematical_foundations.md](mathematical_foundations.md)
+2. [algorithms_and_models.md](algorithms_and_models.md)
+3. [experiments_and_evaluation.md](experiments_and_evaluation.md)
+4. [limitations_and_assumptions.md](limitations_and_assumptions.md)
 
-## Documentation Files
-
-| File | Contents |
-|------|----------|
-| [repository_structure.md](repository_structure.md) | Directory tree, file roles, and module responsibilities |
-| [architecture.md](architecture.md) | Software architecture, component interactions, and data flow |
-| [mathematical_foundations.md](mathematical_foundations.md) | Formal problem statement, variables, constraints, and all radius formulations with equations |
-| [algorithms_and_models.md](algorithms_and_models.md) | Step-by-step algorithmic descriptions for every solver, heuristic, and computation pipeline |
-| [scientific_concepts.md](scientific_concepts.md) | Research motivation, hypotheses, trade-offs, and scientific interpretation of results |
-| [data_formats.md](data_formats.md) | Input file schemas (MATPOWER, UnitCommitment.jl), output JSON structure, CSV/plots |
-| [configuration.md](configuration.md) | YAML config system, all parameters, defaults, and interactions |
-| [execution_flow.md](execution_flow.md) | End-to-end execution traces for CLI commands, experiment scripts, and entry points |
-| [reproducibility_and_fallbacks.md](reproducibility_and_fallbacks.md) | Deterministic repair paths, surrogate values, tie-break rules, and how they are surfaced in metadata |
-| [experiments_and_evaluation.md](experiments_and_evaluation.md) | Experimental pipeline, benchmark cases, metrics, and reproducibility procedures |
-| [n1_demo.md](n1_demo.md) | Three-regime `n1_stability_demo` workflow: Cost OPF vs Radius OPF vs screening-based SCOPF |
-| [developer_guide.md](developer_guide.md) | Extension points, coding conventions, adding new algorithms/metrics/parsers |
-| [limitations_and_assumptions.md](limitations_and_assumptions.md) | Mathematical and implementation assumptions, scalability, known limitations |
-| [metrics.md](metrics.md) | Complete reference for all metrics: formulas, inputs, predictive vs a posteriori classification |
-| [glossary.md](glossary.md) | Definitions of domain terms, abbreviations, and key variable names |
-
----
-
-## Recommended Reading Paths
-
-### For a new developer
-1. [repository_structure.md](repository_structure.md) — understand where code lives
-2. [architecture.md](architecture.md) — understand component interactions
-3. [execution_flow.md](execution_flow.md) — trace a computation end-to-end
-4. [developer_guide.md](developer_guide.md) — learn how to extend
-
-### For a researcher
-1. [mathematical_foundations.md](mathematical_foundations.md) — formal problem definition and all formulas
-2. [scientific_concepts.md](scientific_concepts.md) — research motivation and hypotheses
-3. [algorithms_and_models.md](algorithms_and_models.md) — algorithmic details
-4. [experiments_and_evaluation.md](experiments_and_evaluation.md) — experimental methodology
-
-### For a technical reviewer
-1. [mathematical_foundations.md](mathematical_foundations.md) — verify correctness of formulations
-2. [limitations_and_assumptions.md](limitations_and_assumptions.md) — understand what is and isn't modeled
-3. [experiments_and_evaluation.md](experiments_and_evaluation.md) — reproduce results
-4. [data_formats.md](data_formats.md) — understand inputs and outputs
-
----
-
-## Quick Start
-
-### Installation
+## Quick Commands
 
 ```bash
 poetry install
+poetry run python entry_points/power_stability_radius.py --config conf/config.yaml compute --input data/input/pglib_opf_case30_ieee.m --slack-bus 0
+poetry run python -m pytest -q
+poetry run ruff format --check .
 ```
-
-### Run a basic computation
-
-```bash
-poetry run python entry_points/power_stability_radius.py \
-    --config conf/config.yaml \
-    compute \
-    --input data/input/pglib_opf_case30_ieee.m \
-    --slack-bus 0 \
-    --base-dispatch case \
-    --output results.json
-```
-
-### Run Monte Carlo verification
-
-```bash
-poetry run python entry_points/power_stability_radius.py \
-    --config conf/config.yaml \
-    monte-carlo \
-    --results-path results.json \
-    --input data/input/pglib_opf_case30_ieee.m \
-    --slack-bus 0 \
-    --mode dc \
-    --n-samples 10000
-```
-
-### Run experiments for paper
-
-```bash
-python entry_points/run_pglib_sweep.py
-python entry_points/run_sigma_radius.py --config experiments/configs/sigma_case2000_goc.yaml
-```
-
-### Run the three-regime N-1 demo
-
-```bash
-python entry_points/n1_stability_demo.py \
-    --input data/input/pglib_opf_case118_ieee.m \
-    --output-dir n1_demo_case118 \
-    --n-iter 2 \
-    --scopf-iter 2
-```
-
-Artifacts are written to `run_artifacts/n1_stability_demo/n1_demo_case118/`. See
-[n1_demo.md](n1_demo.md) for the output files, plots, and the interpretation of
-proxy headroom, post-PF current-loading diagnostics, pandapower's
-apparent-power OPF branch constraints, and the new proxy-vs-OPF limit
-consistency check against the reconstructed pandapower line-limit model in this
-demo.

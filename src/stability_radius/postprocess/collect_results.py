@@ -4,10 +4,10 @@ Scans ``run_artifacts/`` subdirectories for ``summary.json`` and
 per-case result JSON files, then produces a single CSV suitable for
 inclusion in the paper.
 
-Usage::
+Module usage::
 
-    python entry_points/collect_results.py
-    python entry_points/collect_results.py --output-dir run_artifacts --csv run_artifacts/collect_results/all_results.csv
+    python -m stability_radius.postprocess.collect_results
+    python -m stability_radius.postprocess.collect_results --output-dir run_artifacts --csv run_artifacts/collect_results/all_results.csv
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ import csv
 import json
 import logging
 from pathlib import Path
+from typing import Sequence
 
 import numpy as np
 from stability_radius.utils import (
@@ -141,7 +142,7 @@ def collect(output_dir: Path, csv_path: Path) -> None:
     logger.info("CSV summary written: %s (%d rows)", csv_path, len(rows))
 
 
-def main() -> None:
+def main(argv: Sequence[str] | None = None) -> int:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
@@ -161,13 +162,14 @@ def main() -> None:
         default=_DEFAULT_CSV_PATH,
         help="Path for the output CSV file.",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(list(argv) if argv is not None else None)
     csv_dir = create_module_output_dir(
         module_name="collect_results",
         requested_output_dir=args.csv.parent,
     )
     setup_output_dir_logging(csv_dir)
     collect(args.output_dir, csv_dir / args.csv.name)
+    return 0
 
 
 if __name__ == "__main__":

@@ -290,7 +290,9 @@ def test_pypsa_apf_result_custom_fields() -> None:
 
 
 def test_distributed_slack_metadata_reports_requested_and_used() -> None:
-    from stability_radius.base_point.pypsa_pf import solve_ac_pf_base_point_from_pandapower
+    from stability_radius.base_point.pypsa_pf import (
+        solve_ac_pf_base_point_from_pandapower,
+    )
 
     net, slack_bus = _make_simple_net()
 

@@ -3,10 +3,10 @@
 Reads per-case JSON results from ``run_artifacts/run_pglib_sweep/`` and
 produces box-plots / violin-plots of DC and AC L2 radii.
 
-Usage::
+Module usage::
 
-    python entry_points/plot_radius_distribution.py
-    python entry_points/plot_radius_distribution.py --input-dir run_artifacts/run_pglib_sweep
+    python -m stability_radius.postprocess.plot_radius_distribution
+    python -m stability_radius.postprocess.plot_radius_distribution --input-dir run_artifacts/run_pglib_sweep
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ import argparse
 import json
 import logging
 from pathlib import Path
+from typing import Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -35,6 +36,8 @@ def _load_json(path: Path) -> dict:
 
 
 def plot(input_dir: Path, output_dir: Path) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     case_names: list[str] = []
     dc_data: list[list[float]] = []
     ac_data: list[list[float]] = []
@@ -75,8 +78,13 @@ def plot(input_dir: Path, output_dir: Path) -> None:
 
     # DC boxplot.
     ax = axes[0]
-    ax.boxplot(dc_data, labels=case_names, vert=True, patch_artist=True,
-               boxprops={"facecolor": "#4C72B0", "alpha": 0.7})
+    ax.boxplot(
+        dc_data,
+        tick_labels=case_names,
+        orientation="vertical",
+        patch_artist=True,
+        boxprops={"facecolor": "#4C72B0", "alpha": 0.7},
+    )
     ax.set_title("DC L2 Radius Distribution")
     ax.set_ylabel("Radius (MW)")
     ax.set_xlabel("Case")
@@ -85,8 +93,13 @@ def plot(input_dir: Path, output_dir: Path) -> None:
 
     # AC boxplot.
     ax = axes[1]
-    ax.boxplot(ac_data, labels=case_names, vert=True, patch_artist=True,
-               boxprops={"facecolor": "#DD8452", "alpha": 0.7})
+    ax.boxplot(
+        ac_data,
+        tick_labels=case_names,
+        orientation="vertical",
+        patch_artist=True,
+        boxprops={"facecolor": "#DD8452", "alpha": 0.7},
+    )
     ax.set_title("AC L2 Radius Distribution")
     ax.set_ylabel("Radius (MVA)")
     ax.set_xlabel("Case")
@@ -104,15 +117,25 @@ def plot(input_dir: Path, output_dir: Path) -> None:
     # Also save PNG for quick preview.
     out_png = output_dir / "radius_distribution.png"
     fig2, axes2 = plt.subplots(1, 2, figsize=(7 + 2 * n, 6), sharey=False)
-    axes2[0].boxplot(dc_data, labels=case_names, vert=True, patch_artist=True,
-                     boxprops={"facecolor": "#4C72B0", "alpha": 0.7})
+    axes2[0].boxplot(
+        dc_data,
+        tick_labels=case_names,
+        orientation="vertical",
+        patch_artist=True,
+        boxprops={"facecolor": "#4C72B0", "alpha": 0.7},
+    )
     axes2[0].set_title("DC L2 Radius Distribution")
     axes2[0].set_ylabel("Radius (MW)")
     axes2[0].set_xlabel("Case")
     axes2[0].tick_params(axis="x", rotation=45)
     axes2[0].set_yscale("log")
-    axes2[1].boxplot(ac_data, labels=case_names, vert=True, patch_artist=True,
-                     boxprops={"facecolor": "#DD8452", "alpha": 0.7})
+    axes2[1].boxplot(
+        ac_data,
+        tick_labels=case_names,
+        orientation="vertical",
+        patch_artist=True,
+        boxprops={"facecolor": "#DD8452", "alpha": 0.7},
+    )
     axes2[1].set_title("AC L2 Radius Distribution")
     axes2[1].set_ylabel("Radius (MVA)")
     axes2[1].set_xlabel("Case")
@@ -125,7 +148,7 @@ def plot(input_dir: Path, output_dir: Path) -> None:
     logger.info("Plot saved: %s", out_png)
 
 
-def main() -> None:
+def main(argv: Sequence[str] | None = None) -> int:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
@@ -145,13 +168,14 @@ def main() -> None:
         default=Path(""),
         help="Directory where plots are saved.",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(list(argv) if argv is not None else None)
     output_dir = create_module_output_dir(
         module_name="plot_radius_distribution",
         requested_output_dir=args.output_dir,
     )
     setup_output_dir_logging(output_dir)
     plot(args.input_dir, output_dir)
+    return 0
 
 
 if __name__ == "__main__":

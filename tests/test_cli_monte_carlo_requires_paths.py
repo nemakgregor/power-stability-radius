@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from pathlib import Path
 
@@ -38,4 +38,3 @@ def test_report_requires_cases_in_config_and_fails_fast_without_side_effects(
         )
 
     assert not (tmp_path / "runs").exists()
-

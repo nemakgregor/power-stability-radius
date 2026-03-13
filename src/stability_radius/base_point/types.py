@@ -132,7 +132,9 @@ class BasePointAC:
             "gen_dispatch_mw_by_name": [
                 (str(k), float(v)) for k, v in self.gen_dispatch_mw_by_name
             ],
-            "bus_p_mw": [float(x) for x in np.asarray(self.bus_p_mw, dtype=float).tolist()]
+            "bus_p_mw": [
+                float(x) for x in np.asarray(self.bus_p_mw, dtype=float).tolist()
+            ]
             if self.bus_p_mw is not None
             else None,
         }

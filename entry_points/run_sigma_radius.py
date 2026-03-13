@@ -90,6 +90,7 @@ def _load_config(path: Path) -> dict:
     with path.open(encoding="utf-8") as fh:
         return yaml.safe_load(fh)
 
+
 def _clamp_sigma(sigma: np.ndarray, floor: float = _SIGMA_FLOOR) -> np.ndarray:
     out = sigma.copy()
     out[out < floor] = floor
@@ -134,9 +135,12 @@ def _generate_synthetic_sigma(
     logger.info(
         "Synthetic sigma: n_bus=%d, sigma_fraction=%.2f, "
         "sig_P range=[%.4g, %.4g] MW, sig_Q range=[%.4g, %.4g] MVAr",
-        n_bus, sigma_fraction,
-        float(np.min(sigma_p)), float(np.max(sigma_p)),
-        float(np.min(sigma_q)), float(np.max(sigma_q)),
+        n_bus,
+        sigma_fraction,
+        float(np.min(sigma_p)),
+        float(np.max(sigma_p)),
+        float(np.min(sigma_q)),
+        float(np.max(sigma_q)),
     )
     return sigma_p, sigma_q
 
@@ -256,11 +260,15 @@ def _compute_at_average_point(
     slack_pos = bus_ids.index(slack_bus_id)
 
     h_from = _expand_h_reduced_to_full(
-        h_vecs_raw["h_from"], n_bus=n_bus, slack_pos=slack_pos,
+        h_vecs_raw["h_from"],
+        n_bus=n_bus,
+        slack_pos=slack_pos,
         pq_mask=h_vecs_raw.get("pq_mask"),
     )
     h_to = _expand_h_reduced_to_full(
-        h_vecs_raw["h_to"], n_bus=n_bus, slack_pos=slack_pos,
+        h_vecs_raw["h_to"],
+        n_bus=n_bus,
+        slack_pos=slack_pos,
         pq_mask=h_vecs_raw.get("pq_mask"),
     )
 
@@ -845,9 +853,7 @@ def _run_worst_case_verification(
                 viol_scale_result.n_pf_calls,
             )
         except Exception:
-            logger.warning(
-                "Violation scale search failed for %s", lk, exc_info=True
-            )
+            logger.warning("Violation scale search failed for %s", lk, exc_info=True)
 
         verification_results.append(
             {
@@ -945,7 +951,8 @@ def _run_tightened_limit_mc(
     logger.info(
         "Tightened-limit MC phase 1: running %d pilot samples to estimate "
         "empirical sigma_flow for %s",
-        n_pilot, lk,
+        n_pilot,
+        lk,
     )
 
     nn_pilot = copy.deepcopy(net)
@@ -955,17 +962,30 @@ def _run_tightened_limit_mc(
     bus_ids_sorted = [int(x) for x in sorted(nn_pilot.bus.index)]
     sgen_idx_pilot: list[int] = []
     for bid in bus_ids_sorted:
-        idx = int(pp.create_sgen(
-            nn_pilot, bus=int(bid), p_mw=0.0, q_mvar=0.0,
-            name=f"pilot_mc_bus_{int(bid)}", in_service=True,
-        ))
+        idx = int(
+            pp.create_sgen(
+                nn_pilot,
+                bus=int(bid),
+                p_mw=0.0,
+                q_mvar=0.0,
+                name=f"pilot_mc_bus_{int(bid)}",
+                in_service=True,
+            )
+        )
         sgen_idx_pilot.append(idx)
 
     try:
-        pp.runpp(nn_pilot, calculate_voltage_angles=True, enforce_q_lims=True, init="results")
+        pp.runpp(
+            nn_pilot, calculate_voltage_angles=True, enforce_q_lims=True, init="results"
+        )
     except Exception:
         try:
-            pp.runpp(nn_pilot, calculate_voltage_angles=True, enforce_q_lims=True, init="flat")
+            pp.runpp(
+                nn_pilot,
+                calculate_voltage_angles=True,
+                enforce_q_lims=True,
+                init="flat",
+            )
         except Exception:
             logger.warning("Tightened-limit MC: pilot base PF did not converge.")
             return None
@@ -984,7 +1004,10 @@ def _run_tightened_limit_mc(
 
     rng_pilot = np.random.default_rng(int(seed) + 99999)
     dp_pilot, dq_pilot = _sample_gaussian_sigma(
-        rng=rng_pilot, n=n_pilot, sigma_p=sig_p, sigma_q=sig_q,
+        rng=rng_pilot,
+        n=n_pilot,
+        sigma_p=sig_p,
+        sigma_q=sig_q,
     )
 
     pilot_flows: list[float] = []
@@ -992,7 +1015,12 @@ def _run_tightened_limit_mc(
         nn_pilot.sgen.loc[sgen_idx_pilot, "p_mw"] = dp_pilot[j, :]
         nn_pilot.sgen.loc[sgen_idx_pilot, "q_mvar"] = dq_pilot[j, :]
         try:
-            pp.runpp(nn_pilot, calculate_voltage_angles=True, enforce_q_lims=True, init="results")
+            pp.runpp(
+                nn_pilot,
+                calculate_voltage_angles=True,
+                enforce_q_lims=True,
+                init="results",
+            )
             conv = bool(getattr(nn_pilot, "converged", True))
         except Exception:
             conv = False
@@ -1006,7 +1034,9 @@ def _run_tightened_limit_mc(
             pilot_flows.append(math.sqrt(pf**2 + qf**2))
 
     if len(pilot_flows) < 20:
-        logger.warning("Too few converged pilot samples (%d), skipping.", len(pilot_flows))
+        logger.warning(
+            "Too few converged pilot samples (%d), skipping.", len(pilot_flows)
+        )
         return None
 
     pilot_arr = np.array(pilot_flows)
@@ -1015,9 +1045,12 @@ def _run_tightened_limit_mc(
     logger.info(
         "Pilot results: s0_pf=%.4f, sigma_analytical=%.4f, sigma_empirical=%.4f "
         "(ratio=%.4f, %d/%d converged)",
-        s0_pf, sigma_flow_analytical, sigma_flow_empirical,
+        s0_pf,
+        sigma_flow_analytical,
+        sigma_flow_empirical,
         sigma_flow_empirical / sigma_flow_analytical,
-        len(pilot_flows), n_pilot,
+        len(pilot_flows),
+        n_pilot,
     )
 
     # ---- Phase 2: Main MC with tightened limit based on empirical sigma ----
@@ -1029,19 +1062,28 @@ def _run_tightened_limit_mc(
     )
 
     analytical_prob_empirical = _overload_probability_symmetric_limit(
-        s0_mva=s0_pf, c_mva=tight_limit, sigma_mva=sigma_flow_empirical,
+        s0_mva=s0_pf,
+        c_mva=tight_limit,
+        sigma_mva=sigma_flow_empirical,
     )
     # Also compute with analytical sigma for comparison
     analytical_prob_analytical = _overload_probability_symmetric_limit(
-        s0_mva=s0, c_mva=tight_limit, sigma_mva=sigma_flow_analytical,
+        s0_mva=s0,
+        c_mva=tight_limit,
+        sigma_mva=sigma_flow_analytical,
     )
 
     logger.info(
         "Tightened-limit MC phase 2: tight_limit=%.4f MVA "
         "(s0=%.4f + %.2f * %.4f), n_samples=%d, "
         "P_overload(empirical sigma)=%.6e, P_overload(analytical sigma)=%.6e",
-        tight_limit, s0_pf, target_r_sigma, sigma_flow_empirical,
-        n_samples, analytical_prob_empirical, analytical_prob_analytical,
+        tight_limit,
+        s0_pf,
+        target_r_sigma,
+        sigma_flow_empirical,
+        n_samples,
+        analytical_prob_empirical,
+        analytical_prob_analytical,
     )
 
     # Run main MC
@@ -1051,17 +1093,25 @@ def _run_tightened_limit_mc(
 
     sgen_idx: list[int] = []
     for bid in bus_ids_sorted:
-        idx = int(pp.create_sgen(
-            nn, bus=int(bid), p_mw=0.0, q_mvar=0.0,
-            name=f"tight_mc_bus_{int(bid)}", in_service=True,
-        ))
+        idx = int(
+            pp.create_sgen(
+                nn,
+                bus=int(bid),
+                p_mw=0.0,
+                q_mvar=0.0,
+                name=f"tight_mc_bus_{int(bid)}",
+                in_service=True,
+            )
+        )
         sgen_idx.append(idx)
 
     try:
         pp.runpp(nn, calculate_voltage_angles=True, enforce_q_lims=True, init="results")
     except Exception:
         try:
-            pp.runpp(nn, calculate_voltage_angles=True, enforce_q_lims=True, init="flat")
+            pp.runpp(
+                nn, calculate_voltage_angles=True, enforce_q_lims=True, init="flat"
+            )
         except Exception:
             logger.warning("Tightened-limit MC: main base PF did not converge.")
             return None
@@ -1071,7 +1121,10 @@ def _run_tightened_limit_mc(
 
     rng_main = np.random.default_rng(int(seed) + 12345)
     dp_all, dq_all = _sample_gaussian_sigma(
-        rng=rng_main, n=n_samples, sigma_p=sig_p, sigma_q=sig_q,
+        rng=rng_main,
+        n=n_samples,
+        sigma_p=sig_p,
+        sigma_q=sig_q,
     )
 
     inv_sig_p = 1.0 / sig_p
@@ -1089,7 +1142,9 @@ def _run_tightened_limit_mc(
         nn.sgen.loc[sgen_idx, "q_mvar"] = dq_all[j, :]
 
         try:
-            pp.runpp(nn, calculate_voltage_angles=True, enforce_q_lims=True, init="results")
+            pp.runpp(
+                nn, calculate_voltage_angles=True, enforce_q_lims=True, init="results"
+            )
             conv = bool(getattr(nn, "converged", True))
         except Exception:
             conv = False
@@ -1169,24 +1224,35 @@ def _run_tightened_limit_mc(
     print(f"  S0 (analytical):          {s0:.4f} MVA")
     print(f"  S0 (PF actual):           {s0_pf:.4f} MVA")
     print(f"  sigma_flow (analytical):  {sigma_flow_analytical:.4f} MVA")
-    print(f"  sigma_flow (empirical):   {sigma_flow_empirical:.4f} MVA "
-          f"(ratio={sigma_flow_empirical / sigma_flow_analytical:.4f})")
-    print(f"  Original limit:           {top_row['limit_mva']:.4f} MVA "
-          f"(r_sigma={top_row['r_sigma']:.2f})")
-    print(f"  Tightened limit:          {tight_limit:.4f} MVA "
-          f"(r_sigma={target_r_sigma:.2f} based on empirical sigma)")
+    print(
+        f"  sigma_flow (empirical):   {sigma_flow_empirical:.4f} MVA "
+        f"(ratio={sigma_flow_empirical / sigma_flow_analytical:.4f})"
+    )
+    print(
+        f"  Original limit:           {top_row['limit_mva']:.4f} MVA "
+        f"(r_sigma={top_row['r_sigma']:.2f})"
+    )
+    print(
+        f"  Tightened limit:          {tight_limit:.4f} MVA "
+        f"(r_sigma={target_r_sigma:.2f} based on empirical sigma)"
+    )
     print(f"  Pilot samples:            {n_pilot} ({len(pilot_flows)} converged)")
     print(f"  Main samples:             {n_samples}")
-    print(f"  Empirical violations:     {n_violations} "
-          f"({empirical_prob:.4%})")
-    print(f"  P (empirical sigma):      {analytical_prob_empirical:.4e} "
-          f"(ratio={ratio_empirical:.4f})")
-    print(f"  P (analytical sigma):     {analytical_prob_analytical:.4e} "
-          f"(ratio={ratio_analytical:.4f})")
+    print(f"  Empirical violations:     {n_violations} ({empirical_prob:.4%})")
+    print(
+        f"  P (empirical sigma):      {analytical_prob_empirical:.4e} "
+        f"(ratio={ratio_empirical:.4f})"
+    )
+    print(
+        f"  P (analytical sigma):     {analytical_prob_analytical:.4e} "
+        f"(ratio={ratio_analytical:.4f})"
+    )
     print(f"  PF failures:              {n_pf_failures}")
     gauss_ok = 0.3 <= ratio_empirical <= 3.0 if np.isfinite(ratio_empirical) else False
-    print(f"  Gaussian consistency:     {'PASS' if gauss_ok else 'FAIL'} "
-          f"(ratio in [0.3, 3.0])")
+    print(
+        f"  Gaussian consistency:     {'PASS' if gauss_ok else 'FAIL'} "
+        f"(ratio in [0.3, 3.0])"
+    )
     print("=" * 70)
     print()
 
@@ -1287,9 +1353,7 @@ def _run_validation_checks(
         f"  Sigma floor impact:    {n_clamped}/{n_bus} buses clamped "
         f"({'WARN' if checks['sigma_floor']['warn'] else 'OK'})"
     )
-    print(
-        "  Gaussian consistency:  see tightened-limit MC (Step 7b)"
-    )
+    print("  Gaussian consistency:  see tightened-limit MC (Step 7b)")
     print("=" * 60)
     print()
 
@@ -1370,7 +1434,7 @@ def _plot_critical_lines_bar(
     n_clipped = int(np.sum(r_arr > x_limit))
 
     ax.set_xlim(0, x_limit * 1.15)
-    ax.set_yticks(y_pos[::max(1, n_lines // 50)])
+    ax.set_yticks(y_pos[:: max(1, n_lines // 50)])
     ax.set_yticklabels(
         [line_labels[i] for i in range(0, n_lines, max(1, n_lines // 50))],
         fontsize=7,
@@ -1384,7 +1448,8 @@ def _plot_critical_lines_bar(
     ax.invert_yaxis()
 
     sm = plt.cm.ScalarMappable(
-        cmap=cmap, norm=mcolors.Normalize(vmin=0, vmax=1),
+        cmap=cmap,
+        norm=mcolors.Normalize(vmin=0, vmax=1),
     )
     sm.set_array([])
     cbar = fig.colorbar(sm, ax=ax, fraction=0.03, pad=0.01)
@@ -1449,15 +1514,26 @@ def _plot_flow_vs_limit(
     # Linear color scale for r_sigma
     r_clip = np.clip(r_sig_arr, 0, None)
     sc = ax.scatter(
-        limit_arr, s0_arr,
-        c=r_clip, cmap="RdYlGn", edgecolors="gray", linewidths=0.3,
-        s=40, alpha=0.7,
+        limit_arr,
+        s0_arr,
+        c=r_clip,
+        cmap="RdYlGn",
+        edgecolors="gray",
+        linewidths=0.3,
+        s=40,
+        alpha=0.7,
     )
 
     # Diagonal S0 = limit
     max_val = max(float(np.max(limit_arr)), float(np.max(s0_arr))) * 1.05
-    ax.plot([0, max_val], [0, max_val], "r--", linewidth=1, alpha=0.5,
-            label="$S_0 = c$ (overload boundary)")
+    ax.plot(
+        [0, max_val],
+        [0, max_val],
+        "r--",
+        linewidth=1,
+        alpha=0.5,
+        label="$S_0 = c$ (overload boundary)",
+    )
 
     # Label top-k closest to boundary (smallest margin)
     margins = limit_arr - s0_arr
@@ -1467,8 +1543,10 @@ def _plot_flow_vs_limit(
         ax.annotate(
             f"L{lid} (r={r_sig_arr[idx]:.1f})",
             (limit_arr[idx], s0_arr[idx]),
-            textcoords="offset points", xytext=(5, -8),
-            fontsize=7, fontweight="bold",
+            textcoords="offset points",
+            xytext=(5, -8),
+            fontsize=7,
+            fontweight="bold",
             arrowprops=dict(arrowstyle="-", color="gray", lw=0.5),
         )
 
@@ -1533,22 +1611,28 @@ def _plot_violation_scale(
     fig, ax = plt.subplots(figsize=(10, max(3, len(items) * 0.45)))
     y_pos = np.arange(len(items))
     ax.barh(y_pos, actuals, color=colors, edgecolor="gray", linewidth=0.5)
-    ax.axvline(x=1.0, color="red", linestyle="--", linewidth=1.5,
-               label="Predicted violation (scale=1.0)")
+    ax.axvline(
+        x=1.0,
+        color="red",
+        linestyle="--",
+        linewidth=1.5,
+        label="Predicted violation (scale=1.0)",
+    )
 
     for i, (a, c) in enumerate(zip(actuals, conserv_ratios)):
         ax.text(
-            a + 0.05, i,
+            a + 0.05,
+            i,
             f"actual={a:.2f}  ({c:.1f}x conserv.)",
-            va="center", fontsize=8,
+            va="center",
+            fontsize=8,
         )
 
     ax.set_yticks(y_pos)
     ax.set_yticklabels(labels_list, fontsize=9)
     ax.set_xlabel("Perturbation scale at first violation", fontsize=12)
     ax.set_title(
-        f"{case_name}: Certificate Conservatism "
-        "(actual vs predicted violation scale)",
+        f"{case_name}: Certificate Conservatism (actual vs predicted violation scale)",
         fontsize=13,
     )
     ax.legend(fontsize=9)
@@ -1823,7 +1907,9 @@ def run(config_path: Path) -> None:
 
         logger.info("Downloading UC.jl instance: %s (date=%s)", uc_case_name, uc_date)
         uc_path = download_uc_jl_instance(
-            uc_case_name, dest_dir=uc_dest, date=uc_date,
+            uc_case_name,
+            dest_dir=uc_dest,
+            date=uc_date,
         )
 
         sigma_data = load_sigma(uc_path, power_factor=power_factor)
@@ -1880,9 +1966,7 @@ def run(config_path: Path) -> None:
             if np.any(bus_p_load > 0)
             else 1.0
         )
-        sigma_p_mw_raw[sigma_p_mw_raw < _SIGMA_FLOOR] = (
-            sigma_fraction * mean_p * 0.1
-        )
+        sigma_p_mw_raw[sigma_p_mw_raw < _SIGMA_FLOOR] = sigma_fraction * mean_p * 0.1
         sigma_q_mvar_raw[sigma_q_mvar_raw < _SIGMA_FLOOR] = (
             sigma_fraction * mean_p * 0.1 * math.tan(math.acos(power_factor))
         )
@@ -1908,8 +1992,7 @@ def run(config_path: Path) -> None:
 
     else:
         raise ValueError(
-            f"Unknown sigma_source: {sigma_source!r}. "
-            "Use 'uc_jl' or 'synthetic'."
+            f"Unknown sigma_source: {sigma_source!r}. Use 'uc_jl' or 'synthetic'."
         )
 
     # Save sigma arrays
@@ -2086,9 +2169,14 @@ def run(config_path: Path) -> None:
         (
             _plot_topology,
             dict(
-                net=net, res=res, bus_ids=bus_ids,
-                top_k_critical=top_k_critical, case_name=case_name,
-                output_dir=output_dir, figsize=figsize, dpi=plot_dpi,
+                net=net,
+                res=res,
+                bus_ids=bus_ids,
+                top_k_critical=top_k_critical,
+                case_name=case_name,
+                output_dir=output_dir,
+                figsize=figsize,
+                dpi=plot_dpi,
             ),
         ),
         (
@@ -2109,7 +2197,9 @@ def run(config_path: Path) -> None:
         try:
             _plot_violation_scale(
                 verification_results,
-                case_name=case_name, output_dir=output_dir, dpi=plot_dpi,
+                case_name=case_name,
+                output_dir=output_dir,
+                dpi=plot_dpi,
             )
         except Exception:
             logger.warning("Violation scale plot failed", exc_info=True)
@@ -2128,8 +2218,15 @@ def run(config_path: Path) -> None:
     if mc_results and isinstance(mc_results, dict):
         ratio = mc_results.get("ratio_analytE_over_empirical", None)
         if ratio is not None and ratio != float("inf"):
-            mc_status = f"PASS (ratio={ratio:.2f})" if 0.5 <= ratio <= 2.0 else f"FAIL (ratio={ratio:.2f})"
-        elif mc_results.get("n_violations", 0) == 0 and mc_results.get("empirical_prob", 0) == 0:
+            mc_status = (
+                f"PASS (ratio={ratio:.2f})"
+                if 0.5 <= ratio <= 2.0
+                else f"FAIL (ratio={ratio:.2f})"
+            )
+        elif (
+            mc_results.get("n_violations", 0) == 0
+            and mc_results.get("empirical_prob", 0) == 0
+        ):
             mc_status = "PASS (0 violations)"
 
     print()

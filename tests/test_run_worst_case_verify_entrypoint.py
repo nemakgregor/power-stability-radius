@@ -35,10 +35,14 @@ def _sample_case_inputs() -> tuple[dict, np.ndarray, np.ndarray, list[int]]:
     return results, h_from, h_to, line_ids
 
 
-def test_verify_case_uses_top_k_and_keeps_primary_aliases(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_verify_case_uses_top_k_and_keeps_primary_aliases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls: list[int] = []
 
-    def _fake_verify_worst_case(*, line_id: int, s0_mva: float, limit_mva: float, scale: float, **_: object):
+    def _fake_verify_worst_case(
+        *, line_id: int, s0_mva: float, limit_mva: float, scale: float, **_: object
+    ):
         calls.append(line_id)
         predicted = s0_mva + scale * (limit_mva - s0_mva)
         actual = s0_mva + scale * 0.9 * (limit_mva - s0_mva)

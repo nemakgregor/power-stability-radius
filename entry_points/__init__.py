@@ -1,1 +1,1 @@
-﻿"""Canonical runnable entry modules for this repository."""
+"""Canonical runnable entry modules for this repository."""

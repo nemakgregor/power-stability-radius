@@ -7,12 +7,12 @@ import logging
 import math
 from io import StringIO
 from pathlib import Path
-from typing import Any, Iterable, List, Sequence, Tuple
+from typing import Any, Iterable, Sequence
 
 from stability_radius.utils import create_module_output_dir, setup_output_dir_logging
 
 # AC-focused defaults: keep DC table minimal by default.
-DEFAULT_DC_COLUMNS: Tuple[str, ...] = (
+DEFAULT_DC_COLUMNS: tuple[str, ...] = (
     "flow0_mw",
     "p0_mw",
     "p_limit_mw_est",
@@ -21,7 +21,7 @@ DEFAULT_DC_COLUMNS: Tuple[str, ...] = (
     "radius_l2",
 )
 
-DEFAULT_AC_COLUMNS: Tuple[str, ...] = (
+DEFAULT_AC_COLUMNS: tuple[str, ...] = (
     "ac_s_limit_mva",
     "ac_s0_from_mva",
     "ac_s0_to_mva",
@@ -34,7 +34,7 @@ DEFAULT_AC_COLUMNS: Tuple[str, ...] = (
 logger = logging.getLogger(__name__)
 
 
-def _line_sort_key(line_key: str) -> Tuple[int, str]:
+def _line_sort_key(line_key: str) -> tuple[int, str]:
     """Sort keys like 'line_10' numerically, with a deterministic fallback."""
     try:
         return (int(line_key.split("_", 1)[1]), line_key)
@@ -60,7 +60,7 @@ def _format_float(x: Any) -> str:
     return f"{xf:.6g}"
 
 
-def _iter_line_keys(results: dict[str, Any], *, max_rows: int | None) -> List[str]:
+def _iter_line_keys(results: dict[str, Any], *, max_rows: int | None) -> list[str]:
     line_keys = sorted(
         (k for k in results.keys() if _is_line_key(k)), key=_line_sort_key
     )
@@ -83,7 +83,7 @@ def infer_default_flat_columns(
     *,
     dc_columns: Sequence[str] = DEFAULT_DC_COLUMNS,
     ac_columns: Sequence[str] = DEFAULT_AC_COLUMNS,
-) -> Tuple[str, ...]:
+) -> tuple[str, ...]:
     """
     Infer a sensible default column set for "flat" table mode.
 
@@ -129,7 +129,7 @@ def format_results_table(
     line_keys = _iter_line_keys(results, max_rows=max_rows)
 
     headers = ["line"] + list(columns)
-    rows: List[List[str]] = []
+    rows: list[list[str]] = []
 
     for k in line_keys:
         row = [k]
@@ -178,7 +178,7 @@ def format_results_table_sections(
       - AC section
     Sections are shown only if the corresponding fields exist.
     """
-    out: List[str] = []
+    out: list[str] = []
 
     has_dc = _has_any_field(results, "radius_l2") or _has_any_field(results, "norm_g")
     has_ac = _has_any_field(results, "radius_ac_l2") or _has_any_field(
@@ -258,8 +258,8 @@ def format_results_csv_sections(
     return out
 
 
-def _finite_radii(results: dict[str, Any], *, radius_field: str) -> List[float]:
-    vals: List[float] = []
+def _finite_radii(results: dict[str, Any], *, radius_field: str) -> list[float]:
+    vals: list[float] = []
     for k, d in results.items():
         if not _is_line_key(k) or not isinstance(d, dict):
             continue
@@ -363,9 +363,7 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     if str(args.table_out).strip():
         table_path = artifact_dir / Path(str(args.table_out)).name
-        table_path.write_text(
-            table_str + "\n", encoding="utf-8"
-        )
+        table_path.write_text(table_str + "\n", encoding="utf-8")
         logger.info("Wrote explicit table output: %s", str(table_path))
 
     if str(args.csv_out).strip():

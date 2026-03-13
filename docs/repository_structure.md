@@ -1,376 +1,75 @@
 # Repository Structure
 
-This document provides an annotated map of the repository layout, explaining the role of every important directory and file.
+This document tracks the current repository layout as it exists in code, not as a historical snapshot. If you add, remove, or rename an entry point or package directory, update this file and [entry_points.md](entry_points.md) in the same change.
 
-> Cross-references: [architecture.md](architecture.md) for component interactions, [developer_guide.md](developer_guide.md) for extension guidance.
+## Top Level
 
----
-
-## Top-Level Overview
-
-```
+```text
 power-stability-radius/
-|-- entry_points/                  # All runnable CLI scripts
-|-- src/                           # Main source code
-|   `-- stability_radius/          # Core Python package
-|-- experiments/                   # Experiment configs and legacy outputs
-|-- tests/                         # pytest test suite
-|-- conf/                          # Configuration files
-|-- data/                          # Input data (MATPOWER, UnitCommitment.jl)
-|-- docs/                          # This documentation
-|-- .github/                       # CI configuration
-|-- pyproject.toml                 # Poetry project configuration
-|-- README.md                      # Project README (Russian)
-|-- UNITS_CONTRACT.md              # Units contract documentation
-`-- AC Stability Radius TODO.md    # Development roadmap and TODO tracking
+|-- entry_points/          Runnable scripts and experiment front doors
+|-- src/stability_radius/  Reusable library code
+|-- tests/                 Pytest suite
+|-- conf/                  Main YAML configuration chain
+|-- docs/                  Versioned documentation
+|-- experiments/           Experiment-specific YAML configs
+|-- data/                  Input cases and external datasets
+|-- .github/workflows/     GitHub Actions configuration
+|-- README.md              Repository landing page
+|-- UNITS_CONTRACT.md      Detailed units and schema contract
+|-- pyproject.toml         Poetry, pytest, and Ruff configuration
+`-- poetry.lock            Locked dependencies
 ```
 
----
+## `entry_points/`
 
-## `src/` ? Source Code
+`entry_points/` contains every runnable module. The canonical inventory lives in [entry_points.md](entry_points.md), but the directory is organized into two groups:
 
-### `entry_points/`
-- **Category**: Entry points
-- **Purpose**: Unified home for every runnable script in the repository
-- **Examples**: `power_stability_radius.py`, `run_pglib_sweep.py`, `metrics_analysis.py`, `n1_stability_demo.py`
-- **Dependencies**: full runnable modules in `entry_points/` import reusable core APIs from `src/stability_radius/`
+- Main CLI: `power_stability_radius.py`
+- Experiment and analysis workflows: `run_pglib_sweep.py`, `run_sigma_radius.py`, `run_worst_case_verify.py`, `run_scalability.py`, `metrics_analysis.py`, `n1_stability_demo.py`
 
-### `src/stability_radius/` ? Core Package
+## `src/stability_radius/`
 
-#### `__init__.py`
-- **Purpose**: Package initialization, exports `compute_results_for_case` as the public API
-- **Lines**: ~17
+The package is split by responsibility:
 
-#### `entry_points/power_stability_radius.py`
-- **Category**: Presentation layer
-- **Purpose**: Full argparse CLI with 4 subcommands: `compute` (alias `demo`), `monte-carlo`, `report`, `table`
-- **Key functions**: `main()`, `_handle_compute()`, `_handle_monte_carlo()`, `_handle_report()`, `_handle_table()`
-- **Dependencies**: `stability_radius.config`, `stability_radius.workflows`, `stability_radius.verification`, `entry_points.table`
-- **Lines**: ~1200
+- `application/`: application-layer CLI orchestration and config-to-use-case translation
+- `domain/`: shared domain types passed between application and verification layers
+- `workflows.py`: top-level orchestration for single-case computation
+- `config.py`: defaults and YAML composition helpers
+- `ac/`: AC operator construction and Jacobian-based sensitivities
+- `dc/`: DC operator construction and PTDF-like sensitivities
+- `base_point/`: DC OPF, AC PF, AC FPF, and pandapower integration helpers
+- `radii/`: DC and AC radius implementations
+- `verification/`: Monte Carlo, worst-case verification, report generation, and status summaries
+- `metrics/`: baseline and practical metric computations
+- `parsers/`: MATPOWER and UnitCommitment.jl parsers
+- `postprocess/`: reusable table formatting, result aggregation, and plotting helpers
+- `opf/`: OPF and PF helper wrappers shared across workflows
+- `utils/`: logging, artifact-directory helpers, download helpers, JSON utilities
+- `pp_helpers.py`: small pandapower table helpers used across modules
 
-#### `config.py`
-- **Category**: Infrastructure
-- **Purpose**: Configuration dataclasses and YAML loading with `extends` inheritance
-- **Key classes**: `ProjectConfig`, `OPFConfig`, `ACFPFConfig`
-- **Key function**: `load_config(path)` â€” loads YAML with `extends` resolution
-- **Dependencies**: None (stand-alone)
-- **Lines**: ~262
+## `tests/`
 
-#### `workflows.py`
-- **Category**: Core orchestration
-- **Purpose**: Main computation pipeline orchestrating all phases (parse â†’ base point â†’ operators â†’ radii)
-- **Key function**: `compute_results_for_case()` â€” the central pipeline
-- **Key classes**: `ACExtensionsConfig`, `DCExtensionsConfig`
-- **Dependencies**: All other modules (parsers, base_point, dc, ac, radii)
-- **Lines**: ~1400
+The test suite covers:
 
-#### `pp_helpers.py`
-- **Category**: Support utility
-- **Purpose**: Small canonical helpers for pandapower-like tables
-- **Key functions**: `is_in_service()`, `bus_vn_kv()`, `resolve_slack_pos()`
-- **Dependencies**: None (dependency-light by design)
-- **Lines**: ~116
+- Core math and operator logic in `src/stability_radius/`
+- CLI and entry-point wiring in `entry_points/`
+- Application-layer orchestration in `src/stability_radius/application/`
+- Shared domain models in `src/stability_radius/domain/`
+- Post-processing helpers in `src/stability_radius/postprocess/`
+- Docs-as-code checks for entry-point documentation and CI workflow drift
+- Smoke coverage for experiment/reporting workflows
 
-#### `entry_points/metrics_analysis.py`
-- **Category**: Experiment / analysis
-- **Purpose**: Comparative evaluation pipeline ? stability radii vs baseline metrics with Spearman correlation and precision-at-k
-- **Key functions**: `build_unified_dataframe()`, `compute_rank_correlations()`, `compute_precision_at_k()`, `main()`
-- **Dependencies**: `workflows`, `verification.monte_carlo`, `metrics.ac_baselines`
-- **Lines**: ~2100
+Start with [testing_and_ci.md](testing_and_ci.md) for local commands and CI expectations.
 
-#### `entry_points/n1_stability_demo.py`
-- **Category**: Demonstration workflow
-- **Purpose**: Three-regime N-1 comparison for Cost OPF, Radius OPF, and screening-based SCOPF proxy
-- **Key functions**: `main()`, `_solve_cost_opf()`, `_plot_cost_security_tradeoff()`, `_resolve_output_dir()`
-- **Dependencies**: `workflows`, `verification`, `utils`, pandapower
+## `conf/` and `experiments/configs/`
 
-#### `experiments/`
-- **Category**: Experiment implementations
-- **Purpose**: Long-running benchmark and evaluation pipelines invoked from `entry_points/`
-- **Key modules**: `run_pglib_sweep.py`, `run_sigma_radius.py`, `run_scalability.py`, `run_worst_case_verify.py`
+- `conf/` contains the main composable config chain used by `entry_points/power_stability_radius.py`
+- `experiments/configs/` contains standalone experiment configs such as `pglib_sweep.yaml` and sigma-radius case definitions
 
-#### `helpers/`
-- **Category**: Secondary tooling and reporting helpers
-- **Purpose**: Plotting, table export, repository snapshot tooling, and experiment post-processing
-- **Key subpackages**: `helpers/experiments/`, `helpers/reporting/`, `helpers/openapi/`
+## Artifacts
 
-#### `debug/`
-- **Category**: Developer diagnostics
-- **Purpose**: Focused Case118 checks for AC Jacobian and h-vector correctness
+Generated outputs are written under `run_artifacts/` by default:
 
----
-
-### `src/stability_radius/ac/` â€” AC Model
-
-#### `ac_model.py`
-- **Category**: Core domain logic
-- **Purpose**: AC power flow operator â€” Ybus construction, reduced PF Jacobian with PV/PQ bus handling, LU factorization, adjoint solves
-- **Key class**: `ACOperator` â€” sparse Ybus, Jacobian, LU, adjoint solve methods
-- **Key function**: `build_ac_operator()` â€” constructs ACOperator from pandapower network and AC PF base point
-- **Internal functions**: `_build_ybus_pu()`, `_build_reduced_pf_jacobian_mw_per_unit()`, `_detect_pv_buses()`
-- **Dependencies**: `dc.dc_model` (for trafo helpers), `pp_helpers`, `scipy.sparse`
-- **Lines**: ~824
-
----
-
-### `src/stability_radius/dc/` â€” DC Model
-
-#### `dc_model.py`
-- **Category**: Core domain logic
-- **Purpose**: DC power flow operator â€” B-matrix assembly (lines + trafos + impedances), PTDF computation, phase-shifter support
-- **Key class**: `DCOperator` â€” sparse B_red LU, incidence matrix W, sensitivity methods
-- **Key functions**: `build_dc_operator()`, `build_dc_matrices()`, `trafo_tap_ratio()`, `trafo_x_total_ohm()`
-- **Dependencies**: `pp_helpers`, `scipy.sparse`
-- **Lines**: ~957
-
----
-
-### `src/stability_radius/base_point/` â€” Base Point Computation
-
-#### `types.py`
-- **Purpose**: Frozen dataclasses `BasePointDC` and `BasePointAC` storing computed base operating points
-- **Lines**: ~60
-
-#### `dc.py`
-- **Purpose**: DC base point computation from case dispatch or DC OPF
-- **Key function**: `compute_dc_base_point()`
-- **Dependencies**: `pypsa_opf`, `dc.dc_model`
-
-#### `ac.py`
-- **Purpose**: AC base point computation from AC PF
-- **Key function**: `compute_ac_base_point()`
-- **Dependencies**: `pypsa_pf`, `pandapower_tools`
-
-#### `pypsa_opf.py`
-- **Purpose**: DC OPF via PyPSA + HiGHS solver (converts pandapower â†’ PyPSA network)
-- **Key function**: `solve_dc_opf_base_flows_from_pandapower()`
-- **Key class**: `PyPSAOPFResult`
-- **Dependencies**: `pypsa`, `linopy`, pandapower
-- **Lines**: ~564
-
-#### `pypsa_pf.py`
-- **Purpose**: AC PF base point via pandapower.runpp() with 3-attempt retry cascade
-- **Key function**: `solve_ac_pf_base_point_from_pandapower()`
-- **Key class**: `PyPSAAPFResult`
-- **Dependencies**: pandapower
-- **Lines**: ~1091
-
-#### `pandapower_opp.py`
-- **Purpose**: AC Feasibility Power Flow (FPF) via pandapower.runopp() with quadratic feasibility cost
-- **Key function**: `solve_ac_fpf()`
-- **Key class**: `ACFPFConfig`
-- **Dependencies**: pandapower
-- **Lines**: ~742
-
-#### `pandapower_tools.py`
-- **Purpose**: Shared pandapower utilities â€” lossless policy, slack bus resolution, generator dispatch application
-- **Key functions**: `apply_lossless_policy_to_pandapower_net()`, `resolve_slack_bus_id()`, `ensure_ext_grid_at_slack()`, `apply_gen_dispatch_to_pandapower_net()`
-- **Dependencies**: pandapower (import-time for `create_ext_grid`)
-- **Lines**: ~350
-
----
-
-### `src/stability_radius/radii/` â€” Radius Computation
-
-#### `__init__.py`
-- **Purpose**: Public API exports: `compute_l2_radius`, `compute_ac_l2_radius`, `compute_sigma_radius`, `compute_ac_sigma_radius`, `compute_ac_metric_radius`
-
-#### `common.py`
-- **Purpose**: Shared per-line data structures and limit estimation
-- **Key class**: `LineBaseQuantities` â€” per-line base flows, limits, margins
-- **Key function**: `estimate_line_limit_mva_with_flag()`, `get_line_base_quantities()`, `line_key()`
-
-#### `core_l2.py`
-- **Purpose**: Pure L2 certificate math (no pandapower dependency)
-- **Key class**: `L2RadiusCertificate`
-- **Key functions**: `compute_l2_certificate_from_H()`, `l2_norm_projected_ones_complement()`
-- **Lines**: ~205
-
-#### `l2.py`
-- **Purpose**: DC L2 radius computation (wraps DCOperator + core_l2)
-- **Key function**: `compute_l2_radius()`
-
-#### `ac_l2.py`
-- **Purpose**: AC L2 radius via ACOperator adjoint solves, chunked processing
-- **Key function**: `compute_ac_l2_radius()`
-- **Lines**: ~369
-
-#### `probabilistic.py`
-- **Purpose**: DC sigma-radius and Gaussian overload probability
-- **Key functions**: `compute_sigma_radius()`, `flow_stddev()`, `overload_probability_symmetric_limit()`
-- **Lines**: ~192
-
-#### `ac_sigma_radius.py`
-- **Purpose**: AC sigma-radius using precomputed h-vectors and per-bus sigma arrays
-- **Key function**: `compute_ac_sigma_radius()`
-- **Lines**: ~339
-
-#### `metric.py`
-- **Purpose**: DC metric radius with SPD weight matrix (Cholesky factorization)
-- **Key function**: `compute_metric_radius()`
-- **Lines**: ~134
-
-#### `ac_metric_radius.py`
-- **Purpose**: AC metric radius under arbitrary SPD weight matrix
-- **Key function**: `compute_ac_metric_radius()`
-
-#### `nminus1.py`
-- **Purpose**: DC N-1 contingency radius with optional Woodbury sensitivity update
-- **Key function**: `compute_nminus1_radius()`
-
-#### `ac_feasibility.py`
-- **Purpose**: AC feasibility check for base operating point (verifies |S0| â‰¤ S_limit)
-
----
-
-### `src/stability_radius/verification/` â€” Verification
-
-#### `types.py`
-- **Purpose**: `VerificationResult` dataclass with status enums (BASE_OK, RADIUS_OK, SOUND_PASS, etc.)
-
-#### `status.py`
-- **Purpose**: High-level summary status mapping (OK, TRIVIAL_RADIUS, BASE_INFEASIBLE, CERT_UNSOUND, MC_INCONCLUSIVE)
-- **Key function**: `summarize_status()`
-
-#### `verify_certificate.py`
-- **Purpose**: Deterministic certificate soundness check
-
-#### `verify_worst_case.py`
-- **Purpose**: Worst-case perturbation verification against full AC PF
-
-#### `monte_carlo.py`
-- **Purpose**: Monte Carlo verification engine for both DC and AC modes
-- **Key function**: `run_monte_carlo_verification()`
-
-#### `ac_monte_carlo_sigma.py`
-- **Purpose**: AC Monte Carlo specifically for sigma-radius validation
-
-#### `generate_report.py`
-- **Purpose**: Multi-case Markdown report generator
-
----
-
-### `src/stability_radius/metrics/` â€” Baseline Metrics
-
-#### `ac_baselines.py`
-- **Purpose**: Baseline robustness metrics â€” loading ratio, headroom (MVA), Cantelli upper bound
-- **Key function**: `compute_baseline_metrics()`
-
----
-
-### `src/stability_radius/parsers/` â€” Input Parsers
-
-#### `matpower.py`
-- **Purpose**: MATPOWER .m file â†’ pandapower network conversion
-- **Key function**: `load_network(path)` â€” uses the repository MATPOWER parser, then pandapower `from_ppc()`
-
-#### `uc_jl.py`
-- **Purpose**: UnitCommitment.jl JSON â†’ per-bus sigma arrays from hourly demand data
-- **Key function**: `load_sigma_from_uc_jl()`
-
----
-
-### `src/stability_radius/statistics/` â€” Output Formatting
-
-#### `table.py`
-- **Purpose**: ASCII/CSV/Markdown table formatter for results.json
-
----
-
-### `src/stability_radius/utils/` â€” Utilities
-
-#### `download.py`
-- **Purpose**: PGLib case file downloader from GitHub
-
----
-
-## `experiments/` â€” Experiment Scripts
-
-| File | Purpose | Paper Reference |
-|------|---------|-----------------|
-| `run_pglib_sweep.py` | DC vs AC radius comparison across PGLib cases | Fig. 1 |
-| `run_sigma_radius.py` | Deep sigma-radius analysis with heterogeneous uncertainty | Fig. 2, Table 2 |
-| `run_worst_case_verify.py` | Worst-case perturbation validation | Verification section |
-| `run_scalability.py` | Wall-clock time vs network size | Scalability analysis |
-| `collect_results.py` | Result collection and LaTeX table generation | Tables |
-| `plot_radius_distribution.py` | Radius distribution visualization | Supplementary |
-| `plot_sigma_vs_time.py` | Sigma vs time plots | Supplementary |
-| `plot_worst_case_heatmap.py` | Worst-case heatmap visualization | Supplementary |
-| `README.md` | Experiment documentation | â€” |
-
-### `experiments/configs/`
-Experiment-specific YAML configurations (case lists, sigma settings, data paths).
-
-### `run_artifacts/`
-Generated experiment outputs (JSON results, plots, CSV tables, logs). Contains completed experiment runs in named subdirectories.
-
----
-
-## `tests/` â€” Test Suite
-
-~40+ test files using pytest. Key test files:
-
-| File | Tests |
-|------|-------|
-| `conftest.py` | Shared fixtures (case5, case14, case30 networks) |
-| `test_dc_model.py` | DC operator construction and PTDF correctness |
-| `test_radii_l2.py` | L2 radius computation |
-| `test_radii_metric.py` | Metric radius computation |
-| `test_radii_nminus1.py` | N-1 contingency radius |
-| `test_radii_probabilistic.py` | Sigma-radius and overload probability |
-| `test_ac_sigma_radius.py` | AC sigma-radius |
-| `test_ac_radius_smoke.py` | AC radius smoke tests on real cases |
-| `test_certificate_concept.py` | Mathematical certificate concept validation |
-| `test_h_vector_fd.py` | h-vector validation via finite differences |
-| `test_ac_jacobian_vs_pandapower.py` | Jacobian validation against pandapower |
-| `test_unit_consistency_end_to_end.py` | End-to-end units consistency |
-| `test_verify_worst_case.py` | Worst-case verification tests |
-| `test_config_extends.py` | Configuration extends mechanism |
-
----
-
-## `conf/` â€” Configuration Files
-
-| File | Purpose |
-|------|---------|
-| `config.yaml` | Main operational config (extends config_shared) |
-| `config_shared.yaml` | Shared defaults for all configurations |
-| `config_compute.yaml` | Compute-specific settings |
-| `config_dc_extensions.yaml` | DC extensions (N-1, probabilistic) |
-| `config_monte_carlo.yaml` | Monte Carlo verification settings |
-| `config_report.yaml` | Report generation settings |
-| `experiments/case30.yaml` | Case-specific experiment for IEEE 30-bus |
-| `experiments/case118.yaml` | Case-specific experiment for IEEE 118-bus |
-
----
-
-## `data/` â€” Input Data
-
-### `data/input/`
-MATPOWER .m files from the PGLib-OPF benchmark library. Contains 20+ test cases ranging from 5 to 10000 buses:
-- Small: case5_pjm (5), case14_ieee (14), case24_ieee_rts (24), case30_ieee (30)
-- Medium: case57_ieee (57), case73_ieee_rts (73), case118_ieee (118), case200_activ (200), case300_ieee (300)
-- Large: case500_goc, case588_sdet, case1354_pegase, case1888_rte, case1951_rte
-- Very large: case2000_goc, case2383wp_k, case2736sp_k, case2853_sdet, case2869_pegase
-- Extreme: case6468_rte, case6515_rte, case9241_pegase, case10000_goc
-
-### `data/uc_jl/`
-UnitCommitment.jl format JSON files with hourly bus demand data (used for per-bus sigma computation).
-
----
-
-## `.github/workflows/ci.yml`
-GitHub Actions CI pipeline that runs the pytest test suite on push and pull requests.
-
----
-
-## Root Files
-
-| File | Purpose |
-|------|---------|
-| `pyproject.toml` | Poetry project configuration (dependencies, package metadata) |
-| `poetry.lock` | Locked dependency versions |
-| `.gitignore` | Git ignore rules (venv, pycache, outputs) |
-| `README.md` | Project README in Russian |
-| `UNITS_CONTRACT.md` | Detailed units contract for all quantities in the project |
-| `AC Stability Radius TODO.md` | Development roadmap and feature tracking (~37K chars) |
+- Main CLI commands create per-run directories such as `run_artifacts/compute/<timestamp>/`
+- Standalone scripts usually write under `run_artifacts/<module>/`
+- Some scripts normalize user-provided output paths back under `run_artifacts/` to keep artifacts colocated and reproducible

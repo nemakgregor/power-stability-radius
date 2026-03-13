@@ -1,19 +1,19 @@
-﻿"""Tests for entry_points.table table formatting."""
+"""Tests for stability_radius.postprocess.table formatting."""
 
 from __future__ import annotations
 
 import math
 
-from entry_points.table import (
+from stability_radius.postprocess.table import (
     _format_float,
     _line_sort_key,
+    DEFAULT_AC_COLUMNS,
+    DEFAULT_DC_COLUMNS,
     format_radius_summary,
     format_results_csv,
     format_results_table,
     format_results_table_sections,
     infer_default_flat_columns,
-    DEFAULT_AC_COLUMNS,
-    DEFAULT_DC_COLUMNS,
 )
 
 
@@ -218,4 +218,3 @@ class TestFormatRadiusSummary:
         results = {"line_0": {"radius_l2": float("inf")}}
         summary = format_radius_summary(results, radius_field="radius_l2")
         assert "finite_radii=0" in summary
-

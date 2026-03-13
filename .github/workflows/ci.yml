@@ -3,11 +3,13 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 jobs:
-  tests:
+  checks:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.11"]
 
@@ -26,8 +28,12 @@ jobs:
 
       - name: Install dependencies
         run: |
-          poetry install
+          poetry install --no-interaction
+
+      - name: Check formatting
+        run: |
+          poetry run ruff format --check .
 
       - name: Run tests
         run: |
-          poetry run pytest -q
+          poetry run python -m pytest -q --cov=src/stability_radius --cov-report=term-missing --cov-fail-under=45
