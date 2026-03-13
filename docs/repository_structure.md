@@ -22,16 +22,17 @@ power-stability-radius/
 
 ## `entry_points/`
 
-`entry_points/` contains every runnable module. The canonical inventory lives in [entry_points.md](entry_points.md), but the directory is organized into three groups:
+`entry_points/` contains every runnable module. The canonical inventory lives in [entry_points.md](entry_points.md), but the directory is organized into two groups:
 
 - Main CLI: `power_stability_radius.py`
 - Experiment and analysis workflows: `run_pglib_sweep.py`, `run_sigma_radius.py`, `run_worst_case_verify.py`, `run_scalability.py`, `metrics_analysis.py`, `n1_stability_demo.py`
-- Reporting and plotting helpers: `table.py`, `collect_results.py`, `plot_radius_distribution.py`, `plot_sigma_vs_time.py`, `plot_worst_case_heatmap.py`
 
 ## `src/stability_radius/`
 
 The package is split by responsibility:
 
+- `application/`: application-layer CLI orchestration and config-to-use-case translation
+- `domain/`: shared domain types passed between application and verification layers
 - `workflows.py`: top-level orchestration for single-case computation
 - `config.py`: defaults and YAML composition helpers
 - `ac/`: AC operator construction and Jacobian-based sensitivities
@@ -41,6 +42,7 @@ The package is split by responsibility:
 - `verification/`: Monte Carlo, worst-case verification, report generation, and status summaries
 - `metrics/`: baseline and practical metric computations
 - `parsers/`: MATPOWER and UnitCommitment.jl parsers
+- `postprocess/`: reusable table formatting, result aggregation, and plotting helpers
 - `opf/`: OPF and PF helper wrappers shared across workflows
 - `utils/`: logging, artifact-directory helpers, download helpers, JSON utilities
 - `pp_helpers.py`: small pandapower table helpers used across modules
@@ -51,8 +53,11 @@ The test suite covers:
 
 - Core math and operator logic in `src/stability_radius/`
 - CLI and entry-point wiring in `entry_points/`
+- Application-layer orchestration in `src/stability_radius/application/`
+- Shared domain models in `src/stability_radius/domain/`
+- Post-processing helpers in `src/stability_radius/postprocess/`
 - Docs-as-code checks for entry-point documentation and CI workflow drift
-- Smoke coverage for experiment/reporting helper scripts
+- Smoke coverage for experiment/reporting workflows
 
 Start with [testing_and_ci.md](testing_and_ci.md) for local commands and CI expectations.
 

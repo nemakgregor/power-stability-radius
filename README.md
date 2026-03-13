@@ -11,7 +11,9 @@ Main commands:
 - `report`: build a multi-case Markdown verification report from `report.cases` in YAML.
 - `table`: format an existing `results.json` for terminal output.
 
-Standalone scripts under `entry_points/` cover focused workflows such as `run_pglib_sweep.py`, `run_sigma_radius.py`, `run_worst_case_verify.py`, `run_scalability.py`, `metrics_analysis.py`, `n1_stability_demo.py`, and post-processing helpers like `collect_results.py` and the plotting scripts.
+Standalone scripts under `entry_points/` cover focused workflows such as `run_pglib_sweep.py`, `run_sigma_radius.py`, `run_worst_case_verify.py`, `run_scalability.py`, `metrics_analysis.py`, and `n1_stability_demo.py`. Reusable table, aggregation, and plotting helpers live under `src/stability_radius/postprocess/`.
+
+Architecturally, the main script in `entry_points/` is now a thin interface wrapper. CLI orchestration lives under `src/stability_radius/application/`, while shared typed models live under `src/stability_radius/domain/`.
 
 Documentation starts at [docs/index.md](docs/index.md). The most useful references for day-to-day work are:
 

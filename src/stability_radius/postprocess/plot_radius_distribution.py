@@ -3,10 +3,10 @@
 Reads per-case JSON results from ``run_artifacts/run_pglib_sweep/`` and
 produces box-plots / violin-plots of DC and AC L2 radii.
 
-Usage::
+Module usage::
 
-    python entry_points/plot_radius_distribution.py
-    python entry_points/plot_radius_distribution.py --input-dir run_artifacts/run_pglib_sweep
+    python -m stability_radius.postprocess.plot_radius_distribution
+    python -m stability_radius.postprocess.plot_radius_distribution --input-dir run_artifacts/run_pglib_sweep
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ import argparse
 import json
 import logging
 from pathlib import Path
+from typing import Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -147,7 +148,7 @@ def plot(input_dir: Path, output_dir: Path) -> None:
     logger.info("Plot saved: %s", out_png)
 
 
-def main() -> None:
+def main(argv: Sequence[str] | None = None) -> int:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
@@ -167,13 +168,14 @@ def main() -> None:
         default=Path(""),
         help="Directory where plots are saved.",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(list(argv) if argv is not None else None)
     output_dir = create_module_output_dir(
         module_name="plot_radius_distribution",
         requested_output_dir=args.output_dir,
     )
     setup_output_dir_logging(output_dir)
     plot(args.input_dir, output_dir)
+    return 0
 
 
 if __name__ == "__main__":

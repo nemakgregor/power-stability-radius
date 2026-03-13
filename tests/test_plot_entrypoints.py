@@ -3,9 +3,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from entry_points.plot_radius_distribution import plot as plot_radius_distribution
-from entry_points.plot_sigma_vs_time import plot as plot_sigma_vs_time
-from entry_points.plot_worst_case_heatmap import plot as plot_worst_case_heatmap
+from stability_radius.postprocess.plot_radius_distribution import (
+    plot as plot_radius_distribution,
+)
+from stability_radius.postprocess.plot_sigma_vs_time import plot as plot_sigma_vs_time
+from stability_radius.postprocess.plot_worst_case_heatmap import (
+    plot as plot_worst_case_heatmap,
+)
 
 
 def test_plot_radius_distribution_writes_png_and_pdf(tmp_path: Path) -> None:

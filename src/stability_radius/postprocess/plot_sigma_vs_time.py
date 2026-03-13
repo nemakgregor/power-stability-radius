@@ -4,10 +4,10 @@ Reads results from ``run_artifacts/run_sigma_radius/`` and produces a
 scatter plot of per-line sigma-radius values, plus a bar chart of timing
 from the scalability experiment if available.
 
-Usage::
+Module usage::
 
-    python entry_points/plot_sigma_vs_time.py
-    python entry_points/plot_sigma_vs_time.py --sigma-dir run_artifacts/run_sigma_radius --scalability run_artifacts/run_scalability/scalability.json
+    python -m stability_radius.postprocess.plot_sigma_vs_time
+    python -m stability_radius.postprocess.plot_sigma_vs_time --sigma-dir run_artifacts/run_sigma_radius --scalability run_artifacts/run_scalability/scalability.json
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ import argparse
 import json
 import logging
 from pathlib import Path
+from typing import Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -52,7 +53,6 @@ def plot(
         return
 
     sigma_radii: list[float] = []
-    line_ids: list[int] = []
 
     for rf in results_files:
         try:
@@ -67,7 +67,6 @@ def plot(
             r_sig = val.get("radius_ac_sigma")
             if r_sig is not None and np.isfinite(r_sig):
                 sigma_radii.append(float(r_sig))
-                line_ids.append(int(key.split("_")[1]))
 
     if not sigma_radii:
         logger.warning("No sigma-radius data found")
@@ -134,7 +133,7 @@ def plot(
             logger.info("Plot saved: %s", out_time)
 
 
-def main() -> None:
+def main(argv: Sequence[str] | None = None) -> int:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
@@ -160,13 +159,14 @@ def main() -> None:
         default=Path(""),
         help="Directory where plots are saved.",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(list(argv) if argv is not None else None)
     output_dir = create_module_output_dir(
         module_name="plot_sigma_vs_time",
         requested_output_dir=args.output_dir,
     )
     setup_output_dir_logging(output_dir)
     plot(args.sigma_dir, args.scalability, output_dir)
+    return 0
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ import csv
 import json
 from pathlib import Path
 
-from entry_points.collect_results import _extract_radius_stats, collect
+from stability_radius.postprocess.collect_results import _extract_radius_stats, collect
 
 
 def test_extract_radius_stats_ignores_nonfinite_values() -> None:

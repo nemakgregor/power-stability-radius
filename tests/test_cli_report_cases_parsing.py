@@ -17,6 +17,7 @@ def test_parse_report_cases_accepts_omegaconf_listconfig(tmp_path: Path) -> None
 
     from omegaconf import OmegaConf
 
+    from stability_radius.domain import ReportCaseSpec
     from entry_points.power_stability_radius import _parse_report_cases_from_cfg
 
     cfg = OmegaConf.create(
@@ -44,8 +45,18 @@ def test_parse_report_cases_accepts_omegaconf_listconfig(tmp_path: Path) -> None
     assert len(cases) == 1
     c0 = cases[0]
 
-    assert c0["id"] == "caseA"
-    assert Path(c0["results"]).parent == results_dir_abs
-    assert Path(c0["results"]).name == "caseA.json"
-    assert str(Path(c0["input"])).endswith(str(Path("data/input/caseA.m")))
-    assert c0["known_critical_pairs"] == [[1, 2]]
+    assert isinstance(c0, ReportCaseSpec)
+    assert c0.case_id == "caseA"
+    assert c0.results_path.parent == results_dir_abs
+    assert c0.results_path.name == "caseA.json"
+    assert str(c0.input_case_path).endswith(str(Path("data/input/caseA.m")))
+    assert c0.known_critical_pairs == ((1, 2),)
+
+
+def test_report_case_spec_is_shared_domain_type() -> None:
+    from stability_radius.domain import ReportCaseSpec as DomainReportCaseSpec
+    from stability_radius.verification.generate_report import (
+        ReportCaseSpec as VerificationReportCaseSpec,
+    )
+
+    assert VerificationReportCaseSpec is DomainReportCaseSpec

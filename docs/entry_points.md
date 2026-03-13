@@ -12,26 +12,22 @@ If a new runnable script is added to `entry_points/`, this file must be updated 
 ## General Rules
 
 - The main supported interface of the repository is `entry_points/power_stability_radius.py`.
-- The remaining scripts are used for experiments, analysis workflows, result aggregation, and plotting.
+- `entry_points/power_stability_radius.py` is intentionally thin; the application-layer implementation lives in `src/stability_radius/application/cli.py`.
+- The remaining scripts are dedicated experiment or analysis fronts.
+- Reusable post-processing code now lives under `src/stability_radius/postprocess/`, not under `entry_points/`.
 - Artifacts are written under `run_artifacts/` by default.
-- When an entry point accepts `--output-dir`, the path is often normalized under `run_artifacts/<module>/...` rather than written outside the artifact tree.
 
 ## Quick Map
 
 | File | Purpose | Typical outputs |
 |------|---------|-----------------|
 | `entry_points/power_stability_radius.py` | Main CLI for `compute`, `monte-carlo`, `report`, and `table` | `results.json`, `monte_carlo_stats.json`, `verification_report.md`, tables |
-| `entry_points/table.py` | Standalone formatter for `results.json` | ASCII table, optional CSV |
 | `entry_points/metrics_analysis.py` | Compare radii against baseline and practical metrics | CSV tables, JSON, PNG plots |
 | `entry_points/n1_stability_demo.py` | Cost OPF vs Radius OPF vs SCOPF demonstration | CSV, TXT, PNG, `debug.log` |
 | `entry_points/run_pglib_sweep.py` | Batch DC vs AC sweep over a case list | Per-case JSON, `summary.json`, `fig1_*` |
 | `entry_points/run_sigma_radius.py` | AC sigma-radius experiment | `results.json`, `summary.json`, `sigma_arrays.json`, `hvectors.npz`, plots |
 | `entry_points/run_worst_case_verify.py` | Nonlinear validation of worst-case perturbations | `*_worst_case.json`, `table3_summary.json`, plots |
 | `entry_points/run_scalability.py` | Timing study versus network size | `scalability.json` |
-| `entry_points/collect_results.py` | Aggregate experiment JSON files into one CSV | `all_results.csv` |
-| `entry_points/plot_radius_distribution.py` | Plot DC and AC radius distributions | `radius_distribution.pdf`, `radius_distribution.png` |
-| `entry_points/plot_sigma_vs_time.py` | Plot sigma-radius summaries and timing curves | `sigma_radius_sorted.pdf`, `sigma_vs_time.pdf` |
-| `entry_points/plot_worst_case_heatmap.py` | Plot worst-case verification diagnostics | `worst_case_heatmap.pdf`, `worst_case_scatter.pdf` |
 
 ## `entry_points/power_stability_radius.py`
 
@@ -44,7 +40,7 @@ This is the main CLI of the project. It exposes:
 - `report`: multi-case Markdown report generation from prepared results;
 - `table`: formatting of an existing `results.json`.
 
-This is the entry point to use by default unless you specifically need one of the dedicated experiment pipelines.
+This is the default entry point unless you specifically need one of the dedicated experiment pipelines.
 
 **Inputs**
 
@@ -123,37 +119,6 @@ python entry_points/power_stability_radius.py \
   table run_artifacts/compute/latest/results.json \
   --format sections \
   --radius-field radius_ac_l2
-```
-
-## `entry_points/table.py`
-
-**What It Does**
-
-Formats a single `results.json` without going through the main CLI. Use it when you only need a quick tabular view of one result file.
-
-**Inputs**
-
-- positional `results_json`;
-- optional `--format sections|flat`;
-- optional `--columns` for flat mode;
-- optional `--max-rows`;
-- optional `--table-out`, `--csv-out`.
-
-**Outputs**
-
-- prints the table to stdout;
-- writes `results_table.txt` under `run_artifacts/table/` or the normalized artifact directory;
-- writes an explicit ASCII table when `--table-out` is provided;
-- writes CSV when `--csv-out` is provided in flat mode.
-
-**Example Invocation**
-
-```bash
-python entry_points/table.py \
-  run_artifacts/compute/latest/results.json \
-  --format flat \
-  --columns line_key,radius_l2,radius_ac_l2 \
-  --csv-out radius_summary.csv
 ```
 
 ## `entry_points/metrics_analysis.py`
@@ -404,121 +369,20 @@ python entry_points/run_scalability.py \
   --repeats 3
 ```
 
-## `entry_points/collect_results.py`
+## Non-Entry Helpers
 
-**What It Does**
+The following modules are intentionally not listed as entry points anymore:
 
-Scans an artifact tree and aggregates per-case JSON results into a single CSV file for downstream analysis or reporting.
+- `src/stability_radius/postprocess/table.py`
+- `src/stability_radius/postprocess/collect_results.py`
+- `src/stability_radius/postprocess/plot_radius_distribution.py`
+- `src/stability_radius/postprocess/plot_sigma_vs_time.py`
+- `src/stability_radius/postprocess/plot_worst_case_heatmap.py`
 
-**Inputs**
-
-- `--output-dir`, the artifact root to scan;
-- `--csv`, the destination CSV name.
-
-The script discovers JSON files automatically and skips service files such as `summary.json`.
-
-**Outputs**
-
-Under `run_artifacts/collect_results/...`:
-
-- one aggregated CSV, by default `all_results.csv`.
-
-**Example Invocation**
-
-```bash
-python entry_points/collect_results.py \
-  --output-dir run_artifacts \
-  --csv run_artifacts/collect_results/all_results.csv
-```
-
-## `entry_points/plot_radius_distribution.py`
-
-**What It Does**
-
-Builds a distribution overview of DC and AC radii across cases using the outputs of `run_pglib_sweep.py`.
-
-**Inputs**
-
-- `--input-dir` with per-case sweep JSON files;
-- optional `--output-dir`.
-
-**Outputs**
-
-Under `run_artifacts/plot_radius_distribution/...`:
-
-- `radius_distribution.pdf`
-- `radius_distribution.png`
-
-**Example Invocation**
-
-```bash
-python entry_points/plot_radius_distribution.py \
-  --input-dir run_artifacts/run_pglib_sweep
-```
-
-## `entry_points/plot_sigma_vs_time.py`
-
-**What It Does**
-
-Builds:
-
-- a sorted sigma-radius plot across lines;
-- an optional timing comparison if a `scalability.json` file is provided.
-
-It is typically used after `run_sigma_radius.py` and `run_scalability.py`.
-
-**Inputs**
-
-- `--sigma-dir` with sigma experiment JSON files;
-- optional `--scalability` pointing to `scalability.json`;
-- optional `--output-dir`.
-
-**Outputs**
-
-Under `run_artifacts/plot_sigma_vs_time/...`:
-
-- `sigma_radius_sorted.pdf`
-- `sigma_vs_time.pdf` if scalability input is available
-
-**Example Invocation**
-
-```bash
-python entry_points/plot_sigma_vs_time.py \
-  --sigma-dir run_artifacts/run_sigma_radius \
-  --scalability run_artifacts/run_scalability/scalability.json
-```
-
-## `entry_points/plot_worst_case_heatmap.py`
-
-**What It Does**
-
-Builds a visualization of worst-case verification quality:
-
-- a heatmap of relative error by line and scale factor;
-- a predicted-vs-actual apparent-power scatter plot.
-
-**Inputs**
-
-- `--input-dir` with `*_worst_case.json` files;
-- optional `--output-dir`.
-
-**Outputs**
-
-Under `run_artifacts/plot_worst_case_heatmap/...`:
-
-- `worst_case_heatmap.pdf`
-- `worst_case_scatter.pdf`
-
-**Example Invocation**
-
-```bash
-python entry_points/plot_worst_case_heatmap.py \
-  --input-dir run_artifacts/run_worst_case_verify
-```
+They are reusable library-side helpers. Import them from Python code, or invoke them explicitly as modules with `python -m stability_radius.postprocess.<module>` only when you need an ad hoc post-processing utility.
 
 ## Which Entry Point to Choose
 
 - Use `entry_points/power_stability_radius.py` for standard single-case compute, verification, reporting, and table formatting.
 - Use `entry_points/run_pglib_sweep.py`, `entry_points/run_sigma_radius.py`, `entry_points/run_worst_case_verify.py`, and `entry_points/run_scalability.py` for experiment-style or paper-style batch workflows.
-- Use `entry_points/collect_results.py`, `entry_points/plot_radius_distribution.py`, `entry_points/plot_sigma_vs_time.py`, and `entry_points/plot_worst_case_heatmap.py` for post-processing of already generated results.
 - Use `entry_points/metrics_analysis.py` or `entry_points/n1_stability_demo.py` for dedicated research workflows with their own CLI surface.

@@ -13,13 +13,13 @@ For complementary perspectives see:
 
 ## 1. Main Components
 
-The project is organized into twelve distinct subsystems, each encapsulated in its own Python module or package under `src/stability_radius/`.
+The project is organized into a small set of explicit layers under `src/stability_radius/`, with thin executable wrappers under `entry_points/`.
 
-### 1.1 Entry Point (`power_stability_radius.py`)
+### 1.1 Entry Point Wrapper (`power_stability_radius.py`)
 
 **File:** `entry_points/power_stability_radius.py`
 
-Main operational CLI module. It contains the full argparse command surface and run orchestration while the library API remains available via `stability_radius.workflows.compute_results_for_case`.
+Main operational script wrapper. It intentionally stays thin and delegates the actual CLI orchestration to the application layer while the library API remains available via `stability_radius.workflows.compute_results_for_case`.
 
 ```python
 # Library API:
@@ -29,11 +29,11 @@ from stability_radius.workflows import compute_results_for_case
 from entry_points.power_stability_radius import main as cli_main
 ```
 
-### 1.2 CLI Layer (`power_stability_radius.py`)
+### 1.2 Application CLI Layer (`cli.py`)
 
-**File:** `entry_points/power_stability_radius.py`
+**File:** `src/stability_radius/application/cli.py`
 
-The command-line interface is built on `argparse` and provides four subcommands:
+The command-line interface is built on `argparse` in the application layer and provides four subcommands:
 
 | Subcommand | Alias | Purpose |
 |---|---|---|
@@ -48,8 +48,20 @@ The command-line interface is built on `argparse` and provides four subcommands:
 - OmegaConf (`_cfg_get`) is used to read nested YAML keys with fallbacks to the programmatic defaults from `config.py`.
 - If no subcommand is given on the command line, the CLI inspects `command:` in the YAML config to infer a default command.
 - Each subcommand handler (`run_compute`, `run_monte_carlo`, `run_report`, `run_table`) writes run artifacts (config snapshots, argv) to a timestamped run directory before executing.
+- Report case parsing is handled as application logic and resolves YAML into typed `ReportCaseSpec` values before verification code is called.
 
-### 1.3 Configuration (`config.py`)
+### 1.3 Domain Types (`domain/`)
+
+**Files:** `src/stability_radius/domain/reporting.py`, plus frozen dataclasses already used across the codebase
+
+The domain layer contains explicit value objects that can be shared across application and algorithm layers without dragging in CLI or file-system concerns.
+
+Current examples:
+
+- `ReportCaseSpec`: a typed description of one verification-report case
+- `BasePointDC`, `BasePointAC`: immutable operating-point snapshots
+- `VerificationResult` and related verification status dataclasses
+### 1.4 Configuration (`config.py`)
 
 **File:** `src/stability_radius/config.py`
 
@@ -76,7 +88,7 @@ The function `load_project_config(path)` implements a deterministic composition 
 
 This replaces Hydra's full composition engine with a minimal, deterministic alternative. See [configuration.md](configuration.md) for the full parameter reference.
 
-### 1.4 Workflow Orchestrator (`workflows.py`)
+### 1.5 Workflow Orchestrator (`workflows.py`)
 
 **File:** `src/stability_radius/workflows.py` (~1410 lines)
 
@@ -113,7 +125,7 @@ The central function `compute_results_for_case()` orchestrates the entire comput
 - `_build_sigma_arrays()` -- constructs per-bus sigma arrays from uniform or UnitCommitment.jl sources
 - `_expand_h_reduced_to_full()` -- expands reduced-dimension h-vectors back to full bus ordering
 
-### 1.5 Parsers (`parsers/`)
+### 1.6 Parsers (`parsers/`)
 
 **Package:** `src/stability_radius/parsers/`
 
@@ -124,7 +136,7 @@ The central function `compute_results_for_case()` orchestrates the entire comput
 
 The parsers have no dependency on the radius computation modules and produce standard pandapower network objects or NumPy arrays. See [data_formats.md](data_formats.md) for input file schemas.
 
-### 1.6 Base Point Computation (`base_point/`)
+### 1.7 Base Point Computation (`base_point/`)
 
 **Package:** `src/stability_radius/base_point/`
 
@@ -144,7 +156,7 @@ Computes the operating point around which the stability radius is certified.
 
 **BasePointAC fields:** `bus_ids`, `vm_pu`, `va_rad`, `line_ids`, `p_from_mw`, `q_from_mvar`, `p_to_mw`, `q_to_mvar`, `s_limit_mva`, `pf_solver`, `pf_init`, `lossless`, `pf_attempt`, `pf_repairs`, `distributed_slack_requested`, `distributed_slack_used`.
 
-### 1.7 DC Model (`dc/dc_model.py`)
+### 1.8 DC Model (`dc/dc_model.py`)
 
 **File:** `src/stability_radius/dc/dc_model.py`
 
@@ -172,7 +184,7 @@ Implements the `DCOperator` frozen dataclass, which encapsulates the lossless DC
 - `build_dc_matrices(net, slack_bus)` -- returns raw sparse matrices
 - `build_dc_operator(net, slack_bus)` -- returns a fully initialized `DCOperator` with LU factorization
 
-### 1.8 AC Model (`ac/ac_model.py`)
+### 1.9 AC Model (`ac/ac_model.py`)
 
 **File:** `src/stability_radius/ac/ac_model.py`
 
@@ -200,7 +212,7 @@ Implements the `ACOperator` frozen dataclass, which encapsulates the linearized 
 
 The adjoint solve is critical for the AC L2 radius computation, where per-line h-vectors are computed via `J^T`-solves rather than explicit Jacobian inversion. See Section 5.3 for details.
 
-### 1.9 Radii Computation (`radii/`)
+### 1.10 Radii Computation (`radii/`)
 
 **Package:** `src/stability_radius/radii/`
 
@@ -219,7 +231,7 @@ The core mathematical engine. Each module implements one radius variant.
 | `ac_feasibility.py` | `check_ac_base_point_feasibility()` | AC feasibility check: validates whether the base operating point satisfies all thermal limits |
 | `common.py` | `LineBaseQuantities`, `estimate_line_limit_mva()`, `line_key()` | Shared dataclass and utilities for per-line base quantities, thermal limit extraction, and result key formatting |
 
-### 1.10 Verification (`verification/`)
+### 1.11 Verification (`verification/`)
 
 **Package:** `src/stability_radius/verification/`
 
@@ -237,7 +249,7 @@ Provides independent validation of the computed certificates.
 
 The verification subsystem is intentionally decoupled from the radius computation modules: it loads previously saved `results.json` files and re-parses the input network independently to validate correctness.
 
-### 1.11 Metrics (`metrics/`)
+### 1.12 Metrics (`metrics/`)
 
 **Package:** `src/stability_radius/metrics/`
 
@@ -247,10 +259,10 @@ The verification subsystem is intentionally decoupled from the radius computatio
 
 These metrics serve as empirical baselines for validating the analytic certificates.
 
-### 1.12 Statistics and Experiments
+### 1.13 Post-Processing and Experiments
 
-**Statistics** (`entry_points/table.py`):
-ASCII and CSV table formatter for `results.json` files. Supports both flat and sectioned (DC + AC) output formats with configurable column selection.
+**Post-processing** (`src/stability_radius/postprocess/table.py` and peers):
+ASCII and CSV table formatting, result aggregation, and plotting helpers for `results.json`-based workflows. These modules are reusable library code, not primary entry-point fronts.
 
 **Experiments** (`experiments/`):
 
@@ -260,10 +272,10 @@ ASCII and CSV table formatter for `results.json` files. Supports both flat and s
 | `run_sigma_radius.py` | Deep sigma-radius analysis with visualization |
 | `run_scalability.py` | Wall-clock time scalability analysis across increasing network sizes |
 | `run_worst_case_verify.py` | Worst-case perturbation verification experiments |
-| `collect_results.py` | Result aggregation and LaTeX table generation for papers |
-| `plot_radius_distribution.py` | Per-line radius distribution plots |
-| `plot_sigma_vs_time.py` | Sigma-radius vs computation time visualization |
-| `plot_worst_case_heatmap.py` | Worst-case verification heatmaps |
+| `postprocess/collect_results.py` | Result aggregation and summary CSV generation |
+| `postprocess/plot_radius_distribution.py` | Per-case DC/AC radius distribution plots |
+| `postprocess/plot_sigma_vs_time.py` | Sigma-radius vs computation time visualization |
+| `postprocess/plot_worst_case_heatmap.py` | Worst-case verification heatmaps |
 
 See [experiments_and_evaluation.md](experiments_and_evaluation.md) for experimental methodology and reproducibility procedures.
 
@@ -276,10 +288,13 @@ See [experiments_and_evaluation.md](experiments_and_evaluation.md) for experimen
 The following diagram shows the primary import dependencies between components (arrows point from importer to importee):
 
 ```
-power_stability_radius.py
+entry_points/power_stability_radius.py
     |
     v
-  cli.py ------> workflows.py ------> parsers/matpower.py
+application/cli.py --> domain/reporting.py
+    |                 verification/types.py
+    |
+    +-------------> workflows.py ------> parsers/matpower.py
     |                 |                 parsers/uc_jl.py
     |                 |
     |                 +------> base_point/
@@ -318,7 +333,7 @@ power_stability_radius.py
     |            verify_worst_case.py
     |            types.py, status.py
     |
-    +------> statistics/table.py
+    +------> postprocess/table.py
 ```
 
 ### 2.2 Key Interaction Patterns
@@ -597,31 +612,34 @@ Immutability ensures that computed results cannot be accidentally mutated after 
 
 ### 6.1 Layered Architecture
 
-The project follows a four-layer architecture:
+The project follows a layered architecture with explicit dependency direction:
 
 ```
 +-----------------------------------------------------------+
-|  Layer 4: Presentation                                    |
-|    cli.py, statistics/table.py, experiments/*.py           |
+|  Layer 5: Interfaces                                      |
+|    entry_points/*.py                                      |
 +-----------------------------------------------------------+
-|  Layer 3: Orchestration                                   |
-|    workflows.py, verification/generate_report.py           |
+|  Layer 4: Application                                     |
+|    application/*.py, workflows.py                         |
 +-----------------------------------------------------------+
-|  Layer 2: Domain Logic                                    |
-|    radii/*.py, verification/monte_carlo.py,                |
-|    verification/verify_*.py, metrics/ac_baselines.py       |
+|  Layer 3: Algorithms / Solvers                            |
+|    radii/*.py, verification/monte_carlo.py,               |
+|    verification/verify_*.py, metrics/ac_baselines.py      |
 +-----------------------------------------------------------+
-|  Layer 1: Infrastructure / Models                         |
-|    parsers/*.py, base_point/*.py,                          |
-|    dc/dc_model.py, ac/ac_model.py,                         |
-|    config.py, utils/                                       |
+|  Layer 2: Domain                                           |
+|    domain/*.py, base_point/types.py, verification/types.py |
++-----------------------------------------------------------+
+|  Layer 1: Infrastructure                                   |
+|    parsers/*.py, postprocess/*.py, config.py, utils/,      |
+|    opf integrations, pandapower/PyPSA adapters             |
 +-----------------------------------------------------------+
 ```
 
 Each layer depends only on layers below it. In particular:
-- Radius modules do not import CLI code.
-- The DC/AC models do not import radius or verification code.
-- Parsers have no dependency on operators, radii, or verification.
+- Interface wrappers only import the application layer.
+- Application code can depend on domain types, algorithms, and infrastructure helpers.
+- Algorithm modules do not import CLI code or entry-point wrappers.
+- Domain types stay free of file-system, CLI, and logging concerns.
 
 ### 6.2 Mathematical vs Operational Code
 

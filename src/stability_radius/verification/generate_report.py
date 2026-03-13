@@ -13,10 +13,10 @@ Strictness / determinism
 import json
 import logging
 import math
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Sequence
 
+from stability_radius.domain import ReportCaseSpec
 from stability_radius.parsers.matpower import load_network
 from stability_radius.utils import log_stage
 
@@ -26,16 +26,6 @@ from .types import VerificationResult
 from .verify_certificate import interpret_certificate
 
 logger = logging.getLogger("stability_radius.verification.generate_report")
-
-
-@dataclass(frozen=True)
-class ReportCaseSpec:
-    """Report case specification (YAML/JSON-friendly)."""
-
-    case_id: str
-    input_case_path: Path
-    results_path: Path
-    known_critical_pairs: tuple[tuple[int, int], ...] = ()
 
 
 def _load_results(path: Path) -> Dict[str, Any]:

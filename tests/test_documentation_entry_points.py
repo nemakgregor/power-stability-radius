@@ -4,6 +4,13 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+NON_ENTRY_HELPERS = {
+    "collect_results.py",
+    "plot_radius_distribution.py",
+    "plot_sigma_vs_time.py",
+    "plot_worst_case_heatmap.py",
+    "table.py",
+}
 
 
 def _read(path: Path) -> str:
@@ -26,16 +33,48 @@ def test_entry_point_reference_mentions_every_entry_point_module() -> None:
 
 def test_entry_point_reference_contains_structured_cards() -> None:
     content = _read(ROOT / "docs" / "entry_points.md")
+    entry_point_names = sorted(
+        path.name
+        for path in (ROOT / "entry_points").glob("*.py")
+        if path.name != "__init__.py"
+    )
 
     # One card per runnable module.
-    assert content.count("**What It Does**") >= 12
-    assert content.count("**Inputs**") >= 12
-    assert content.count("**Outputs**") >= 12
-    assert content.count("**Example Invocation**") >= 12
+    assert content.count("**What It Does**") == len(entry_point_names)
+    assert content.count("**Inputs**") == len(entry_point_names)
+    assert content.count("**Outputs**") == len(entry_point_names)
+    assert content.count("**Example Invocation**") == len(entry_point_names)
     assert "`compute`" in content
     assert "`monte-carlo`" in content
     assert "`report`" in content
     assert "`table`" in content
+
+
+def test_entry_points_directory_contains_only_runnable_fronts() -> None:
+    entry_point_names = {
+        path.name
+        for path in (ROOT / "entry_points").glob("*.py")
+        if path.name != "__init__.py"
+    }
+
+    assert NON_ENTRY_HELPERS.isdisjoint(entry_point_names)
+    for helper in NON_ENTRY_HELPERS:
+        assert (ROOT / "src" / "stability_radius" / "postprocess" / helper).exists()
+
+
+def test_main_entry_point_is_a_thin_application_wrapper() -> None:
+    content = _read(ROOT / "entry_points" / "power_stability_radius.py")
+    application_content = _read(
+        ROOT / "src" / "stability_radius" / "application" / "cli.py"
+    )
+
+    assert "from stability_radius.application.cli import (" in content
+    assert "argparse" not in content
+    assert "from stability_radius.postprocess.table import (" in application_content
+    assert (
+        'logger = logging.getLogger("stability_radius.application.cli")'
+        in application_content
+    )
 
 
 def test_repository_text_files_do_not_use_cyrillic() -> None:
@@ -94,3 +133,16 @@ def test_readme_links_to_docs_index_and_primary_cli() -> None:
         "`python entry_points/power_stability_radius.py --config conf/config.yaml <command>`"
         in content
     )
+
+
+def test_architecture_docs_describe_application_and_domain_layers() -> None:
+    repository_structure = _read(ROOT / "docs" / "repository_structure.md")
+    architecture = _read(ROOT / "docs" / "architecture.md")
+    readme = _read(ROOT / "README.md")
+
+    assert "`application/`" in repository_structure
+    assert "`domain/`" in repository_structure
+    assert "`src/stability_radius/application/cli.py`" in architecture
+    assert "`src/stability_radius/domain/reporting.py`" in architecture
+    assert "`src/stability_radius/application/`" in readme
+    assert "`src/stability_radius/domain/`" in readme

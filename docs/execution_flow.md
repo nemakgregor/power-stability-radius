@@ -10,6 +10,8 @@ The main CLI is the operational front door:
 python entry_points/power_stability_radius.py --config conf/config.yaml <command>
 ```
 
+`entry_points/power_stability_radius.py` is an interface wrapper. The actual CLI orchestration lives in `src/stability_radius/application/cli.py`.
+
 Common startup path:
 
 1. Pre-parse `--config` so YAML defaults are available before full CLI parsing.
@@ -17,6 +19,7 @@ Common startup path:
 3. Build the argparse parser with global logging, OPF, download, and command-specific flags.
 4. Optionally run the repository test suite when `--run-tests 1`.
 5. Dispatch to one of four command handlers: `compute`, `monte-carlo`, `report`, or `table`.
+6. For `report`, convert YAML `report.cases` into typed `ReportCaseSpec` objects from `stability_radius.domain.reporting`.
 
 ## `compute`
 
@@ -52,7 +55,7 @@ The `report` command generates a multi-case Markdown verification report:
 
 1. Read `report.cases` from the YAML config.
 2. Resolve each case's input case path and result path relative to the configured base directories.
-3. Build `ReportCaseSpec` objects.
+3. Build `ReportCaseSpec` objects in the application layer, before calling verification code.
 4. Call `stability_radius.verification.generate_report.generate_report_text(...)`.
 5. Write the report both to the requested output path and to the run directory as `verification_report.md`.
 
@@ -75,13 +78,20 @@ Standalone scripts in `entry_points/` bypass the main CLI when they need dedicat
 - `entry_points/run_scalability.py`: repeated timing runs for DC and AC pipelines
 - `entry_points/metrics_analysis.py`: compare radii against baseline and practical metrics
 - `entry_points/n1_stability_demo.py`: three-regime N-1 demonstration pipeline
-- `entry_points/collect_results.py`: aggregate experiment JSON outputs into a CSV summary
-- `entry_points/plot_radius_distribution.py`: plot per-case DC and AC radius distributions
-- `entry_points/plot_sigma_vs_time.py`: plot sigma-radius summaries and scalability timings
-- `entry_points/plot_worst_case_heatmap.py`: visualize worst-case verification accuracy
-- `entry_points/table.py`: standalone table formatter for `results.json`
 
 Each of these scripts creates artifacts under `run_artifacts/<module>/` unless an output directory is explicitly provided.
+
+## Reusable Post-Processing Modules
+
+Table formatting, CSV aggregation, and plotting helpers now live under `src/stability_radius/postprocess/`:
+
+- `stability_radius.postprocess.table`
+- `stability_radius.postprocess.collect_results`
+- `stability_radius.postprocess.plot_radius_distribution`
+- `stability_radius.postprocess.plot_sigma_vs_time`
+- `stability_radius.postprocess.plot_worst_case_heatmap`
+
+These modules are library-side helpers rather than primary repository entry points.
 
 ## Artifact Pattern
 

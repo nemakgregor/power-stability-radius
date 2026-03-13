@@ -933,7 +933,7 @@ and are essential for sigma-radius computation and worst-case analysis.
 
 #### Producer
 
-**Module:** `entry_points/power_stability_radius.py` (via `run_compute()`)
+**Module:** `src/stability_radius/application/cli.py` (via `run_compute()`)
 
 **Function:** Saved when `compute.ac.save_h_vectors=true`
 
@@ -969,7 +969,7 @@ and archival.
 
 #### Producer
 
-**Module:** `entry_points/table.py`
+**Module:** `src/stability_radius/postprocess/table.py`
 
 **Key functions:**
 
@@ -1010,7 +1010,7 @@ Several CSV formats are produced by different components:
 #### 2.6.1 Per-Line Results CSV
 
 **Producer:** `format_results_csv()` and `format_results_csv_sections()` in
-`entry_points/table.py`
+`src/stability_radius/postprocess/table.py`
 
 Output locations:
 - `<runs_dir>/<run_id>/results_table_dc.csv` -- DC columns
@@ -1077,7 +1077,7 @@ Output location: `<output_dir>/precision_at_k.csv`
 
 #### 2.6.5 Experiment Summary CSV
 
-**Producer:** `entry_points/collect_results.py` (`collect()`)
+**Producer:** `src/stability_radius/postprocess/collect_results.py` (`collect()`)
 
 Output location: `run_artifacts/collect_results/all_results.csv`
 
@@ -1150,19 +1150,19 @@ DPI: 150 for scatter plots, 150 for bar and histogram charts.
 | `fig_flow_vs_limit.png` / `.pdf` | Base flow vs thermal limit scatter. |
 | `fig_violation_scale.png` / `.pdf` | Violation scale analysis. |
 
-**Producer:** `entry_points/plot_radius_distribution.py`
+**Producer:** `src/stability_radius/postprocess/plot_radius_distribution.py`
 
 | File | Description |
 |------|-------------|
 | Output varies | Distribution plots for radius values. |
 
-**Producer:** `entry_points/plot_sigma_vs_time.py`
+**Producer:** `src/stability_radius/postprocess/plot_sigma_vs_time.py`
 
 | File | Description |
 |------|-------------|
 | Output varies | Sigma-radius evolution over hourly timesteps. |
 
-**Producer:** `entry_points/plot_worst_case_heatmap.py`
+**Producer:** `src/stability_radius/postprocess/plot_worst_case_heatmap.py`
 
 | File | Description |
 |------|-------------|
@@ -1200,7 +1200,7 @@ run_artifacts/<module>/<run_name>/     # when run_dir_mode=overwrite
 | `verification_report.md` | Markdown | Verification report (report command). |
 | `debug.log` | Text | Detailed timestamped log (level=DEBUG). |
 
-**Producer:** `entry_points/power_stability_radius.py` (`_write_run_artifacts()`)
+**Producer:** `src/stability_radius/application/cli.py` (`_write_run_artifacts()`)
 
 ---
 
