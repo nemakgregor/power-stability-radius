@@ -35,6 +35,7 @@ from stability_radius.config import (
     OmegaConf,
     load_project_config,
 )
+
 try:  # Support both `python -m entry_points.power_stability_radius` and script execution.
     from .table import (
         DEFAULT_AC_COLUMNS,
@@ -895,7 +896,9 @@ def run_compute(
             runs_dir=str(args.runs_dir),
             requested_output_dir=Path(str(args.export_results)).parent,
         )
-        export_path_abs = str((export_dir / Path(str(args.export_results)).name).resolve())
+        export_path_abs = str(
+            (export_dir / Path(str(args.export_results)).name).resolve()
+        )
         Path(export_path_abs).parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(run_dir / "results.json", export_path_abs)
 
@@ -980,7 +983,10 @@ def run_report(
 
     run_dir = _setup_run_and_logging(args)
     _write_run_artifacts(
-        run_dir=run_dir, cfg_source_path=cfg_path, cfg_used={"report": vars(args)}, argv=argv
+        run_dir=run_dir,
+        cfg_source_path=cfg_path,
+        cfg_used={"report": vars(args)},
+        argv=argv,
     )
 
     from stability_radius.verification.generate_report import (
@@ -1047,7 +1053,10 @@ def run_monte_carlo(
 
     run_dir = _setup_run_and_logging(args)
     _write_run_artifacts(
-        run_dir=run_dir, cfg_source_path=cfg_path, cfg_used={"table": vars(args)}, argv=argv
+        run_dir=run_dir,
+        cfg_source_path=cfg_path,
+        cfg_used={"table": vars(args)},
+        argv=argv,
     )
 
     cfg_used: dict[str, Any] = {

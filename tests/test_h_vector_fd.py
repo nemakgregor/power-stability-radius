@@ -124,11 +124,15 @@ def test_h_vector_predicts_delta_s_via_finite_difference() -> None:
     # Expand to full dimension
     slack_pos = bus_ids.index(slack_bus)
     h_from_full = _expand_h_reduced_to_full(
-        h_from_raw, n_bus=n_bus, slack_pos=slack_pos,
+        h_from_raw,
+        n_bus=n_bus,
+        slack_pos=slack_pos,
         pq_mask=h_vecs_raw.get("pq_mask"),
     )
     h_to_full = _expand_h_reduced_to_full(
-        h_to_raw, n_bus=n_bus, slack_pos=slack_pos,
+        h_to_raw,
+        n_bus=n_bus,
+        slack_pos=slack_pos,
         pq_mask=h_vecs_raw.get("pq_mask"),
     )
 
@@ -270,11 +274,15 @@ def test_h_vector_with_q_perturbation() -> None:
     h_vecs_raw = ac_results.pop("_h_vectors")
     slack_pos = bus_ids.index(slack_bus)
     h_from_full = _expand_h_reduced_to_full(
-        h_vecs_raw["h_from"], n_bus=n_bus, slack_pos=slack_pos,
+        h_vecs_raw["h_from"],
+        n_bus=n_bus,
+        slack_pos=slack_pos,
         pq_mask=h_vecs_raw.get("pq_mask"),
     )
     h_to_full = _expand_h_reduced_to_full(
-        h_vecs_raw["h_to"], n_bus=n_bus, slack_pos=slack_pos,
+        h_vecs_raw["h_to"],
+        n_bus=n_bus,
+        slack_pos=slack_pos,
         pq_mask=h_vecs_raw.get("pq_mask"),
     )
 
@@ -417,7 +425,9 @@ def test_h_vector_fd_with_shunts_and_charging() -> None:
     net = apply_lossless_policy_to_pandapower_net(net_raw)
 
     # Verify shunts are disabled
-    assert not net.shunt["in_service"].any(), "Shunts should be disabled by lossless policy"
+    assert not net.shunt["in_service"].any(), (
+        "Shunts should be disabled by lossless policy"
+    )
 
     _run_pp_pf(net, init="flat")
 
@@ -441,11 +451,15 @@ def test_h_vector_fd_with_shunts_and_charging() -> None:
     h_vecs_raw = ac_results.pop("_h_vectors")
     slack_pos = bus_ids.index(slack_bus)
     h_from_full = _expand_h_reduced_to_full(
-        h_vecs_raw["h_from"], n_bus=n_bus, slack_pos=slack_pos,
+        h_vecs_raw["h_from"],
+        n_bus=n_bus,
+        slack_pos=slack_pos,
         pq_mask=h_vecs_raw.get("pq_mask"),
     )
     h_to_full = _expand_h_reduced_to_full(
-        h_vecs_raw["h_to"], n_bus=n_bus, slack_pos=slack_pos,
+        h_vecs_raw["h_to"],
+        n_bus=n_bus,
+        slack_pos=slack_pos,
         pq_mask=h_vecs_raw.get("pq_mask"),
     )
 
@@ -614,11 +628,15 @@ def test_h_vector_fd_with_pv_buses() -> None:
     h_vecs_raw = ac_results.pop("_h_vectors")
     slack_pos = bus_ids.index(slack_bus)
     h_from_full = _expand_h_reduced_to_full(
-        h_vecs_raw["h_from"], n_bus=n_bus, slack_pos=slack_pos,
+        h_vecs_raw["h_from"],
+        n_bus=n_bus,
+        slack_pos=slack_pos,
         pq_mask=h_vecs_raw.get("pq_mask"),
     )
     h_to_full = _expand_h_reduced_to_full(
-        h_vecs_raw["h_to"], n_bus=n_bus, slack_pos=slack_pos,
+        h_vecs_raw["h_to"],
+        n_bus=n_bus,
+        slack_pos=slack_pos,
         pq_mask=h_vecs_raw.get("pq_mask"),
     )
 

@@ -111,12 +111,11 @@ def resolve_slack_bus_id(net: Any, slack_bus: int) -> int:
             sb = ext_grid_buses[0]
             logger.warning(
                 "Multiple ext_grid buses %s; using smallest bus id: bus %d",
-                ext_grid_buses, sb,
+                ext_grid_buses,
+                sb,
             )
             return int(sb)
-        raise ValueError(
-            "slack_bus=-1 (auto-detect) but no in-service ext_grid found."
-        )
+        raise ValueError("slack_bus=-1 (auto-detect) but no in-service ext_grid found.")
 
     if int(slack_bus) in bus_pos:
         resolved = int(slack_bus)
@@ -131,8 +130,11 @@ def resolve_slack_bus_id(net: Any, slack_bus: int) -> int:
             "Resolved slack_bus=%d (from input %d) does NOT match the "
             "ext_grid bus %d. Using ext_grid bus %d instead. "
             "Set slack_bus=%d in config to suppress this warning.",
-            resolved, int(slack_bus), ext_grid_buses[0],
-            ext_grid_buses[0], ext_grid_buses[0],
+            resolved,
+            int(slack_bus),
+            ext_grid_buses[0],
+            ext_grid_buses[0],
+            ext_grid_buses[0],
         )
         return int(ext_grid_buses[0])
 

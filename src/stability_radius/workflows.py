@@ -454,9 +454,7 @@ def _expand_h_reduced_to_full(
     if pq_mask is None:
         # Legacy path: all non-slack buses are PQ.
         if h.ndim != 2 or h.shape[1] != 2 * n_red:
-            raise ValueError(
-                f"h_reduced shape must be (m, {2 * n_red}), got {h.shape}"
-            )
+            raise ValueError(f"h_reduced shape must be (m, {2 * n_red}), got {h.shape}")
         m = h.shape[0]
         p_red = h[:, :n_red]
         q_red = h[:, n_red:]
@@ -477,8 +475,8 @@ def _expand_h_reduced_to_full(
         )
 
     m = h.shape[0]
-    p_red = h[:, :n_red]       # (m, n_theta)
-    q_red = h[:, n_red:]       # (m, n_pq)
+    p_red = h[:, :n_red]  # (m, n_theta)
+    q_red = h[:, n_red:]  # (m, n_pq)
 
     # P block: insert zero at slack_pos -> (m, n_bus)
     p_full = np.insert(p_red, slack_pos, 0.0, axis=1)
@@ -1231,11 +1229,15 @@ def compute_results_for_case(
                     slack_pos = bus_ids.index(slack_bus_id)
 
                     h_from_full = _expand_h_reduced_to_full(
-                        h_vecs_raw["h_from"], n_bus=n_bus, slack_pos=slack_pos,
+                        h_vecs_raw["h_from"],
+                        n_bus=n_bus,
+                        slack_pos=slack_pos,
                         pq_mask=h_vecs_raw.get("pq_mask"),
                     )
                     h_to_full = _expand_h_reduced_to_full(
-                        h_vecs_raw["h_to"], n_bus=n_bus, slack_pos=slack_pos,
+                        h_vecs_raw["h_to"],
+                        n_bus=n_bus,
+                        slack_pos=slack_pos,
                         pq_mask=h_vecs_raw.get("pq_mask"),
                     )
 
@@ -1294,11 +1296,15 @@ def compute_results_for_case(
 
                 h_vectors_saved = {
                     "h_from": _expand_h_reduced_to_full(
-                        h_vecs_raw["h_from"], n_bus=n_bus, slack_pos=slack_pos,
+                        h_vecs_raw["h_from"],
+                        n_bus=n_bus,
+                        slack_pos=slack_pos,
                         pq_mask=h_vecs_raw.get("pq_mask"),
                     ),
                     "h_to": _expand_h_reduced_to_full(
-                        h_vecs_raw["h_to"], n_bus=n_bus, slack_pos=slack_pos,
+                        h_vecs_raw["h_to"],
+                        n_bus=n_bus,
+                        slack_pos=slack_pos,
                         pq_mask=h_vecs_raw.get("pq_mask"),
                     ),
                     "bus_ids": np.array(bus_ids, dtype=int),

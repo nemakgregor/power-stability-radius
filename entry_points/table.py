@@ -363,9 +363,7 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     if str(args.table_out).strip():
         table_path = artifact_dir / Path(str(args.table_out)).name
-        table_path.write_text(
-            table_str + "\n", encoding="utf-8"
-        )
+        table_path.write_text(table_str + "\n", encoding="utf-8")
         logger.info("Wrote explicit table output: %s", str(table_path))
 
     if str(args.csv_out).strip():

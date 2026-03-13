@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 """
 Tests for Experiment 2 (run_sigma_radius) helper functions.
@@ -651,5 +651,3 @@ class TestMultiScaleVerification:
         assert len(ok_results[0]["scale_results"]) == 3
         # 1 BP check + 3 scale verifications (FD skipped: zero worst-case vectors)
         assert mock_verify.call_count == 4
-
-

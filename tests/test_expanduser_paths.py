@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from pathlib import Path
 
@@ -67,4 +67,3 @@ def test_ensure_case_file_expands_tilde(
 
     out = Path(ensure_case_file("~/case14.m")).resolve()
     assert out == case_path.resolve()
-

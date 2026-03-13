@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from types import SimpleNamespace
 
@@ -28,9 +28,12 @@ def test_resolve_output_dir_normalizes_legacy_analysis_output_under_runs(
 
     out_dir = _resolve_output_dir("analysis_output/n1_demo_case118")
 
-    assert out_dir == (
-        tmp_path / "run_artifacts" / "n1_stability_demo" / "n1_demo_case118"
-    ).resolve()
+    assert (
+        out_dir
+        == (
+            tmp_path / "run_artifacts" / "n1_stability_demo" / "n1_demo_case118"
+        ).resolve()
+    )
 
 
 def test_update_scopf_line_limits_tightens_only_violating_lines() -> None:
@@ -235,7 +238,9 @@ def test_align_line_limit_proxy_with_opf_model_overwrites_explicit_rating() -> N
     assert summary["n_lines_aligned"] == 1
 
 
-def test_opf_line_limit_consistency_summary_reports_zero_mismatch_after_alignment() -> None:
+def test_opf_line_limit_consistency_summary_reports_zero_mismatch_after_alignment() -> (
+    None
+):
     net = _FakeNet(
         bus=pd.DataFrame({"vn_kv": [110.0]}, index=[0]),
         line=pd.DataFrame(
@@ -268,7 +273,9 @@ def test_solve_cost_opf_accepts_pf_replay_with_current_gap(monkeypatch) -> None:
     monkeypatch.setattr(demo, "_apply_loading_limits", lambda nn, **kwargs: None)
     monkeypatch.setattr(demo, "_set_default_voltage_bounds", lambda nn: None)
     monkeypatch.setattr(demo, "_add_matpower_costs", lambda nn, input_path: 1)
-    monkeypatch.setattr(demo, "_extract_pypsa_result_from_pp", lambda nn, line_indices: "base_pf")
+    monkeypatch.setattr(
+        demo, "_extract_pypsa_result_from_pp", lambda nn, line_indices: "base_pf"
+    )
 
     def fake_run_cost_opf(nn, label: str = "cost_opf") -> float:
         calls["run_cost_opf"] += 1
@@ -394,4 +401,3 @@ def test_plot_cost_security_tradeoff_writes_png(tmp_path) -> None:
 
     assert output_path.exists()
     assert output_path.stat().st_size > 0
-

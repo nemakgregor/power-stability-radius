@@ -1,256 +1,49 @@
+# Power Stability Radius
 
-Ð˜Ð½ÑÑ‚Ñ€ÑƒÐ¼ÐµÐ½Ñ‚ Ð´Ð»Ñ Ð²Ñ‹Ñ‡Ð¸ÑÐ»ÐµÐ½Ð¸Ñ **Ñ€Ð°Ð´Ð¸ÑƒÑÐ¾Ð² ÑƒÑÑ‚Ð¾Ð¹Ñ‡Ð¸Ð²Ð¾ÑÑ‚Ð¸ / Ñ€Ð¾Ð±Ð°ÑÑ‚Ð½Ð¾ÑÑ‚Ð¸** Ð¿Ð¾ **Ð¾Ð³Ñ€Ð°Ð½Ð¸Ñ‡ÐµÐ½Ð¸ÑÐ¼ Ð·Ð°Ð³Ñ€ÑƒÐ·ÐºÐ¸ Ð»Ð¸Ð½Ð¸Ð¹** Ð² ÑÐ»ÐµÐºÑ‚Ñ€Ð¾ÑÐ½ÐµÑ€Ð³ÐµÑ‚Ð¸Ñ‡ÐµÑÐºÐ¸Ñ… ÑÐµÑ‚ÑÑ….
+Power Stability Radius is a Python toolkit for computing robustness certificates for power-system operating points with respect to line thermal-limit violations. The repository contains one primary CLI, several experiment-oriented entry points, and a pytest suite that keeps the implementation, docs, and CI workflow aligned.
 
-ÐŸÑ€Ð¾ÐµÐºÑ‚ Ñ€ÐµÑˆÐ°ÐµÑ‚ Ð¿Ñ€Ð°ÐºÑ‚Ð¸Ñ‡ÐµÑÐºÑƒÑŽ Ð·Ð°Ð´Ð°Ñ‡Ñƒ:
+Start with the main CLI: `python entry_points/power_stability_radius.py --config conf/config.yaml <command>`
 
-> â€œÐÐ°ÑÐºÐ¾Ð»ÑŒÐºÐ¾ Ð¼Ð¾Ð¶Ð½Ð¾ (Ð² Ñ‚ÐµÑ€Ð¼Ð¸Ð½Ð°Ñ… Ð½Ð¾Ñ€Ð¼Ñ‹ Ð²Ð¾Ð·Ð¼ÑƒÑ‰ÐµÐ½Ð¸Ð¹ Ð¸Ð½ÑŠÐµÐºÑ†Ð¸Ð¹ Ð¿Ð¾ ÑƒÐ·Ð»Ð°Ð¼) Ð¾Ñ‚ÐºÐ»Ð¾Ð½Ð¸Ñ‚ÑŒÑÑ Ð¾Ñ‚ Ð±Ð°Ð·Ð¾Ð²Ð¾Ð³Ð¾ Ñ€ÐµÐ¶Ð¸Ð¼Ð°, Ð¿Ñ€ÐµÐ¶Ð´Ðµ Ñ‡ÐµÐ¼ ÐºÐ°ÐºÐ°Ñâ€‘Ð»Ð¸Ð±Ð¾ Ð»Ð¸Ð½Ð¸Ñ Ð½Ð°Ñ€ÑƒÑˆÐ¸Ñ‚ Ñ‚ÐµÑ€Ð¼Ð¸Ñ‡ÐµÑÐºÐ¾Ðµ Ð¾Ð³Ñ€Ð°Ð½Ð¸Ñ‡ÐµÐ½Ð¸Ðµ?â€
+Main commands:
 
-Ð ÐµÐ·ÑƒÐ»ÑŒÑ‚Ð°Ñ‚ Ð²Ñ‹Ð´Ð°Ñ‘Ñ‚ÑÑ **Ð¿Ð¾ ÐºÐ°Ð¶Ð´Ð¾Ð¹ Ð»Ð¸Ð½Ð¸Ð¸** (Ð¸ Ð°Ð³Ñ€ÐµÐ³Ð¸Ñ€Ð¾Ð²Ð°Ð½Ð¾ Ñ‡ÐµÑ€ÐµÐ· Ð¼Ð¸Ð½Ð¸Ð¼ÑƒÐ¼ Ð¿Ð¾ Ð»Ð¸Ð½Ð¸ÑÐ¼) Ð¸ Ð¼Ð¾Ð¶ÐµÑ‚ Ð±Ñ‹Ñ‚ÑŒ:
-- **DC (Ð»Ð¸Ð½ÐµÐ¹Ð½Ð°Ñ Ð¼Ð¾Ð´ÐµÐ»ÑŒ)** â€” Ð±Ñ‹ÑÑ‚Ñ€Ð¾, Ð¼Ð°ÑÑˆÑ‚Ð°Ð±Ð¸Ñ€ÑƒÐµÐ¼Ð¾, Ð¿Ð¾Ð´Ñ…Ð¾Ð´Ð¸Ñ‚ Ð´Ð»Ñ Ð±Ð¾Ð»ÑŒÑˆÐ¸Ñ… ÑÐµÑ‚ÐµÐ¹.
-- **AC L2-ÑÐµÑ€Ñ‚Ð¸Ñ„Ð¸ÐºÐ°Ñ‚ Ð²Ð¾ÐºÑ€ÑƒÐ³ AC PF Ð±Ð°Ð·Ð¾Ð²Ð¾Ð¹ Ñ‚Ð¾Ñ‡ÐºÐ¸** â€” Ð½ÐµÐ»Ð¸Ð½ÐµÐ¹Ð½Ð°Ñ Ñ„Ð¸Ð·Ð¸ÐºÐ° ÑƒÑ‡Ñ‚ÐµÐ½Ð° Ñ‡ÐµÑ€ÐµÐ· Ð»Ð¸Ð½ÐµÐ¹Ð½Ð¾Ðµ Ð¿Ñ€Ð¸Ð±Ð»Ð¸Ð¶ÐµÐ½Ð¸Ðµ (Ð¯ÐºÐ¾Ð±Ð¸Ð°Ð½/Ð°Ð´ÑŠÑŽÐ½ÐºÑ‚).
+- `compute` or `demo`: run the deterministic DC and/or AC radius pipeline and write `results.json` plus formatted tables.
+- `monte-carlo`: verify an existing `results.json` against sampled perturbations.
+- `report`: build a multi-case Markdown verification report from `report.cases` in YAML.
+- `table`: format an existing `results.json` for terminal output.
 
-Ð”Ð¾Ð¿Ð¾Ð»Ð½Ð¸Ñ‚ÐµÐ»ÑŒÐ½Ð¾:
-- **Monte Carlo Ð²ÐµÑ€Ð¸Ñ„Ð¸ÐºÐ°Ñ†Ð¸Ñ** (DC Ð¸ AC).
-- **Markdown Ð¾Ñ‚Ñ‡Ñ‘Ñ‚ Ð¿Ð¾ Ð½ÐµÑÐºÐ¾Ð»ÑŒÐºÐ¸Ð¼ ÐºÐµÐ¹ÑÐ°Ð¼**.
-- **Ð¢Ð°Ð±Ð»Ð¸Ñ‡Ð½Ñ‹Ð¹ Ð²Ñ‹Ð²Ð¾Ð´** (ASCII/CSV).
+Standalone scripts under `entry_points/` cover focused workflows such as `run_pglib_sweep.py`, `run_sigma_radius.py`, `run_worst_case_verify.py`, `run_scalability.py`, `metrics_analysis.py`, `n1_stability_demo.py`, and post-processing helpers like `collect_results.py` and the plotting scripts.
 
----
+Documentation starts at [docs/index.md](docs/index.md). The most useful references for day-to-day work are:
 
-## Ð‘Ñ‹ÑÑ‚Ñ€Ñ‹Ð¹ ÑÑ‚Ð°Ñ€Ñ‚
+- [docs/entry_points.md](docs/entry_points.md): authoritative inventory of every runnable script and its artifacts.
+- [docs/execution_flow.md](docs/execution_flow.md): how the main CLI and experiment flows execute.
+- [docs/repository_structure.md](docs/repository_structure.md): where package code, configs, tests, and reports live.
+- [docs/testing_and_ci.md](docs/testing_and_ci.md): local dev commands, docs-as-code checks, and GitHub Actions behavior.
 
-Ð£ÑÑ‚Ð°Ð½Ð¾Ð²ÐºÐ° (Poetry):
+## Quick Start
+
+Install the project with Poetry:
 
 ```bash
 poetry install
 ```
 
-Ð—Ð°Ð¿ÑƒÑÐº CLI:
-
-```bash
-poetry run python entry_points/power_stability_radius.py --config conf/config.yaml <command> [options...]
-```
-
-ÐšÐ¾Ð¼Ð°Ð½Ð´Ñ‹:
-- `compute` (Ð°Ð»Ð¸Ð°Ñ: `demo`) â€” Ð¿Ð¾ÑÑ‡Ð¸Ñ‚Ð°Ñ‚ÑŒ Ñ€Ð°Ð´Ð¸ÑƒÑÑ‹, ÑÐ¾Ñ…Ñ€Ð°Ð½Ð¸Ñ‚ÑŒ `results.json` Ð¸ Ñ‚Ð°Ð±Ð»Ð¸Ñ†Ñ‹.
-- `monte-carlo` â€” Ð¿Ñ€Ð¾Ð²ÐµÑ€Ð¸Ñ‚ÑŒ ÑÐµÑ€Ñ‚Ð¸Ñ„Ð¸ÐºÐ°Ñ‚ Ð¼ÐµÑ‚Ð¾Ð´Ð¾Ð¼ ÐœÐ¾Ð½Ñ‚Ðµâ€‘ÐšÐ°Ñ€Ð»Ð¾.
-- `report` â€” Ð¿Ñ€Ð¾Ð³Ð½Ð°Ñ‚ÑŒ Ð²ÐµÑ€Ð¸Ñ„Ð¸ÐºÐ°Ñ†Ð¸ÑŽ Ð¿Ð¾ Ð½ÐµÑÐºÐ¾Ð»ÑŒÐºÐ¸Ð¼ ÐºÐµÐ¹ÑÐ°Ð¼ Ð¸ ÑÐ¾Ð±Ñ€Ð°Ñ‚ÑŒ Markdown Ð¾Ñ‚Ñ‡Ñ‘Ñ‚.
-- `table` â€” ÑƒÑ‚Ð¸Ð»Ð¸Ñ‚Ð° Ñ„Ð¾Ñ€Ð¼Ð°Ñ‚Ð¸Ñ€Ð¾Ð²Ð°Ð½Ð¸Ñ `results.json`.
-
----
-
-## Ð’Ð°Ð¶Ð½Ñ‹Ðµ ÑÐ²Ð¾Ð¹ÑÑ‚Ð²Ð° Ð¿Ñ€Ð¾ÐµÐºÑ‚Ð° (ÐºÐ¾Ð½Ñ‚Ñ€Ð°ÐºÑ‚Ñ‹ Ð²ÐµÑ€Ñ…Ð½ÐµÐ³Ð¾ ÑƒÑ€Ð¾Ð²Ð½Ñ)
-
-### 1) AC ÑÐµÑ€Ñ‚Ð¸Ñ„Ð¸ÐºÐ°Ñ‚ Ð²ÑÐµÐ³Ð´Ð° ÑÑ‚Ñ€Ð¾Ð¸Ñ‚ÑÑ Ð²Ð¾ÐºÑ€ÑƒÐ³ **AC PF Ð±Ð°Ð·Ð¾Ð²Ð¾Ð¹ Ñ‚Ð¾Ñ‡ÐºÐ¸**
-- AC Ñ‡Ð°ÑÑ‚ÑŒ Ð¾Ð¿Ð¸Ñ€Ð°ÐµÑ‚ÑÑ Ð½Ð° Ñ€ÐµÑˆÐµÐ½Ð¸Ðµ **AC Power Flow (AC PF)**.
-- **DC OPF Ð½Ð¸ÐºÐ¾Ð³Ð´Ð° Ð½Ðµ ÑÐ²Ð»ÑÐµÑ‚ÑÑ AC Ð±Ð°Ð·Ð¾Ð²Ð¾Ð¹ Ñ‚Ð¾Ñ‡ÐºÐ¾Ð¹**.
-- Ð•ÑÐ»Ð¸ Ð½ÑƒÐ¶ÐµÐ½ â€œOPFâ€‘Ð´Ð¸ÑÐ¿ÐµÑ‚Ñ‡ Ð´Ð»Ñ Ñ€ÐµÐ¶Ð¸Ð¼Ð°â€, ÑÑ‚Ð¾ Ð´ÐµÐ»Ð°ÐµÑ‚ÑÑ Ñ‚Ð°Ðº:
-  1) Ñ€ÐµÑˆÐ°ÐµÐ¼ **DC OPF (PyPSA + HiGHS)** Ð´Ð»Ñ Ð¿Ð¾Ð»ÑƒÑ‡ÐµÐ½Ð¸Ñ Ð°ÐºÑ‚Ð¸Ð²Ð½Ð¾Ð¹ Ð¼Ð¾Ñ‰Ð½Ð¾ÑÑ‚Ð¸ Ð³ÐµÐ½ÐµÑ€Ð°Ñ‚Ð¾Ñ€Ð¾Ð²,
-  2) Ð·Ð°Ñ‚ÐµÐ¼ Ñ€ÐµÑˆÐ°ÐµÐ¼ **AC PF** ÑƒÐ¶Ðµ Ð½Ð° ÑÑ‚Ð¾Ð¹ Ð°ÐºÑ‚Ð¸Ð²Ð½Ð¾Ð¹ Ð¼Ð¾Ñ‰Ð½Ð¾ÑÑ‚Ð¸,
-  3) Ð¸ ÑÑ‚Ñ€Ð¾Ð¸Ð¼ AC ÑÐµÑ€Ñ‚Ð¸Ñ„Ð¸ÐºÐ°Ñ‚ Ð²Ð¾ÐºÑ€ÑƒÐ³ Ð½Ð°Ð¹Ð´ÐµÐ½Ð½Ð¾Ð³Ð¾ AC PF Ñ€ÐµÐ¶Ð¸Ð¼Ð°.
-
-Ð£Ð¿Ñ€Ð°Ð²Ð»ÑÐµÑ‚ÑÑ Ð¿Ð°Ñ€Ð°Ð¼ÐµÑ‚Ñ€Ð¾Ð¼:
-- `compute.base_dispatch: case | dc_opf`
-
-### 2) Ð”ÐµÑ‚ÐµÑ€Ð¼Ð¸Ð½Ð¸Ð·Ð¼ Ð¸ Ð¾Ñ‚ÑÑƒÑ‚ÑÑ‚Ð²Ð¸Ðµ ÑÐºÑ€Ñ‹Ñ‚Ñ‹Ñ… ÑÐ°Ð¹Ð´â€‘ÑÑ„Ñ„ÐµÐºÑ‚Ð¾Ð²
-- **ÐÐµÑ‚ Ð½ÐµÑÐ²Ð½Ñ‹Ñ… ÑÐºÐ°Ñ‡Ð¸Ð²Ð°Ð½Ð¸Ð¹** Ð²Ñ…Ð¾Ð´Ð½Ñ‹Ñ… `.m` ÐºÐµÐ¹ÑÐ¾Ð².
-- Ð¡ÐºÐ°Ñ‡Ð¸Ð²Ð°Ð½Ð¸Ðµ Ð²Ð¾Ð·Ð¼Ð¾Ð¶Ð½Ð¾ Ñ‚Ð¾Ð»ÑŒÐºÐ¾ ÑÐ²Ð½Ð¾:
-  - CLI: `--allow-download 1`
-  - YAML: `io.allow_download: true`
-- Ð’ÐµÐ·Ð´Ðµ Ð¸ÑÐ¿Ð¾Ð»ÑŒÐ·ÑƒÐµÑ‚ÑÑ **ÑÑ‚Ð°Ð±Ð¸Ð»ÑŒÐ½Ð°Ñ ÑÐ¾Ñ€Ñ‚Ð¸Ñ€Ð¾Ð²ÐºÐ°**:
-  - buses: `sorted(net.bus.index)`
-  - lines: `sorted(net.line.index)`
-
-### 3) Ð¯Ð²Ð½Ñ‹Ðµ Ð¾Ð³Ñ€Ð°Ð½Ð¸Ñ‡ÐµÐ½Ð¸Ñ / fail-fast Ð¿Ð¾Ð»Ð¸Ñ‚Ð¸ÐºÐ°
-- `ac.lossless=false` **Ð½Ðµ Ð¿Ð¾Ð´Ð´ÐµÑ€Ð¶Ð°Ð½** (ÑÐ²Ð½Ð°Ñ Ð¾ÑˆÐ¸Ð±ÐºÐ°).
-- AC Monteâ€‘Carlo **Ð¿Ð¾Ð´Ð´ÐµÑ€Ð¶Ð¸Ð²Ð°ÐµÑ‚ Ñ‚Ð¾Ð»ÑŒÐºÐ¾ `pandapower`** ÐºÐ°Ðº per-sample PF Ð´Ð²Ð¸Ð¶Ð¾Ðº:
-  - ÐµÑÐ»Ð¸ Ñ€Ð°Ð´Ð¸ÑƒÑ AC ÑÑ‡Ð¸Ñ‚Ð°Ð»Ð¸ Ñ `ac.pf_solver=pypsa`, Ñ‚Ð¾ AC MC Ð·Ð°Ð²ÐµÑ€ÑˆÐ¸Ñ‚ÑÑ Ñ ÑÐ²Ð½Ð¾Ð¹ Ð¾ÑˆÐ¸Ð±ÐºÐ¾Ð¹.
-- N-1 ÑÑ„Ñ„ÐµÐºÑ‚Ð¸Ð²Ð½Ñ‹Ðµ Ñ€Ð°Ð´Ð¸ÑƒÑÑ‹ Ð´Ð»Ñ DC Ñ‚Ñ€ÐµÐ±ÑƒÑŽÑ‚ Ð¼Ð°Ñ‚ÐµÑ€Ð¸Ð°Ð»Ð¸Ð·Ð°Ñ†Ð¸Ð¸ `H_full`:
-  - `--compute-nminus1 1` Ð´Ð¾Ð¿ÑƒÑÐºÐ°ÐµÑ‚ÑÑ Ñ‚Ð¾Ð»ÑŒÐºÐ¾ Ð¿Ñ€Ð¸ `--dc-mode materialize`.
-
----
-
-## Ð§Ñ‚Ð¾ Ñ‚Ð°ÐºÐ¾Ðµ â€œÑ€Ð°Ð´Ð¸ÑƒÑ ÑƒÑÑ‚Ð¾Ð¹Ñ‡Ð¸Ð²Ð¾ÑÑ‚Ð¸â€ Ð² ÑÑ‚Ð¾Ð¼ Ð¿Ñ€Ð¾ÐµÐºÑ‚Ðµ
-
-Ð’ Ð»Ð¸Ð½ÐµÐ¹Ð½Ð¾Ð¹ Ñ„Ð¾Ñ€Ð¼Ðµ (DC Ð¸ Ð»Ð¸Ð½ÐµÐ¹Ñ€Ð¸Ð·Ð¾Ð²Ð°Ð½Ð½Ñ‹Ð¹ AC) Ð¾Ð³Ñ€Ð°Ð½Ð¸Ñ‡ÐµÐ½Ð¸Ñ Ð»Ð¸Ð½Ð¸Ð¸ Ð¸Ð¼ÐµÑŽÑ‚ Ð²Ð¸Ð´:
-
-- ÐŸÑƒÑÑ‚ÑŒ `f0` â€” Ð±Ð°Ð·Ð¾Ð²Ñ‹Ð¹ Ð¿Ð¾Ñ‚Ð¾Ðº Ð¿Ð¾ Ð»Ð¸Ð½Ð¸Ð¸ (MW Ð´Ð»Ñ DC, MVA Ð´Ð»Ñ AC Ð¿Ð¾ Ð¼Ð¾Ð´ÑƒÐ»ÑŽ).
-- ÐŸÑƒÑÑ‚ÑŒ `c` â€” ÑÐ¸Ð¼Ð¼ÐµÑ‚Ñ€Ð¸Ñ‡Ð½Ñ‹Ð¹ Ð»Ð¸Ð¼Ð¸Ñ‚ (Ð² DC â€” â€œMVA, Ñ‚Ñ€Ð°ÐºÑ‚ÑƒÐµÐ¼Ñ‹Ðµ ÐºÐ°Ðº MW Ð¿Ñ€Ð¸ PF=1â€; Ð² AC â€” Ð»Ð¸Ð¼Ð¸Ñ‚ Ð² MVA).
-- ÐŸÑƒÑÑ‚ÑŒ Ð²Ð¾Ð·Ð¼ÑƒÑ‰ÐµÐ½Ð¸Ðµ Ð¸Ð½ÑŠÐµÐºÑ†Ð¸Ð¹ Ð¿Ð¾ ÑƒÐ·Ð»Ð°Ð¼ `Î”p` (Ð¸ Ð² AC Ñ‚Ð°ÐºÐ¶Ðµ `Î”q`).
-- ÐŸÑƒÑÑ‚ÑŒ Ð»Ð¸Ð½ÐµÐ¹Ð½Ð°Ñ Ñ‡ÑƒÐ²ÑÑ‚Ð²Ð¸Ñ‚ÐµÐ»ÑŒÐ½Ð¾ÑÑ‚ÑŒ Ð¿Ð¾Ñ‚Ð¾ÐºÐ° Ðº Ð¸Ð½ÑŠÐµÐºÑ†Ð¸ÑÐ¼:
-  - DC: `Î”f = H Î”p`
-  - AC (ÑÐµÑ€Ñ‚Ð¸Ñ„Ð¸ÐºÐ°Ñ‚): `Î”|S| â‰ˆ háµ€ [Î”P; Î”Q]` (Ñ‡ÐµÑ€ÐµÐ· Ð°Ð´ÑŠÑŽÐ½ÐºÑ‚-Ñ€ÐµÑˆÐµÐ½Ð¸Ðµ ÑÐ¸ÑÑ‚ÐµÐ¼Ñ‹ Ð¯ÐºÐ¾Ð±Ð¸Ð°Ð½Ð°)
-
-Ð¢Ð¾Ð³Ð´Ð° Ð¿Ð¾ Ð½ÐµÑ€Ð°Ð²ÐµÐ½ÑÑ‚Ð²Ñƒ ÐšÐ¾ÑˆÐ¸â€“Ð‘ÑƒÐ½ÑÐºÐ¾Ð²ÑÐºÐ¾Ð³Ð¾ Ð´Ð»Ñ ÐºÐ°Ð¶Ð´Ð¾Ð¹ Ð»Ð¸Ð½Ð¸Ð¸ Ð²Ð¾Ð·Ð½Ð¸ÐºÐ°ÐµÑ‚ Ð±ÐµÐ·Ð¾Ð¿Ð°ÑÐ½Ñ‹Ð¹ Ñ€Ð°Ð´Ð¸ÑƒÑ:
-- `margin = c - |f0|`
-- `r = margin / ||g||` (DC) Ð¸Ð»Ð¸ `r = margin / ||h||` (AC)
-
-Ð“Ð»Ð¾Ð±Ð°Ð»ÑŒÐ½Ñ‹Ð¹ ÑÐµÑ€Ñ‚Ð¸Ñ„Ð¸ÐºÐ°Ñ‚ Ð´Ð»Ñ Ñ€ÐµÐ¶Ð¸Ð¼Ð°:
-- `r* = min_over_lines r_line`
-
-Ð­Ñ‚Ð¾ **ÑÐµÑ€Ñ‚Ð¸Ñ„Ð¸ÐºÐ°Ñ‚** (Ð½Ð¸Ð¶Ð½ÑÑ Ð¾Ñ†ÐµÐ½ÐºÐ°) â€” Ð¾Ð½ Ð³Ð°Ñ€Ð°Ð½Ñ‚Ð¸Ñ€ÑƒÐµÑ‚ Ð±ÐµÐ·Ð¾Ð¿Ð°ÑÐ½Ð¾ÑÑ‚ÑŒ Ð²Ð½ÑƒÑ‚Ñ€Ð¸ ÑˆÐ°Ñ€Ð°, Ð½Ð¾ Ð½Ðµ Ð¾Ð±ÐµÑ‰Ð°ÐµÑ‚, Ñ‡Ñ‚Ð¾ ÑÑ‚Ð¾ Ñ‚Ð¾Ñ‡Ð½Ñ‹Ð¹ Ð¼Ð°ÐºÑÐ¸Ð¼ÑƒÐ¼.
-
-ÐŸÐ¾Ð´Ñ€Ð¾Ð±Ð½Ð°Ñ Ð¼Ð°Ñ‚ÐµÐ¼Ð°Ñ‚Ð¸ÐºÐ°, ÐµÐ´Ð¸Ð½Ð¸Ñ†Ñ‹, Ð´Ð¾Ð¿ÑƒÑ‰ÐµÐ½Ð¸Ñ Ð¸ ÑÑ…ÐµÐ¼Ñ‹ Ð´Ð°Ð½Ð½Ñ‹Ñ… Ð¾Ð¿Ð¸ÑÐ°Ð½Ñ‹ Ð² **`UNITS_CONTRACT.md`**.
-
----
-
-## ÐÑ€Ñ…Ð¸Ñ‚ÐµÐºÑ‚ÑƒÑ€Ð° Ñ€ÐµÐ¿Ð¾Ð·Ð¸Ñ‚Ð¾Ñ€Ð¸Ñ
-
-- `entry_points/power_stability_radius.py` â€” Ñ‚Ð¾Ð½ÐºÐ¸Ð¹ entrypoint.
-- `entry_points/power_stability_radius.py` â€” argparse CLI, ÐºÐ¾Ð¼Ð¿Ð¾Ð½Ð¾Ð²ÐºÐ° YAML, Ð·Ð°Ð¿ÑƒÑÐº workflow.
-- `src/stability_radius/workflows.py` â€” Ð¾ÑÐ½Ð¾Ð²Ð½Ð¾Ð¹ Ð´ÐµÑ‚ÐµÑ€Ð¼Ð¸Ð½Ð¸Ñ€Ð¾Ð²Ð°Ð½Ð½Ñ‹Ð¹ Ð¿Ð°Ð¹Ð¿Ð»Ð°Ð¹Ð½.
-- `src/stability_radius/parsers/matpower.py` â€” Ð´ÐµÑ‚ÐµÑ€Ð¼Ð¸Ð½Ð¸Ñ€Ð¾Ð²Ð°Ð½Ð½Ñ‹Ð¹ Ð¿Ð°Ñ€ÑÐµÑ€ MATPOWER/PGLib `.m` â†’ pandapower net.
-- `src/stability_radius/base_point/*` â€” Ð³ÐµÐ½ÐµÑ€Ð°Ñ‚Ð¾Ñ€Ñ‹ Ð±Ð°Ð·Ð¾Ð²Ñ‹Ñ… Ñ‚Ð¾Ñ‡ÐµÐº (DC case / DC OPF / AC PF).
-- `src/stability_radius/dc/dc_model.py` â€” DCOperator (Ñ€Ð°Ð·Ñ€ÐµÐ¶ÐµÐ½Ð½Ð°Ñ Ñ„Ð°ÐºÑ‚Ð¾Ñ€Ð¸Ð·Ð°Ñ†Ð¸Ñ, PTDFâ€‘Ð¿Ð¾Ð´Ð¾Ð±Ð½Ñ‹Ðµ Ð¾Ð¿ÐµÑ€Ð°Ñ†Ð¸Ð¸).
-- `src/stability_radius/ac/ac_model.py` â€” ACOperator (Ybus, Ð¯ÐºÐ¾Ð±Ð¸Ð°Ð½, LU; Ð¸ÑÐ¿Ð¾Ð»ÑŒÐ·ÑƒÐµÑ‚ÑÑ Ð² AC L2).
-- `src/stability_radius/radii/*` â€” Ñ€Ð°ÑÑ‡Ñ‘Ñ‚ Ñ€Ð°Ð´Ð¸ÑƒÑÐ¾Ð² (DC L2 / metric / sigma / N-1, AC L2).
-- `src/stability_radius/verification/*` â€” Monte Carlo Ð²ÐµÑ€Ð¸Ñ„Ð¸ÐºÐ°Ñ†Ð¸Ñ Ð¸ Ð¾Ñ‚Ñ‡Ñ‘Ñ‚.
-- `tests/` â€” ÐºÐ¾Ð½Ñ‚Ñ€Ð°ÐºÑ‚Ð½Ñ‹Ðµ Ñ‚ÐµÑÑ‚Ñ‹ (Ð´ÐµÑ‚ÐµÑ€Ð¼Ð¸Ð½Ð¸Ð·Ð¼, ÐµÐ´Ð¸Ð½Ð¸Ñ†Ñ‹, Ð¸Ð½Ð²Ð°Ñ€Ð¸Ð°Ð½Ñ‚Ñ‹, smoke).
-
----
-
-## ÐšÐ¾Ð½Ñ„Ð¸Ð³ÑƒÑ€Ð°Ñ†Ð¸Ñ (YAML Ñ `extends`)
-
-Ð’Ñ…Ð¾Ð´Ð½Ð°Ñ Ñ‚Ð¾Ñ‡ÐºÐ°: `conf/config.yaml`:
-
-```yaml
-extends:
-  - ./config_shared.yaml
-  - ./config_compute.yaml
-  - ./config_monte_carlo.yaml
-  - ./config_report.yaml
-```
-
-- `extends` Ñ€ÐµÐ°Ð»Ð¸Ð·Ð¾Ð²Ð°Ð½ Ð²Ð½ÑƒÑ‚Ñ€Ð¸ Ð¿Ñ€Ð¾ÐµÐºÑ‚Ð° (Ñ‡ÐµÑ€ÐµÐ· OmegaConf), Ñ:
-  - Ð¿Ñ€Ð¾Ð²ÐµÑ€ÐºÐ¾Ð¹ Ñ†Ð¸ÐºÐ»Ð¾Ð²,
-  - Ñ€Ð°Ð·Ñ€ÐµÑˆÐµÐ½Ð¸ÐµÐ¼ Ð¿ÑƒÑ‚ÐµÐ¹ Ð¾Ñ‚Ð½Ð¾ÑÐ¸Ñ‚ÐµÐ»ÑŒÐ½Ð¾ Ñ„Ð°Ð¹Ð»Ð°, ÐºÐ¾Ñ‚Ð¾Ñ€Ñ‹Ð¹ Ð´ÐµÐ»Ð°ÐµÑ‚ extends.
-
-CLIâ€‘Ñ„Ð»Ð°Ð³Ð¸ Ð¸Ð¼ÐµÑŽÑ‚ Ð¿Ñ€Ð¸Ð¾Ñ€Ð¸Ñ‚ÐµÑ‚ Ð½Ð°Ð´ YAML.
-
----
-
-## ÐÑ€Ñ‚ÐµÑ„Ð°ÐºÑ‚Ñ‹ Ð·Ð°Ð¿ÑƒÑÐºÐ° (run directory)
-
-ÐšÐ°Ð¶Ð´Ð°Ñ ÐºÐ¾Ð¼Ð°Ð½Ð´Ð° ÑÐ¾Ð·Ð´Ð°Ñ‘Ñ‚ Ð´Ð¸Ñ€ÐµÐºÑ‚Ð¾Ñ€Ð¸ÑŽ Ð² `run_artifacts/<module>/` (ÑÐ¼. `logging.run_dir_mode`):
-- `run_artifacts/<module>/<timestamp>/` (Ð¿Ð¾ ÑƒÐ¼Ð¾Ð»Ñ‡Ð°Ð½Ð¸ÑŽ) Ð¸Ð»Ð¸
-- `run_artifacts/<module>/<run_name>/` (overwrite)
-
-Ð¢Ð¸Ð¿Ð¸Ñ‡Ð½Ñ‹Ðµ Ñ„Ð°Ð¹Ð»Ñ‹:
-- `debug.log`
-- `argv.txt`
-- `config_source.yaml` (ÐºÐ¾Ð¿Ð¸Ñ Ð²Ñ…Ð¾Ð´Ð½Ð¾Ð³Ð¾ YAML)
-- `config.json`, `config.yaml` (ÑÑ„Ñ„ÐµÐºÑ‚Ð¸Ð²Ð½Ð°Ñ ÐºÐ¾Ð½Ñ„Ð¸Ð³ÑƒÑ€Ð°Ñ†Ð¸Ñ)
-- `results.json` + `results_table*.txt/csv` (Ð´Ð»Ñ `compute`)
-- `monte_carlo_stats.json` (Ð´Ð»Ñ `monte-carlo`)
-- `verification_report.md` (Ð´Ð»Ñ `report`)
-
----
-
-## ÐšÐ¾Ð¼Ð°Ð½Ð´Ð° `compute` (Ð¾ÑÐ½Ð¾Ð²Ð½Ð¾Ð¹ Ð¿Ð°Ð¹Ð¿Ð»Ð°Ð¹Ð½)
-
-Ð¡ÐµÐ¼Ð°Ð½Ñ‚Ð¸ÐºÐ°:
-1) Ð—Ð°Ð³Ñ€ÑƒÐ·Ð¸Ñ‚ÑŒ `.m` â†’ `pandapower net`.
-2) (ÐžÐ¿Ñ†Ð¸Ð¾Ð½Ð°Ð»ÑŒÐ½Ð¾) DC OPF Ð´Ð»Ñ Ð´Ð¸ÑÐ¿ÐµÑ‚Ñ‡Ð° (`base_dispatch=dc_opf`).
-3) DC Ñ‡Ð°ÑÑ‚ÑŒ (ÐµÑÐ»Ð¸ Ð²ÐºÐ»ÑŽÑ‡ÐµÐ½Ð°):
-   - ÑÐ¾Ð±Ñ€Ð°Ñ‚ÑŒ `DCOperator` Ð¸/Ð¸Ð»Ð¸ `H_full`,
-   - Ð¿Ð¾ÑÑ‡Ð¸Ñ‚Ð°Ñ‚ÑŒ DC Ñ€Ð°Ð´Ð¸ÑƒÑÑ‹ (L2 / sigma / probability / N-1).
-4) AC Ñ‡Ð°ÑÑ‚ÑŒ (ÐµÑÐ»Ð¸ Ð²ÐºÐ»ÑŽÑ‡ÐµÐ½Ð°):
-   - Ñ€ÐµÑˆÐ¸Ñ‚ÑŒ AC PF Ð±Ð°Ð·Ð¾Ð²ÑƒÑŽ Ñ‚Ð¾Ñ‡ÐºÑƒ,
-   - Ð¿Ð¾ÑÑ‡Ð¸Ñ‚Ð°Ñ‚ÑŒ AC L2 ÑÐµÑ€Ñ‚Ð¸Ñ„Ð¸ÐºÐ°Ñ‚ Ð½Ð° ÐºÐ¾Ð½Ñ†Ð°Ñ… Ð»Ð¸Ð½Ð¸Ð¹, Ð°Ð³Ñ€ÐµÐ³Ð¸Ñ€Ð¾Ð²Ð°Ñ‚ÑŒ Ð¿Ð¾ Ð»Ð¸Ð½Ð¸Ð¸.
-5) Ð¡Ð»Ð¸Ñ‚ÑŒ Ñ€ÐµÐ·ÑƒÐ»ÑŒÑ‚Ð°Ñ‚Ñ‹ Ð² Ð¾Ð´Ð¸Ð½ `results.json`:
-   - per-line ÐºÐ»ÑŽÑ‡Ð¸: `line_<idx>`
-   - Ð¼ÐµÑ‚Ð°Ð´Ð°Ð½Ð½Ñ‹Ðµ: `__meta__` (schema_version=2)
-
-ÐŸÑ€Ð¸Ð¼ÐµÑ€ (AC+DC, ÑÐºÐ°Ñ‡Ð¸Ð²Ð°Ð½Ð¸Ðµ Ñ€Ð°Ð·Ñ€ÐµÑˆÐµÐ½Ð¾ ÑÐ²Ð½Ð¾):
+Run a compute pass:
 
 ```bash
 poetry run python entry_points/power_stability_radius.py \
   --config conf/config.yaml \
-  --run-tests 0 \
-  --allow-download 1 \
   compute \
   --input data/input/pglib_opf_case30_ieee.m \
   --slack-bus 0 \
   --base-dispatch case
 ```
 
----
-
-## ÐšÐ¾Ð¼Ð°Ð½Ð´Ð° `monte-carlo` (Ð²ÐµÑ€Ð¸Ñ„Ð¸ÐºÐ°Ñ†Ð¸Ñ)
-
-`monte-carlo` Ð±ÐµÑ€Ñ‘Ñ‚:
-- Ð¸ÑÑ…Ð¾Ð´Ð½Ñ‹Ð¹ `.m` ÐºÐµÐ¹Ñ,
-- `results.json` Ð¾Ñ‚ `compute`,
-Ð¸ Ð¿Ñ€Ð¾Ð²ÐµÑ€ÑÐµÑ‚:
-- DC: Ð»Ð¸Ð½ÐµÐ¹Ð½Ð¾, Ð±Ñ‹ÑÑ‚Ñ€Ð¾, Ð¼Ð½Ð¾Ð³Ð¾ ÑÑÐ¼Ð¿Ð»Ð¾Ð².
-- AC: Ð½ÐµÐ»Ð¸Ð½ÐµÐ¹Ð½Ð¾, PF Ð½Ð° ÐºÐ°Ð¶Ð´Ñ‹Ð¹ ÑÑÐ¼Ð¿Ð» (Ð´Ð¾Ñ€Ð¾Ð³Ð¾), `pandapower` only.
-
-ÐŸÑ€Ð¸Ð¼ÐµÑ€ (DC):
+Run local checks:
 
 ```bash
-poetry run python entry_points/power_stability_radius.py \
-  --config conf/config.yaml \
-  --run-tests 0 \
-  monte-carlo \
-  --mode dc \
-  --results verification/results/case30.json \
-  --input data/input/pglib_opf_case30_ieee.m \
-  --n-samples 50000 \
-  --seed 42
+poetry run python -m pytest -q
+poetry run ruff format --check .
 ```
 
----
-
-## ÐšÐ¾Ð¼Ð°Ð½Ð´Ð° `report` (multi-case Markdown)
-
-- Ð§Ð¸Ñ‚Ð°ÐµÑ‚ ÑÐ¿Ð¸ÑÐ¾Ðº ÐºÐµÐ¹ÑÐ¾Ð² Ð¸Ð· YAML: `report.cases`.
-- ÐÐ¸Ñ‡ÐµÐ³Ð¾ Ð½Ðµ ÑÐºÐ°Ñ‡Ð¸Ð²Ð°ÐµÑ‚ Ð¸ Ð½Ðµ Ð³ÐµÐ½ÐµÑ€Ð¸Ñ€ÑƒÐµÑ‚ â€œÐ½Ð° Ð»ÐµÑ‚Ñƒâ€.
-- Ð’ strict Ñ€ÐµÐ¶Ð¸Ð¼Ðµ Ñ‚Ñ€ÐµÐ±ÑƒÐµÑ‚ DC/AC ÑÐµÐºÑ†Ð¸Ð¸ Ð¿Ñ€Ð¸ Ð½Ð°Ð»Ð¸Ñ‡Ð¸Ð¸ ÐºÐµÐ¹ÑÐ°.
-
-ÐŸÑ€Ð¸Ð¼ÐµÑ€:
-
-```bash
-poetry run python entry_points/power_stability_radius.py \
-  --config conf/config.yaml \
-  --run-tests 0 \
-  report \
-  --results-dir verification/results \
-  --out verification/report.md
-```
-
----
-
-## Ð ÐµÐ·ÑƒÐ»ÑŒÑ‚Ð°Ñ‚Ñ‹: Ñ„Ð¾Ñ€Ð¼Ð°Ñ‚ `results.json` (ÐºÑ€Ð°Ñ‚ÐºÐ¾)
-
-- `__meta__`: Ð²ÐµÑ€ÑÐ¸Ñ ÑÑ…ÐµÐ¼Ñ‹, Ð²Ñ…Ð¾Ð´Ð½Ð¾Ð¹ Ñ„Ð°Ð¹Ð», Ñ€ÐµÐ¶Ð¸Ð¼, Ð½Ð°ÑÑ‚Ñ€Ð¾Ð¹ÐºÐ¸ DC/AC, Ð±Ð°Ð·Ð¾Ð²Ñ‹Ðµ Ñ‚Ð¾Ñ‡ÐºÐ¸.
-- Ð”Ð»Ñ ÐºÐ°Ð¶Ð´Ð¾Ð¹ Ð»Ð¸Ð½Ð¸Ð¸: `line_<pandapower_line_index>`:
-  - DC Ð¿Ð¾Ð»Ñ: `flow0_mw`, `p_limit_mw_est`, `margin_mw`, `norm_g`, `radius_l2`, ...
-  - AC Ð¿Ð¾Ð»Ñ: `ac_s_limit_mva`, `ac_s0_from_mva`, `ac_s0_to_mva`, `||h||2`, `radius_ac_l2`, ...
-
-ÐŸÐ¾Ð»Ð½Ñ‹Ð¹ ÐºÐ¾Ð½Ñ‚Ñ€Ð°ÐºÑ‚ ÑÑ…ÐµÐ¼Ñ‹ Ð¸ ÐµÐ´Ð¸Ð½Ð¸Ñ†: **`UNITS_CONTRACT.md`**.
-
----
-
-## Ð›Ð¾Ð³Ð¸ Ð¸ Ñ‚Ñ€Ð°ÑÑÐ¸Ñ€ÑƒÐµÐ¼Ð¾ÑÑ‚ÑŒ
-
-ÐŸÑ€Ð¾ÐµÐºÑ‚ Ð¸ÑÐ¿Ð¾Ð»ÑŒÐ·ÑƒÐµÑ‚ `logging`:
-- ÐºÐ¾Ð½ÑÐ¾Ð»ÑŒÐ½Ñ‹Ð¹ ÑƒÑ€Ð¾Ð²ÐµÐ½ÑŒ Ð¿Ð¾ ÑƒÐ¼Ð¾Ð»Ñ‡Ð°Ð½Ð¸ÑŽ: `INFO`
-- Ñ„Ð°Ð¹Ð»: `DEBUG`
-- ÑÐ¸ÑÑ‚ÐµÐ¼Ð½Ñ‹Ðµ ÑÑ‚Ð°Ð¿Ñ‹ Ð¾Ð±Ð¾Ñ€Ð°Ñ‡Ð¸Ð²Ð°ÑŽÑ‚ÑÑ `log_stage(...)`, Ñ‡Ñ‚Ð¾Ð±Ñ‹ Ð² Ð»Ð¾Ð³Ðµ Ð±Ñ‹Ð»Ð¸ Ð³Ñ€Ð°Ð½Ð¸Ñ†Ñ‹ ÑÑ‚Ð°Ð¿Ð¾Ð² Ð¸ Ð²Ñ€ÐµÐ¼Ñ.
-
----
-
-## ÐœÐ¸Ð½Ð¸Ð¼Ð°Ð»ÑŒÐ½Ñ‹Ð¹ Ð¿Ð»Ð°Ð½ Ñ€ÐµÑ„Ð°ÐºÑ‚Ð¾Ñ€Ð¸Ð½Ð³Ð° (Ð±ÐµÐ· Ð¸Ð·Ð¼ÐµÐ½ÐµÐ½Ð¸Ñ Ð¼Ð°Ñ‚ÐµÐ¼Ð°Ñ‚Ð¸ÐºÐ¸)
-
-Ð­Ñ‚Ð¾Ñ‚ Ñ€ÐµÐ¿Ð¾Ð·Ð¸Ñ‚Ð¾Ñ€Ð¸Ð¹ ÑƒÐ¶Ðµ ÑÐ»ÐµÐ´ÑƒÐµÑ‚ Ð¿Ñ€Ð¸Ð½Ñ†Ð¸Ð¿Ñƒ â€œÐ¼Ð¸Ð½Ð¸Ð¼Ð°Ð»ÑŒÐ½Ñ‹Ðµ Ð·Ð°Ð²Ð¸ÑÐ¸Ð¼Ð¾ÑÑ‚Ð¸ Ð¸ ÑÐ²Ð½Ñ‹Ðµ ÐºÐ¾Ð½Ñ‚Ñ€Ð°ÐºÑ‚Ñ‹â€, Ð½Ð¾ Ð´Ð°Ð»ÑŒÐ½ÐµÐ¹ÑˆÐ¸Ðµ ÑƒÐ»ÑƒÑ‡ÑˆÐµÐ½Ð¸Ñ Ð²Ð¾Ð·Ð¼Ð¾Ð¶Ð½Ñ‹.
-
-### ÐœÐ¸Ð½Ð¸Ð¼Ð°Ð»ÑŒÐ½Ð¾ Ð½ÐµÐ¾Ð±Ñ…Ð¾Ð´Ð¸Ð¼Ñ‹Ðµ (MVP) ÑƒÐ»ÑƒÑ‡ÑˆÐµÐ½Ð¸Ñ
-1) **Ð”Ð¾ÐºÑƒÐ¼ÐµÐ½Ñ‚Ð¸Ñ€Ð¾Ð²Ð°Ñ‚ÑŒ** ÐµÐ´Ð¸Ð½Ð¸Ñ†Ñ‹/ÑÐ¾Ð³Ð»Ð°ÑˆÐµÐ½Ð¸Ñ Ð¸ ÑÑ…ÐµÐ¼Ñƒ Ñ€ÐµÐ·ÑƒÐ»ÑŒÑ‚Ð°Ñ‚Ð¾Ð² ÐºÐ°Ðº â€œsource of truthâ€ (ÑÐ´ÐµÐ»Ð°Ð½Ð¾ Ð² `UNITS_CONTRACT.md`).
-2) Ð£Ð¿Ð¾Ñ€ÑÐ´Ð¾Ñ‡Ð¸Ñ‚ÑŒ Ð¸ Ð·Ð°Ñ„Ð¸ÐºÑÐ¸Ñ€Ð¾Ð²Ð°Ñ‚ÑŒ **schema_version** Ð¸ Ð¼Ð¸Ð³Ñ€Ð°Ñ†Ð¸Ð¸:
-   - Ð¾Ñ„Ð¸Ñ†Ð¸Ð°Ð»ÑŒÐ½Ð¾ Ð¾Ð¿Ð¸ÑÐ°Ñ‚ÑŒ v2 (Ñ‚ÐµÐºÑƒÑ‰Ð°Ñ),
-   - Ð½Ð°Ð¼ÐµÑ‚Ð¸Ñ‚ÑŒ v3 (Ð¿Ñ€ÐµÐ´Ð»Ð¾Ð¶ÐµÐ½Ð¸Ðµ Ð±ÐµÐ· Ð¿Ð¾Ð»Ð¾Ð¼ÐºÐ¸ ÑÐ¾Ð²Ð¼ÐµÑÑ‚Ð¸Ð¼Ð¾ÑÑ‚Ð¸).
-
-### ÐžÐ¿Ñ†Ð¸Ð¾Ð½Ð°Ð»ÑŒÐ½Ð¾ (Ð¿Ð¾ÑÐ»Ðµ ÑÑ‚Ð°Ð±Ð¸Ð»Ð¸Ð·Ð°Ñ†Ð¸Ð¸)
-- Ð”Ð¾Ð±Ð°Ð²Ð¸Ñ‚ÑŒ Ð¿Ð¾Ð´Ð´ÐµÑ€Ð¶ÐºÑƒ `ac.lossless=false` (Ð¿Ð¾Ñ‚Ñ€ÐµÐ±ÑƒÐµÑ‚ ÑÐ¾Ð³Ð»Ð°ÑÐ¾Ð²Ð°Ð½Ð¸Ñ PF, Ð¯ÐºÐ¾Ð±Ð¸Ð°Ð½Ð° Ð¸ MC).
-- Ð¡Ð´ÐµÐ»Ð°Ñ‚ÑŒ AC Monteâ€‘Carlo Ð¿Ð¾Ð´Ð´ÐµÑ€Ð¶Ð¸Ð²Ð°ÑŽÑ‰Ð¸Ð¼ PyPSA per-sample PF (ÐµÑÐ»Ð¸ Ð¿Ð¾ÑÐ²Ð¸Ñ‚ÑÑ Ð´ÐµÑ‚ÐµÑ€Ð¼Ð¸Ð½Ð¸Ð·Ð¼/ÑƒÑÑ‚Ð¾Ð¹Ñ‡Ð¸Ð²Ð¾ÑÑ‚ÑŒ).
-- Ð’Ñ‹Ð½ÐµÑÑ‚Ð¸ Ð³ÐµÐ½ÐµÑ€Ð°Ñ†Ð¸ÑŽ Ñ‚Ð°Ð±Ð»Ð¸Ñ†/CSV Ð² Ð¾Ñ‚Ð´ÐµÐ»ÑŒÐ½Ñ‹Ð¹ â€œexport layerâ€ (Ñ Ð¼Ð¸Ð½Ð¸Ð¼Ð°Ð»ÑŒÐ½Ñ‹Ð¼ ÐºÐ¾Ð»Ð¸Ñ‡ÐµÑÑ‚Ð²Ð¾Ð¼ â€œÐ¼Ð°Ð³Ð¸Ñ‡ÐµÑÐºÐ¸Ñ…â€ ÐºÐ¾Ð»Ð¾Ð½Ð¾Ðº).
-
+Artifacts are written under `run_artifacts/` by default. The exact subdirectory pattern depends on the entry point: the main CLI creates per-run folders such as `run_artifacts/compute/<timestamp>/`, while standalone scripts usually write into `run_artifacts/<module>/` unless an explicit output directory is requested.

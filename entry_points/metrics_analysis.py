@@ -97,9 +97,11 @@ def _resolve_metrics_analysis_slack_bus(net: Any, slack_bus: int | None) -> int:
 def _aggregate_bus_loads_sorted(net: Any) -> tuple[pd.Series, pd.Series]:
     """Aggregate bus loads in the project's stable sorted bus ordering."""
     bus_index = pd.Index([int(x) for x in sorted(net.bus.index)], dtype=int)
-    bus_load_p = net.load.groupby("bus")["p_mw"].sum().reindex(bus_index, fill_value=0.0)
-    bus_load_q = net.load.groupby("bus")["q_mvar"].sum().reindex(
-        bus_index, fill_value=0.0
+    bus_load_p = (
+        net.load.groupby("bus")["p_mw"].sum().reindex(bus_index, fill_value=0.0)
+    )
+    bus_load_q = (
+        net.load.groupby("bus")["q_mvar"].sum().reindex(bus_index, fill_value=0.0)
     )
     return bus_load_p, bus_load_q
 
@@ -1703,7 +1705,10 @@ def main(argv: list[str] | None = None) -> int:
         sigma_p_array = np.maximum(min_p, bus_load_p.values * scale_p)
         logger.info(
             "Load-proportional sigma_p: scale=%.2f, min=%.1f -> range [%.2f, %.2f] MW",
-            scale_p, min_p, float(sigma_p_array.min()), float(sigma_p_array.max()),
+            scale_p,
+            min_p,
+            float(sigma_p_array.min()),
+            float(sigma_p_array.max()),
         )
     else:
         sigma_p_array = None
@@ -1714,7 +1719,10 @@ def main(argv: list[str] | None = None) -> int:
         sigma_q_array = np.maximum(min_q, bus_load_q.values * scale_q)
         logger.info(
             "Load-proportional sigma_q: scale=%.2f, min=%.1f -> range [%.2f, %.2f] MVAr",
-            scale_q, min_q, float(sigma_q_array.min()), float(sigma_q_array.max()),
+            scale_q,
+            min_q,
+            float(sigma_q_array.min()),
+            float(sigma_q_array.max()),
         )
     elif sigma_p_array is not None:
         # Q uniform when only P scale is given
@@ -2121,4 +2129,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

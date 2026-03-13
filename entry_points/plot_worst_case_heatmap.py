@@ -93,15 +93,25 @@ def plot(input_dir: Path, output_dir: Path) -> None:
     ax.set_yticklabels([str(lid) for lid in line_ids], fontsize=7)
     ax.set_xlabel("Perturbation scale")
     ax.set_ylabel("Line ID")
-    ax.set_title("Worst-Case Verification: Relative Error\n|predicted - actual| / actual")
+    ax.set_title(
+        "Worst-Case Verification: Relative Error\n|predicted - actual| / actual"
+    )
     fig.colorbar(im, ax=ax, label="Relative error")
 
     # Overlay violation markers.
     for i in range(n_lines):
         for j in range(n_scales):
             if violated[i, j]:
-                ax.text(j, i, "X", ha="center", va="center",
-                        color="white", fontsize=8, fontweight="bold")
+                ax.text(
+                    j,
+                    i,
+                    "X",
+                    ha="center",
+                    va="center",
+                    color="white",
+                    fontsize=8,
+                    fontweight="bold",
+                )
 
     fig.tight_layout()
     out_path = output_dir / "worst_case_heatmap.pdf"

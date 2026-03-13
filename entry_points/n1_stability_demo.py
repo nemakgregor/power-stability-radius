@@ -83,7 +83,11 @@ def _lid_str(lid_int: int) -> str:
 
 
 def _line_loading_limit_pct(net, line_id: int) -> float:
-    if not hasattr(net, "line") or net.line is None or int(line_id) not in net.line.index:
+    if (
+        not hasattr(net, "line")
+        or net.line is None
+        or int(line_id) not in net.line.index
+    ):
         return float("nan")
 
     row = net.line.loc[int(line_id)]
@@ -102,7 +106,11 @@ def _line_opf_nominal_limit_mva(net, line_id: int) -> float:
     This mirrors pandapower's branch RATE_A construction for lines:
     sqrt(3) * vn_kv(from_bus) * max_i_ka * df * parallel.
     """
-    if not hasattr(net, "line") or net.line is None or int(line_id) not in net.line.index:
+    if (
+        not hasattr(net, "line")
+        or net.line is None
+        or int(line_id) not in net.line.index
+    ):
         return float("nan")
 
     row = net.line.loc[int(line_id)]
@@ -194,7 +202,9 @@ def _align_line_limit_proxy_with_opf_model(net) -> dict:
 
         proxy_limit_mva, _ = estimate_line_limit_mva_with_flag(net, row)
         proxy_nominal_limit = (
-            float(proxy_limit_mva) / mult if mult > 0.0 and math.isfinite(proxy_limit_mva) else float("nan")
+            float(proxy_limit_mva) / mult
+            if mult > 0.0 and math.isfinite(proxy_limit_mva)
+            else float("nan")
         )
         abs_diff = abs(proxy_nominal_limit - opf_nominal_limit)
         abs_diffs.append(abs_diff)
@@ -211,8 +221,12 @@ def _align_line_limit_proxy_with_opf_model(net) -> dict:
     summary = {
         "n_lines_checked": checked,
         "n_lines_aligned": aligned,
-        "max_pre_align_abs_diff_mva": float(max(abs_diffs)) if abs_diffs else float("nan"),
-        "median_pre_align_abs_diff_mva": float(np.median(abs_diffs)) if abs_diffs else float("nan"),
+        "max_pre_align_abs_diff_mva": float(max(abs_diffs))
+        if abs_diffs
+        else float("nan"),
+        "median_pre_align_abs_diff_mva": float(np.median(abs_diffs))
+        if abs_diffs
+        else float("nan"),
         "worst_line_id": worst_line_id,
     }
     if checked:
@@ -464,7 +478,9 @@ def _validate_opf_with_pf(nn, label: str) -> tuple[bool, float]:
                 pf_ok = True
                 break
         except Exception as exc:
-            logger.debug("[%s] Post-OPF PF attempt (init=%s) failed: %s", label, init, exc)
+            logger.debug(
+                "[%s] Post-OPF PF attempt (init=%s) failed: %s", label, init, exc
+            )
 
     if not pf_ok:
         logger.warning("[%s] Post-OPF PF validation failed to converge.", label)
@@ -518,9 +534,9 @@ def _run_cost_opf(nn, label: str = "opf") -> float:
                     numba=False,
                 )
             logger.info(
-                "[%s] OPF converged (init=%s): cost=%.2f $/h, "
-                "max_loading=%.1f%%",
-                label, init,
+                "[%s] OPF converged (init=%s): cost=%.2f $/h, max_loading=%.1f%%",
+                label,
+                init,
                 float(nn.res_cost),
                 float(nn.res_line.loading_percent.max()),
             )
@@ -528,7 +544,9 @@ def _run_cost_opf(nn, label: str = "opf") -> float:
         except Exception as exc:
             logger.warning("[%s] OPF attempt (init=%s) failed: %s", label, init, exc)
 
-    raise RuntimeError(f"[{label}] AC cost OPF did not converge with any init strategy.")
+    raise RuntimeError(
+        f"[{label}] AC cost OPF did not converge with any init strategy."
+    )
 
 
 def _solve_cost_opf(
@@ -572,7 +590,9 @@ def _solve_cost_opf(
 
         n_added = _add_matpower_costs(nn, input_path)
         if n_added == 0:
-            logger.warning("[%s] No cost data found; falling back to unit costs.", label)
+            logger.warning(
+                "[%s] No cost data found; falling back to unit costs.", label
+            )
             for element_type, idx, _ in _iter_dispatchable_elements(nn):
                 if element_type == "ext_grid":
                     pp.create_poly_cost(nn, idx, element_type, cp1_eur_per_mw=1.0)
@@ -886,13 +906,16 @@ def _solve_radius_opf(
         logger.info(
             "[radius_opf] Tightened %d lines (skipped %d already safe) | "
             "min_pct=%.1f%% mean_pct=%.1f%%",
-            tightened, skipped_safe,
-            float(np.min(tight_pcts)), float(np.mean(tight_pcts)),
+            tightened,
+            skipped_safe,
+            float(np.min(tight_pcts)),
+            float(np.mean(tight_pcts)),
         )
 
         if tightened == 0:
             logger.info(
-                "[radius_opf] All lines satisfy r >= r_target=%.2f. Converged.", r_target
+                "[radius_opf] All lines satisfy r >= r_target=%.2f. Converged.",
+                r_target,
             )
             break
 
@@ -916,7 +939,9 @@ def _solve_radius_opf(
             break
 
         radius_results, radius_h_vectors = _compute_radii(
-            net_lossless, base_pf_radius, slack_bus,
+            net_lossless,
+            base_pf_radius,
+            slack_bus,
             label=f"radius_opf_iter{iteration + 1}",
         )
         current_results = radius_results
@@ -951,7 +976,7 @@ def _compute_sigma_and_baselines(
 
     # --- Build sigma-radius inputs from h_vectors and results ---
     h_from = h_vectors.get("h_from")  # (m, n_vars)
-    h_to = h_vectors.get("h_to")      # (m, n_vars)
+    h_to = h_vectors.get("h_to")  # (m, n_vars)
     pq_mask = h_vectors.get("pq_mask")  # (n_bus,) bool
 
     if h_from is None or h_to is None:
@@ -1029,8 +1054,8 @@ def _compute_sigma_and_baselines(
     hQ_bal = hQ - np.mean(hQ, axis=1, keepdims=True)
 
     sigma_flow = np.sqrt(
-        (sigma_p_mw ** 2) * np.sum(hP_bal ** 2, axis=1)
-        + (sigma_q_mvar ** 2) * np.sum(hQ_bal ** 2, axis=1)
+        (sigma_p_mw**2) * np.sum(hP_bal**2, axis=1)
+        + (sigma_q_mvar**2) * np.sum(hQ_bal**2, axis=1)
     )
 
     margin = s_limit_arr - s0_arr
@@ -1049,6 +1074,7 @@ def _compute_sigma_and_baselines(
             from stability_radius.radii.ac_sigma_radius import (
                 _overload_probability_symmetric_limit,
             )
+
             overload_probs[i] = _overload_probability_symmetric_limit(
                 s0_mva=float(s0_arr[i]),
                 c_mva=float(s_limit_arr[i]),
@@ -1060,10 +1086,10 @@ def _compute_sigma_and_baselines(
     hr_vals = s_limit_arr - s0_arr
     cantelli_vals = np.where(
         margin > 0,
-        sigma_flow ** 2 / (sigma_flow ** 2 + margin ** 2),
+        sigma_flow**2 / (sigma_flow**2 + margin**2),
         1.0,
     )
-    pi_vals = 0.5 * (lr_vals ** 2)  # performance index (n=1)
+    pi_vals = 0.5 * (lr_vals**2)  # performance index (n=1)
 
     # Summary
     finite_mask = np.isfinite(r_sigma)
@@ -1074,8 +1100,12 @@ def _compute_sigma_and_baselines(
         "n_lines": n_actual,
         # AC sigma-radius
         "sigma_radius_min": float(np.min(finite_r)) if finite_r.size else float("nan"),
-        "sigma_radius_median": float(np.median(finite_r)) if finite_r.size else float("nan"),
-        "sigma_radius_p10": float(np.percentile(finite_r, 10)) if finite_r.size else float("nan"),
+        "sigma_radius_median": float(np.median(finite_r))
+        if finite_r.size
+        else float("nan"),
+        "sigma_radius_p10": float(np.percentile(finite_r, 10))
+        if finite_r.size
+        else float("nan"),
         # Overload probability
         "max_overload_prob": float(np.max(overload_probs)),
         "mean_overload_prob": float(np.mean(overload_probs)),
@@ -1258,7 +1288,9 @@ def _ac_n1_screen(
                 worst_line = int(nn.res_line.loading_percent.idxmax())
                 overloaded_line_ids = [
                     int(x)
-                    for x in nn.res_line.loading_percent[nn.res_line.loading_percent > 100].index
+                    for x in nn.res_line.loading_percent[
+                        nn.res_line.loading_percent > 100
+                    ].index
                 ]
                 for line_id, loading_pct in nn.res_line.loading_percent.items():
                     peak_loading_pct_by_line[int(line_id)] = max(
@@ -1325,7 +1357,9 @@ def _update_scopf_line_limits(
         if not math.isfinite(peak) or peak <= 100.0:
             continue
         current = float(updated.get(int(lid), security_target_pct))
-        tightened = max(float(min_limit_pct), current * float(security_target_pct) / peak)
+        tightened = max(
+            float(min_limit_pct), current * float(security_target_pct) / peak
+        )
         if tightened < current - 1e-6:
             updated[int(lid)] = float(tightened)
             changed.append(int(lid))
@@ -1347,7 +1381,9 @@ def _opf_constraint_summary(nn, label: str) -> dict:
     min_line_loading_headroom_pct = float("nan")
     if hasattr(nn, "res_line") and nn.res_line is not None and len(nn.res_line):
         actual = np.asarray(nn.res_line.loading_percent.values, dtype=float)
-        target = np.asarray(nn.line.loc[nn.res_line.index, "max_loading_percent"].values, dtype=float)
+        target = np.asarray(
+            nn.line.loc[nn.res_line.index, "max_loading_percent"].values, dtype=float
+        )
         max_line_loading_pct = float(np.max(actual))
         min_line_loading_headroom_pct = float(np.min(target - actual))
 
@@ -1403,7 +1439,9 @@ def _opf_line_limit_consistency_df(nn) -> "DataFrame":
         proxy_limit_mva, is_unconstrained = estimate_line_limit_mva_with_flag(nn, row)
         mult = max_loading_percent / 100.0
         proxy_nominal_limit_mva = (
-            float(proxy_limit_mva) / mult if mult > 0.0 and math.isfinite(proxy_limit_mva) else float("nan")
+            float(proxy_limit_mva) / mult
+            if mult > 0.0 and math.isfinite(proxy_limit_mva)
+            else float("nan")
         )
         abs_diff_mva = float(proxy_limit_mva) - float(opf_limit_mva)
         rel_diff_pct = (
@@ -1462,7 +1500,9 @@ def _opf_line_limit_consistency_summary(nn, label: str) -> dict:
         "n_limit_mismatch": int(df["limit_mismatch"].sum()),
         "max_abs_limit_diff_mva": float(abs_diff.max()),
         "median_abs_limit_diff_mva": float(abs_diff.median()),
-        "max_rel_limit_diff_pct": float(rel_diff.max()) if len(rel_diff) else float("nan"),
+        "max_rel_limit_diff_pct": float(rel_diff.max())
+        if len(rel_diff)
+        else float("nan"),
         "worst_line_id": worst_line,
     }
     if summary["n_limit_mismatch"] > 0:
@@ -1545,7 +1585,14 @@ def _solve_scopf(
         slack_bus,
         label="scopf",
     )
-    return nn_scopf, base_pf_scopf, scopf_results, scopf_h_vectors, total_cost, final_records
+    return (
+        nn_scopf,
+        base_pf_scopf,
+        scopf_results,
+        scopf_h_vectors,
+        total_cost,
+        final_records,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1751,11 +1798,11 @@ def _print_comparison(
         "  " + "-" * 60,
     ]
     for key, lbl in [
-        ("n_lines",                 "Lines with N-1 radius computed"),
+        ("n_lines", "Lines with N-1 radius computed"),
         ("n_already_n1_infeasible", "Lines already N-1 infeasible"),
-        ("ac_n1_radius_min",        "Min AC N-1 radius (MW, positive)"),
-        ("ac_n1_radius_median",     "Median AC N-1 radius (MW)"),
-        ("ac_n1_radius_p10",        "P10 AC N-1 radius (MW)"),
+        ("ac_n1_radius_min", "Min AC N-1 radius (MW, positive)"),
+        ("ac_n1_radius_median", "Median AC N-1 radius (MW)"),
+        ("ac_n1_radius_p10", "P10 AC N-1 radius (MW)"),
     ]:
         cv = _fmt(cost_ac_n1.get(key, "N/A"))
         rv = _fmt(radius_ac_n1.get(key, "N/A"))
@@ -1768,20 +1815,26 @@ def _print_comparison(
         "  " + "-" * 60,
     ]
     for key, lbl in [
-        ("sigma_radius_min",     "Min sigma-radius"),
-        ("sigma_radius_median",  "Median sigma-radius"),
-        ("sigma_radius_p10",     "P10 sigma-radius"),
-        ("max_overload_prob",    "Max overload probability"),
-        ("mean_overload_prob",   "Mean overload probability"),
-        ("n_prob_above_1pct",    "Lines with P(overload) > 1%"),
-        ("n_prob_above_5pct",    "Lines with P(overload) > 5%"),
-        ("max_cantelli_ub",      "Max Cantelli upper bound"),
-        ("pi_system",            "System Performance Index"),
-        ("pi_max",               "Max line Performance Index"),
-        ("min_headroom_mva",     "Min headroom (MVA)"),
+        ("sigma_radius_min", "Min sigma-radius"),
+        ("sigma_radius_median", "Median sigma-radius"),
+        ("sigma_radius_p10", "P10 sigma-radius"),
+        ("max_overload_prob", "Max overload probability"),
+        ("mean_overload_prob", "Mean overload probability"),
+        ("n_prob_above_1pct", "Lines with P(overload) > 1%"),
+        ("n_prob_above_5pct", "Lines with P(overload) > 5%"),
+        ("max_cantelli_ub", "Max Cantelli upper bound"),
+        ("pi_system", "System Performance Index"),
+        ("pi_max", "Max line Performance Index"),
+        ("min_headroom_mva", "Min headroom (MVA)"),
     ]:
-        cv = _fmt(cost_sigma.get(key, "N/A"), ".6f" if "prob" in key or "cantelli" in key else ".4f")
-        rv = _fmt(radius_sigma.get(key, "N/A"), ".6f" if "prob" in key or "cantelli" in key else ".4f")
+        cv = _fmt(
+            cost_sigma.get(key, "N/A"),
+            ".6f" if "prob" in key or "cantelli" in key else ".4f",
+        )
+        rv = _fmt(
+            radius_sigma.get(key, "N/A"),
+            ".6f" if "prob" in key or "cantelli" in key else ".4f",
+        )
         lines.append(f"  {lbl:<35} {cv:>12} {rv:>12}")
 
     lines += [
@@ -2037,14 +2090,20 @@ def _apply_dispatch_from_solved(net_base, nn_solved) -> None:
         net_base.gen.loc[common, "p_mw"] = nn_solved.res_gen.loc[common, "p_mw"].values
     if hasattr(nn_solved, "res_sgen") and nn_solved.res_sgen is not None:
         common = net_base.sgen.index.intersection(nn_solved.res_sgen.index)
-        net_base.sgen.loc[common, "p_mw"] = nn_solved.res_sgen.loc[common, "p_mw"].values
+        net_base.sgen.loc[common, "p_mw"] = nn_solved.res_sgen.loc[
+            common, "p_mw"
+        ].values
     if hasattr(nn_solved, "res_bus") and nn_solved.res_bus is not None:
         gen_bus_idx = net_base.gen.bus.unique()
         for bidx in gen_bus_idx:
             if bidx in nn_solved.res_bus.index:
                 vm = float(nn_solved.res_bus.at[bidx, "vm_pu"])
                 net_base.gen.loc[net_base.gen.bus == bidx, "vm_pu"] = vm
-        if hasattr(net_base, "ext_grid") and net_base.ext_grid is not None and len(net_base.ext_grid):
+        if (
+            hasattr(net_base, "ext_grid")
+            and net_base.ext_grid is not None
+            and len(net_base.ext_grid)
+        ):
             for egidx in net_base.ext_grid.index:
                 bus = int(net_base.ext_grid.at[egidx, "bus"])
                 if bus in nn_solved.res_bus.index:
@@ -2208,7 +2267,9 @@ def _ac_n1_radius_summary(n1_radii: dict, label: str) -> dict:
         "ac_n1_radius_min": float(min(positive)) if positive else float("nan"),
         "ac_n1_radius_median": float(np.median(positive)) if positive else float("nan"),
         "ac_n1_radius_mean": float(np.mean(positive)) if positive else float("nan"),
-        "ac_n1_radius_p10": float(np.percentile(positive, 10)) if positive else float("nan"),
+        "ac_n1_radius_p10": float(np.percentile(positive, 10))
+        if positive
+        else float("nan"),
     }
 
 
@@ -2455,7 +2516,8 @@ def _build_comparison_text(
         ]
 
     if any(
-        float(sigma_summaries.get(regime_key, {}).get("min_headroom_mva", float("nan"))) < 0.0
+        float(sigma_summaries.get(regime_key, {}).get("min_headroom_mva", float("nan")))
+        < 0.0
         or float(
             constraint_summaries.get(regime_key, {}).get(
                 "min_line_loading_headroom_pct", float("nan")
@@ -2529,7 +2591,9 @@ def _plot_multi_regime_radius_cdf(
 
     fig, ax = plt.subplots(figsize=(8, 5))
     plotted = False
-    for color_idx, (regime_key, (display_name, results)) in enumerate(regime_results.items()):
+    for color_idx, (regime_key, (display_name, results)) in enumerate(
+        regime_results.items()
+    ):
         radii = sorted(
             float(v["radius_ac_l2"])
             for v in results.values()
@@ -2623,7 +2687,13 @@ def _plot_multi_regime_n1_overloads(
     for regime_key, (display_name, records) in regime_records.items():
         if not records:
             continue
-        frames.append((regime_key, display_name, pd.DataFrame(records).set_index("contingency_line")))
+        frames.append(
+            (
+                regime_key,
+                display_name,
+                pd.DataFrame(records).set_index("contingency_line"),
+            )
+        )
     if not frames:
         logger.warning("No AC N-1 screening data available for %s", output_path.name)
         return
@@ -2649,7 +2719,9 @@ def _plot_multi_regime_n1_overloads(
 
     overload_arr = np.vstack(overload_matrix)
     loading_arr = np.vstack(loading_matrix)
-    worst_score = np.nanmax(np.nan_to_num(overload_arr, nan=0.0), axis=0) * 1000.0 + np.nanmax(
+    worst_score = np.nanmax(
+        np.nan_to_num(overload_arr, nan=0.0), axis=0
+    ) * 1000.0 + np.nanmax(
         np.nan_to_num(loading_arr, nan=0.0),
         axis=0,
     )
@@ -2662,7 +2734,9 @@ def _plot_multi_regime_n1_overloads(
     ax_counts, ax_loading, ax_topk, ax_status = axes.flatten()
 
     for color_idx, (_, display_name, frame) in enumerate(frames):
-        overload_values = frame.loc[common, "n_overloads"].clip(lower=0).to_numpy(dtype=float)
+        overload_values = (
+            frame.loc[common, "n_overloads"].clip(lower=0).to_numpy(dtype=float)
+        )
         sorted_overloads = np.sort(overload_values)[::-1]
         ax_counts.step(
             np.arange(1, len(sorted_overloads) + 1),
@@ -2694,7 +2768,9 @@ def _plot_multi_regime_n1_overloads(
     ax_counts.grid(True, alpha=0.25)
     ax_counts.legend(fontsize=9)
 
-    ax_loading.axhline(100.0, color="tab:red", linestyle="--", linewidth=1.2, label="100% loading")
+    ax_loading.axhline(
+        100.0, color="tab:red", linestyle="--", linewidth=1.2, label="100% loading"
+    )
     ax_loading.set_title("Sorted Peak Loading per Contingency")
     ax_loading.set_xlabel("Contingency rank")
     ax_loading.set_ylabel("Peak loading (%)")
@@ -2712,7 +2788,9 @@ def _plot_multi_regime_n1_overloads(
     if max_overload_count <= 0.0:
         for idx, (_, display_name, frame) in enumerate(frames):
             values = np.nan_to_num(
-                frame.loc[top_contingencies, "max_loading_percent"].to_numpy(dtype=float),
+                frame.loc[top_contingencies, "max_loading_percent"].to_numpy(
+                    dtype=float
+                ),
                 nan=0.0,
             )
             offset = (idx - (len(frames) - 1) / 2.0) * width
@@ -2729,7 +2807,11 @@ def _plot_multi_regime_n1_overloads(
         ax_topk.set_ylabel("Peak loading (%)")
     else:
         for idx, (_, display_name, frame) in enumerate(frames):
-            values = frame.loc[top_contingencies, "n_overloads"].clip(lower=0).to_numpy(dtype=float)
+            values = (
+                frame.loc[top_contingencies, "n_overloads"]
+                .clip(lower=0)
+                .to_numpy(dtype=float)
+            )
             offset = (idx - (len(frames) - 1) / 2.0) * width
             ax_topk.bar(
                 x + offset,
@@ -2743,7 +2825,9 @@ def _plot_multi_regime_n1_overloads(
         ax_topk.set_ylabel("Overloaded lines")
     ax_topk.set_xlabel("Outaged line")
     ax_topk.set_xticks(x)
-    ax_topk.set_xticklabels([str(v) for v in top_contingencies], rotation=45, ha="right", fontsize=8)
+    ax_topk.set_xticklabels(
+        [str(v) for v in top_contingencies], rotation=45, ha="right", fontsize=8
+    )
     ax_topk.grid(True, axis="y", alpha=0.25)
     ax_topk.legend(fontsize=9)
 
@@ -2755,7 +2839,9 @@ def _plot_multi_regime_n1_overloads(
     for _, display_name, frame in frames:
         total = len(common)
         passed = int(frame.loc[common, "n1_feasible"].fillna(False).astype(bool).sum())
-        diverged = int((~frame.loc[common, "pf_converged"].fillna(False).astype(bool)).sum())
+        diverged = int(
+            (~frame.loc[common, "pf_converged"].fillna(False).astype(bool)).sum()
+        )
         failed = max(total - passed - diverged, 0)
         labels.append(display_name)
         pass_share.append(100.0 * passed / total if total else 0.0)
@@ -2763,7 +2849,14 @@ def _plot_multi_regime_n1_overloads(
         diverged_share.append(100.0 * diverged / total if total else 0.0)
 
     ax_status.barh(y, pass_share, color="#2E8B57", alpha=0.9, label="Pass")
-    ax_status.barh(y, fail_share, left=pass_share, color="#D95F02", alpha=0.9, label="Overload fail")
+    ax_status.barh(
+        y,
+        fail_share,
+        left=pass_share,
+        color="#D95F02",
+        alpha=0.9,
+        label="Overload fail",
+    )
     ax_status.barh(
         y,
         diverged_share,
@@ -2806,15 +2899,33 @@ def _plot_cost_security_tradeoff(
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
     for color_idx, (regime_key, display_name) in enumerate(regime_order):
-        cost_increase = float(dispatch_summaries.get(regime_key, {}).get("cost_increase_pct", float("nan")))
-        pass_rate = float(screen_summaries.get(regime_key, {}).get("n1_pass_rate_pct", float("nan")))
+        cost_increase = float(
+            dispatch_summaries.get(regime_key, {}).get(
+                "cost_increase_pct", float("nan")
+            )
+        )
+        pass_rate = float(
+            screen_summaries.get(regime_key, {}).get("n1_pass_rate_pct", float("nan"))
+        )
         min_n1_radius = float(
-            ac_n1_radius_summaries.get(regime_key, {}).get("ac_n1_radius_min", float("nan"))
+            ac_n1_radius_summaries.get(regime_key, {}).get(
+                "ac_n1_radius_min", float("nan")
+            )
         )
         axes[0].scatter(cost_increase, pass_rate, s=90, color=f"C{color_idx}")
-        axes[0].annotate(display_name, (cost_increase, pass_rate), textcoords="offset points", xytext=(5, 5))
+        axes[0].annotate(
+            display_name,
+            (cost_increase, pass_rate),
+            textcoords="offset points",
+            xytext=(5, 5),
+        )
         axes[1].scatter(cost_increase, min_n1_radius, s=90, color=f"C{color_idx}")
-        axes[1].annotate(display_name, (cost_increase, min_n1_radius), textcoords="offset points", xytext=(5, 5))
+        axes[1].annotate(
+            display_name,
+            (cost_increase, min_n1_radius),
+            textcoords="offset points",
+            xytext=(5, 5),
+        )
 
     axes[0].set_title("Cost Increase vs AC N-1 Pass Rate")
     axes[0].set_xlabel("Cost increase vs Cost OPF (%)")
@@ -2863,11 +2974,15 @@ def _parse_args() -> argparse.Namespace:
         help="Number of screening-based SCOPF tightening iterations",
     )
     parser.add_argument(
-        "--sigma-p", type=float, default=5.0,
+        "--sigma-p",
+        type=float,
+        default=5.0,
         help="Per-bus P injection std dev (MW) for sigma-radius/probability",
     )
     parser.add_argument(
-        "--sigma-q", type=float, default=2.0,
+        "--sigma-q",
+        type=float,
+        default=2.0,
         help="Per-bus Q injection std dev (MVAr) for sigma-radius/probability",
     )
     parser.add_argument(
@@ -3165,21 +3280,30 @@ def main() -> None:
 
     _plot_multi_regime_radius_cdf(
         {
-            regime_key: (regimes[regime_key]["display_name"], regimes[regime_key]["results"])
+            regime_key: (
+                regimes[regime_key]["display_name"],
+                regimes[regime_key]["results"],
+            )
             for regime_key, _ in regime_order
         },
         out_dir / "plot_radius_cdf.png",
     )
     _plot_multi_regime_ac_n1_radius_cdf(
         {
-            regime_key: (regimes[regime_key]["display_name"], regimes[regime_key]["ac_n1_radii"])
+            regime_key: (
+                regimes[regime_key]["display_name"],
+                regimes[regime_key]["ac_n1_radii"],
+            )
             for regime_key, _ in regime_order
         },
         out_dir / "plot_ac_n1_radius_cdf.png",
     )
     _plot_multi_regime_n1_overloads(
         {
-            regime_key: (regimes[regime_key]["display_name"], regimes[regime_key]["n1_records"])
+            regime_key: (
+                regimes[regime_key]["display_name"],
+                regimes[regime_key]["n1_records"],
+            )
             for regime_key, _ in regime_order
         },
         out_dir / "plot_n1_overloads.png",
@@ -3197,4 +3321,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

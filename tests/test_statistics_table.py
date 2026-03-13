@@ -1,4 +1,4 @@
-﻿"""Tests for entry_points.table table formatting."""
+"""Tests for entry_points.table table formatting."""
 
 from __future__ import annotations
 
@@ -218,4 +218,3 @@ class TestFormatRadiusSummary:
         results = {"line_0": {"radius_l2": float("inf")}}
         summary = format_radius_summary(results, radius_field="radius_l2")
         assert "finite_radii=0" in summary
-

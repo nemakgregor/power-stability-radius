@@ -270,7 +270,9 @@ def _verify_case(
                     alpha_1_result["actual_s_mva"] if alpha_1_result else float("nan")
                 ),
                 "predicted_s_at_alpha1": (
-                    alpha_1_result["predicted_s_mva"] if alpha_1_result else float("nan")
+                    alpha_1_result["predicted_s_mva"]
+                    if alpha_1_result
+                    else float("nan")
                 ),
                 "scale_results": scale_results,
                 "status": "ok",

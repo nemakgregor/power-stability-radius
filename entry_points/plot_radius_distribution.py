@@ -35,6 +35,8 @@ def _load_json(path: Path) -> dict:
 
 
 def plot(input_dir: Path, output_dir: Path) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     case_names: list[str] = []
     dc_data: list[list[float]] = []
     ac_data: list[list[float]] = []
@@ -75,8 +77,13 @@ def plot(input_dir: Path, output_dir: Path) -> None:
 
     # DC boxplot.
     ax = axes[0]
-    ax.boxplot(dc_data, labels=case_names, vert=True, patch_artist=True,
-               boxprops={"facecolor": "#4C72B0", "alpha": 0.7})
+    ax.boxplot(
+        dc_data,
+        tick_labels=case_names,
+        orientation="vertical",
+        patch_artist=True,
+        boxprops={"facecolor": "#4C72B0", "alpha": 0.7},
+    )
     ax.set_title("DC L2 Radius Distribution")
     ax.set_ylabel("Radius (MW)")
     ax.set_xlabel("Case")
@@ -85,8 +92,13 @@ def plot(input_dir: Path, output_dir: Path) -> None:
 
     # AC boxplot.
     ax = axes[1]
-    ax.boxplot(ac_data, labels=case_names, vert=True, patch_artist=True,
-               boxprops={"facecolor": "#DD8452", "alpha": 0.7})
+    ax.boxplot(
+        ac_data,
+        tick_labels=case_names,
+        orientation="vertical",
+        patch_artist=True,
+        boxprops={"facecolor": "#DD8452", "alpha": 0.7},
+    )
     ax.set_title("AC L2 Radius Distribution")
     ax.set_ylabel("Radius (MVA)")
     ax.set_xlabel("Case")
@@ -104,15 +116,25 @@ def plot(input_dir: Path, output_dir: Path) -> None:
     # Also save PNG for quick preview.
     out_png = output_dir / "radius_distribution.png"
     fig2, axes2 = plt.subplots(1, 2, figsize=(7 + 2 * n, 6), sharey=False)
-    axes2[0].boxplot(dc_data, labels=case_names, vert=True, patch_artist=True,
-                     boxprops={"facecolor": "#4C72B0", "alpha": 0.7})
+    axes2[0].boxplot(
+        dc_data,
+        tick_labels=case_names,
+        orientation="vertical",
+        patch_artist=True,
+        boxprops={"facecolor": "#4C72B0", "alpha": 0.7},
+    )
     axes2[0].set_title("DC L2 Radius Distribution")
     axes2[0].set_ylabel("Radius (MW)")
     axes2[0].set_xlabel("Case")
     axes2[0].tick_params(axis="x", rotation=45)
     axes2[0].set_yscale("log")
-    axes2[1].boxplot(ac_data, labels=case_names, vert=True, patch_artist=True,
-                     boxprops={"facecolor": "#DD8452", "alpha": 0.7})
+    axes2[1].boxplot(
+        ac_data,
+        tick_labels=case_names,
+        orientation="vertical",
+        patch_artist=True,
+        boxprops={"facecolor": "#DD8452", "alpha": 0.7},
+    )
     axes2[1].set_title("AC L2 Radius Distribution")
     axes2[1].set_ylabel("Radius (MVA)")
     axes2[1].set_xlabel("Case")

@@ -1,4 +1,4 @@
-﻿"""Tests for entry_points.metrics_analysis â€” DataFrame, correlations, precision-at-k."""
+"""Tests for entry_points.metrics_analysis â€” DataFrame, correlations, precision-at-k."""
 
 from __future__ import annotations
 
@@ -266,4 +266,3 @@ def test_metrics_analysis_load_aggregation_uses_sorted_bus_order() -> None:
     assert list(bus_load_q.index) == [1, 3, 5]
     assert bus_load_p.to_list() == pytest.approx([10.0, 35.0, 50.0])
     assert bus_load_q.to_list() == pytest.approx([1.0, 3.5, 5.0])
-

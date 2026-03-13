@@ -78,11 +78,15 @@ def plot(
     sorted_radii = [sigma_radii[i] for i in order]
 
     fig, ax = plt.subplots(figsize=(10, 5))
-    ax.bar(range(len(sorted_radii)), sorted_radii, color="#55A868", alpha=0.8, width=1.0)
+    ax.bar(
+        range(len(sorted_radii)), sorted_radii, color="#55A868", alpha=0.8, width=1.0
+    )
     ax.set_xlabel("Line (sorted by sigma-radius)")
     ax.set_ylabel("Sigma-radius (dimensionless)")
     ax.set_title("AC Sigma-Radius per Line (sorted)")
-    ax.axhline(y=3.0, color="red", linestyle="--", linewidth=1, label="3-sigma threshold")
+    ax.axhline(
+        y=3.0, color="red", linestyle="--", linewidth=1, label="3-sigma threshold"
+    )
     ax.legend()
     fig.tight_layout()
 
@@ -111,8 +115,12 @@ def plot(
             ax2.bar(x - w / 2, dc_t, w, label="DC", color="#4C72B0", alpha=0.8)
             ax2.bar(x + w / 2, ac_t, w, label="AC", color="#DD8452", alpha=0.8)
             ax2.set_xticks(x)
-            ax2.set_xticklabels([f"{nm}\n({nb})" for nm, nb in zip(names, n_bus)],
-                                rotation=45, ha="right", fontsize=8)
+            ax2.set_xticklabels(
+                [f"{nm}\n({nb})" for nm, nb in zip(names, n_bus)],
+                rotation=45,
+                ha="right",
+                fontsize=8,
+            )
             ax2.set_ylabel("Wall-clock time (sec)")
             ax2.set_xlabel("Case (n_bus)")
             ax2.set_title("Compute Time: DC vs AC")

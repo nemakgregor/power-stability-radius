@@ -129,7 +129,9 @@ def create_module_output_dir(
     )
     module_dir = runs_root / _sanitize_path_component(module_name)
 
-    requested_raw = "" if requested_output_dir is None else str(requested_output_dir).strip()
+    requested_raw = (
+        "" if requested_output_dir is None else str(requested_output_dir).strip()
+    )
     if not requested_raw:
         module_dir.mkdir(parents=True, exist_ok=True)
         return module_dir.resolve()
@@ -234,7 +236,9 @@ def setup_logging(cfg: LoggingConfig) -> str:
         raise ValueError("runs_dir must be a non-empty path.")
 
     runs_root = _resolve_base_dir(runs_dir_raw)
-    module_dir = runs_root / _sanitize_path_component(getattr(cfg, "module_name", "general"))
+    module_dir = runs_root / _sanitize_path_component(
+        getattr(cfg, "module_name", "general")
+    )
 
     mode = str(getattr(cfg, "run_dir_mode", "timestamp")).strip().lower()
     if mode not in {"timestamp", "overwrite"}:
