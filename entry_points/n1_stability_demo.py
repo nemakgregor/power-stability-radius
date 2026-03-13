@@ -1754,7 +1754,6 @@ def _print_comparison(
     radius_gen_mw,
     output_path,
 ):
-
     def _fmt(val, fmt=".4f"):
         if isinstance(val, float):
             return format(val, fmt)
