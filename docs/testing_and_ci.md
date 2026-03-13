@@ -50,10 +50,13 @@ The repository workflow lives at `.github/workflows/ci.yml`.
 Current CI behavior:
 
 1. Run on `push`, `pull_request`, and `workflow_dispatch`.
-2. Install Python and Poetry.
-3. Install project dependencies with `poetry install --no-interaction`.
-4. Run `poetry run ruff format --check .`.
-5. Run `poetry run python -m pytest -q --cov=entry_points --cov=src/stability_radius --cov-report=term-missing --cov-fail-under=45`.
+2. Install Python.
+3. Install Poetry explicitly with `pip install poetry`.
+4. Install project dependencies with `poetry install --no-interaction`.
+5. Run `poetry run ruff format --check .`.
+6. Run `poetry run python -m pytest -q --cov=entry_points --cov=src/stability_radius --cov-report=term-missing --cov-fail-under=45`.
+
+We intentionally do not use `actions/setup-python`'s built-in Poetry cache here, because that mode expects the `poetry` executable to already exist during the Python setup step and can fail before Poetry is installed.
 
 Coverage is reported in the CI log, and CI currently enforces a conservative `45%` floor to prevent regression while the remaining experiment-heavy modules are still being covered more deeply.
 
