@@ -54,11 +54,17 @@ Current CI behavior:
 3. Install Poetry explicitly with `pip install poetry`.
 4. Install project dependencies with `poetry install --no-interaction`.
 5. Run `poetry run ruff format --check .`.
-6. Run `poetry run python -m pytest -q --cov=entry_points --cov=src/stability_radius --cov-report=term-missing --cov-fail-under=45`.
+6. Run `poetry run python -m pytest -q --cov=src/stability_radius --cov-report=term-missing --cov-fail-under=45`.
 
 We intentionally do not use `actions/setup-python`'s built-in Poetry cache here, because that mode expects the `poetry` executable to already exist during the Python setup step and can fail before Poetry is installed.
 
-Coverage is reported in the CI log, and CI currently enforces a conservative `45%` floor to prevent regression while the remaining experiment-heavy modules are still being covered more deeply.
+Coverage is reported in the CI log, and CI currently enforces a conservative `45%` floor on `src/stability_radius`.
+
+That scope is intentional:
+
+- the coverage gate protects the maintained library and application layers;
+- `entry_points/` is still tested, but mostly through smoke and wiring tests rather than a blanket line-coverage floor;
+- experiment-heavy scripts remain documented and checked, but they do not dominate the repository-wide coverage percentage.
 
 ## Notes on "CD"
 

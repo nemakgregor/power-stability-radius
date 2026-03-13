@@ -36,4 +36,4 @@ jobs:
 
       - name: Run tests
         run: |
-          poetry run python -m pytest -q --cov=entry_points --cov=src/stability_radius --cov-report=term-missing --cov-fail-under=45
+          poetry run python -m pytest -q --cov=src/stability_radius --cov-report=term-missing --cov-fail-under=45
