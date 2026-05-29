@@ -19,6 +19,8 @@ DEFAULT_DC_COLUMNS: tuple[str, ...] = (
     "margin_mw",
     "norm_g",
     "radius_l2",
+    "constraint_status_l2",
+    "certificate_radius_l2",
 )
 
 DEFAULT_AC_COLUMNS: tuple[str, ...] = (
@@ -29,6 +31,8 @@ DEFAULT_AC_COLUMNS: tuple[str, ...] = (
     "||h||2",
     "binding_end",
     "radius_ac_l2",
+    "constraint_status_ac_l2",
+    "certificate_radius_ac_l2",
 )
 
 logger = logging.getLogger(__name__)

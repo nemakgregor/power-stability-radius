@@ -94,3 +94,25 @@ def test_track_per_line_overloads_parameter_exists() -> None:
     assert "track_per_line_overloads" in sig.parameters
     param = sig.parameters["track_per_line_overloads"]
     assert param.default is False
+
+
+def test_sample_gaussian_ac_uses_sigma_weighted_balance_projection() -> None:
+    from stability_radius.verification.monte_carlo import _sample_gaussian_ac
+
+    rng = np.random.default_rng(123)
+    sigma_p = np.array([1.0, 3.0, 10.0])
+    sigma_q = np.array([2.0, 5.0, 7.0])
+
+    dp, dq = _sample_gaussian_ac(
+        rng=rng,
+        n=500,
+        n_bus=3,
+        sigma_p_mw=sigma_p,
+        sigma_q_mvar=sigma_q,
+    )
+
+    assert np.max(np.abs(np.sum(dp, axis=1))) < 1e-10
+    assert np.max(np.abs(np.sum(dq, axis=1))) < 1e-10
+    # Heterogeneous conditional projection should not collapse to ordinary
+    # unweighted sample mean subtraction before scaling.
+    assert not np.allclose(np.var(dp, axis=0), np.var(dp, axis=0)[0])

@@ -7,6 +7,7 @@ import numpy as np
 
 from .common import (
     LineBaseQuantities,
+    classify_constraint_certificate,
     estimate_line_limit_mva_with_flag,
     get_line_base_quantities,
     line_key,
@@ -105,7 +106,17 @@ def compute_l2_radius(
         norm_g = float(norms[pos])
 
         # If a line is insensitive on the balanced subspace (norm_g==0), it cannot restrict Δp.
-        r_l2 = float(margin / norm_g) if norm_g > 1e-12 else float("inf")
+        r_l2 = (
+            float(margin / norm_g)
+            if norm_g > 1e-12
+            else (float("inf") if margin >= 0.0 else float("-inf"))
+        )
+        status, cert_radius, signed_distance = classify_constraint_certificate(
+            margin=margin,
+            dual_norm=norm_g,
+            eps=1e-12,
+            is_unconstrained=bool(is_unconstrained[pos]),
+        )
 
         k = line_key(lid)
         results[k] = {
@@ -116,6 +127,9 @@ def compute_l2_radius(
             "margin_mw": margin,
             "norm_g": norm_g,
             "radius_l2": r_l2,
+            "certificate_radius_l2": float(cert_radius),
+            "signed_distance_l2": float(signed_distance),
+            "constraint_status_l2": str(status),
         }
         if np.isfinite(r_l2):
             finite_radii.append(r_l2)

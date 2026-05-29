@@ -262,6 +262,46 @@ class TestACSigmaMonteCarlo:
             prob = result.empirical_overload_probability[key]
             assert 0.0 <= prob <= 1.0, f"Invalid probability for {key}: {prob}"
 
+    def test_pf_failures_do_not_count_as_all_line_overloads(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """PF failures are system bad samples, not per-line thermal overloads."""
+        from stability_radius.verification.ac_monte_carlo_sigma import (
+            run_ac_monte_carlo_sigma,
+        )
+
+        net, _ = _make_case14_tight_limits()
+        n_bus = len(sorted(net.bus.index))
+        sigma_p = np.full(n_bus, 1.0, dtype=float)
+        sigma_q = np.full(n_bus, 1.0, dtype=float)
+
+        calls = {"n": 0}
+
+        def fake_runpp(net_obj, *args, **kwargs):  # noqa: ANN001, ARG001
+            calls["n"] += 1
+            net_obj.converged = calls["n"] == 1
+
+        monkeypatch.setattr(pp, "runpp", fake_runpp)
+
+        result = run_ac_monte_carlo_sigma(
+            net=net,
+            sigma_p_mw=sigma_p,
+            sigma_q_mvar=sigma_q,
+            r_sigma=1.0,
+            n_samples=4,
+            seed=7,
+            lossless=True,
+        )
+
+        assert result.n_pf_failures == 4
+        assert result.n_violations == 4
+        assert result.pf_failure_probability == 1.0
+        assert result.bad_sample_probability == 1.0
+        assert all(v == 0.0 for v in result.empirical_overload_probability.values())
+        assert result.empirical_overload_probability == (
+            result.empirical_overload_probability_conditional_on_pf_converged
+        )
+
     def test_input_validation(self) -> None:
         """Sigma arrays and r_sigma must satisfy positivity constraints."""
         from stability_radius.verification.ac_monte_carlo_sigma import (

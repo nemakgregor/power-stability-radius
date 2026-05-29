@@ -22,6 +22,7 @@ In particular, OPFConfig.unconstrained_line_nom_mw is used as a finite surrogate
 """
 
 import logging
+import math
 import os
 import time
 from dataclasses import dataclass, replace as _dataclass_replace
@@ -48,6 +49,7 @@ from stability_radius.radii.ac_feasibility import (
 from stability_radius.radii.common import (
     LineBaseQuantities,
     assert_line_limit_sources_present,
+    classify_constraint_certificate,
     estimate_line_limit_mva_with_flag,
 )
 from stability_radius.radii.l2 import compute_l2_radius
@@ -115,6 +117,11 @@ class ACExtensionsConfig:
     sigma_n_timesteps: int | None = None  # number of timesteps from UC.jl instance
     metric_enabled: bool = False
     save_h_vectors: bool = False
+    nonlinear_validation_enabled: bool = False
+    nonlinear_validation_top_k: int = 20
+    nonlinear_validation_scale_max: float = 5.0
+    nonlinear_validation_tol: float = 0.01
+    nonlinear_validation_max_iter: int = 20
 
 
 def _resolve_path(p: str | os.PathLike[str], *, base_dir: Path | None) -> Path:
@@ -272,6 +279,12 @@ def _compute_probabilistic_from_l2_results(
 
         sigma_flow = s * norm_g
         r_sigma = sigma_radius(margin, sigma_flow)
+        status, cert_radius, signed_distance = classify_constraint_certificate(
+            margin=margin,
+            dual_norm=sigma_flow,
+            eps=1e-12,
+            is_unconstrained=bool(row.get("is_unconstrained", False)),
+        )
         prob = overload_probability_symmetric_limit(
             flow0=flow0, limit=limit, sigma=sigma_flow
         )
@@ -279,6 +292,9 @@ def _compute_probabilistic_from_l2_results(
         out[k] = {
             "sigma_flow": float(sigma_flow),
             "radius_sigma": float(r_sigma),
+            "certificate_radius_sigma": float(cert_radius),
+            "signed_distance_sigma": float(signed_distance),
+            "constraint_status_sigma": str(status),
             "overload_probability": float(prob),
         }
     return out
@@ -323,7 +339,17 @@ def _compute_radii_operator_path(
     for pos, lid in enumerate(base.line_indices):
         margin = float(base.margin_mw[pos])
         norm_g = float(norms[pos])
-        r_l2 = float(margin / norm_g) if norm_g > 1e-12 else float("inf")
+        r_l2 = (
+            float(margin / norm_g)
+            if norm_g > 1e-12
+            else (float("inf") if margin >= 0.0 else float("-inf"))
+        )
+        status, cert_radius, signed_distance = classify_constraint_certificate(
+            margin=margin,
+            dual_norm=norm_g,
+            eps=1e-12,
+            is_unconstrained=bool(is_unconstrained[pos]),
+        )
 
         k = f"line_{int(lid)}"
         out[k] = {
@@ -334,6 +360,9 @@ def _compute_radii_operator_path(
             "margin_mw": margin,
             "norm_g": norm_g,
             "radius_l2": float(r_l2),
+            "certificate_radius_l2": float(cert_radius),
+            "signed_distance_l2": float(signed_distance),
+            "constraint_status_l2": str(status),
         }
     return out
 
@@ -582,6 +611,264 @@ def _extract_binding_end_data(
     return h_bind, s0_mva, s_limit_mva, line_ids
 
 
+def _max_finite_or_nan(values: list[float]) -> float:
+    finite = [float(x) for x in values if math.isfinite(float(x))]
+    return float(max(finite)) if finite else float("nan")
+
+
+def _percentile_or_nan(values: list[float], q: float) -> float:
+    finite = [float(x) for x in values if math.isfinite(float(x))]
+    if not finite:
+        return float("nan")
+    return float(np.percentile(np.asarray(finite, dtype=float), float(q)))
+
+
+def _run_ac_nonlinear_validation_topk(
+    *,
+    net: Any,
+    case_tag: str,
+    results_lines: dict[str, dict[str, Any]],
+    h_bind: np.ndarray,
+    s0_mva: np.ndarray,
+    s_limit_mva: np.ndarray,
+    line_ids: list[int],
+    n_bus: int,
+    pq_mask: np.ndarray | None,
+    balance: bool,
+    lossless: bool,
+    gen_dispatch_mw_by_name: dict[str, float] | None,
+    top_k: int,
+    scale_max: float,
+    tol: float,
+    max_iter: int,
+) -> dict[str, Any]:
+    """
+    Replay nonlinear AC PF for the top-k smallest finite AC L2 radii.
+
+    The replay perturbation is built with the same balanced geometry as the AC
+    L2 denominator.  The full trajectory is returned as a separate report,
+    while compact per-line fields are merged into ``results_lines``.
+    """
+    from stability_radius.geometry.balanced import (
+        make_ac_block_specs,
+        worst_case_l2_direction,
+    )
+    from stability_radius.verification.verify_worst_case import find_violation_scale
+
+    top_k_eff = int(top_k)
+    if top_k_eff < 1:
+        raise ValueError("nonlinear_validation_top_k must be >= 1.")
+    if float(scale_max) <= 0.0 or not math.isfinite(float(scale_max)):
+        raise ValueError("nonlinear_validation_scale_max must be finite and > 0.")
+    if float(tol) <= 0.0 or not math.isfinite(float(tol)):
+        raise ValueError("nonlinear_validation_tol must be finite and > 0.")
+    if int(max_iter) < 1:
+        raise ValueError("nonlinear_validation_max_iter must be >= 1.")
+
+    h_arr = np.asarray(h_bind, dtype=float)
+    s0_arr = np.asarray(s0_mva, dtype=float).reshape(-1)
+    limit_arr = np.asarray(s_limit_mva, dtype=float).reshape(-1)
+    if h_arr.ndim != 2 or h_arr.shape[0] != len(line_ids):
+        raise ValueError("h_bind must have one row per AC line.")
+    if s0_arr.shape != (len(line_ids),) or limit_arr.shape != (len(line_ids),):
+        raise ValueError("s0_mva and s_limit_mva must align with line_ids.")
+
+    candidates: list[tuple[float, int, int, str, dict[str, Any]]] = []
+    for pos, lid in enumerate(line_ids):
+        key = f"line_{int(lid)}"
+        row = results_lines.get(key)
+        if not isinstance(row, dict):
+            continue
+        status = str(row.get("constraint_status_ac_l2", ""))
+        if status and status != "ok_finite":
+            continue
+        radius = float(
+            row.get(
+                "certificate_radius_ac_l2",
+                row.get("radius_ac_l2_linear", row.get("radius_ac_l2", float("nan"))),
+            )
+        )
+        if not math.isfinite(radius) or radius <= 0.0:
+            continue
+        if not math.isfinite(float(s0_arr[pos])) or not math.isfinite(
+            float(limit_arr[pos])
+        ):
+            continue
+        candidates.append((radius, int(lid), int(pos), key, row))
+
+    candidates.sort(key=lambda item: (item[0], item[1]))
+    selected = candidates[:top_k_eff]
+
+    q_bus_indices: np.ndarray | None = None
+    if pq_mask is not None:
+        pq = np.asarray(pq_mask, dtype=bool).reshape(-1)
+        if pq.shape != (int(n_bus),):
+            raise ValueError("pq_mask must have shape (n_bus,).")
+        q_bus_indices = np.where(pq)[0]
+
+    blocks = make_ac_block_specs(
+        int(n_bus), balance=bool(balance), q_bus_indices=q_bus_indices
+    )
+
+    report_lines: list[dict[str, Any]] = []
+    for rank, (radius, lid, pos, key, row) in enumerate(selected, start=1):
+        h_vec = np.asarray(h_arr[pos], dtype=float).reshape(-1)
+        direction = worst_case_l2_direction(h_vec, blocks)
+        direction_norm = float(np.linalg.norm(direction, ord=2))
+        if direction_norm <= 0.0 or not math.isfinite(direction_norm):
+            continue
+
+        s0 = float(s0_arr[pos])
+        limit = float(limit_arr[pos])
+        margin = float(limit - s0)
+        binding_end = str(row.get("binding_end", ""))
+        delta_u_boundary = direction * float(radius)
+
+        search = find_violation_scale(
+            net=net,
+            line_id=int(lid),
+            h_vec=h_vec,
+            radius=float(radius),
+            s0_mva=float(s0),
+            limit_mva=float(limit),
+            delta_u_unit=delta_u_boundary,
+            binding_end=binding_end if binding_end in {"from", "to"} else None,
+            lossless=bool(lossless),
+            scale_max=float(scale_max),
+            tol=float(tol),
+            max_iter=int(max_iter),
+            gen_dispatch_mw_by_name=gen_dispatch_mw_by_name,
+        )
+
+        trajectory: list[dict[str, Any]] = []
+        rel_errors: list[float] = []
+        safe_scales: list[float] = []
+        pf_failed_calls = 0
+        for item in search.scale_trajectory:
+            scale = float(item.get("scale", float("nan")))
+            actual = float(item.get("actual_s_mva", float("nan")))
+            pf_converged = bool(item.get("pf_converged", False))
+            violated = bool(item.get("violated", False))
+            predicted = (
+                float(s0 + scale * margin) if math.isfinite(scale) else float("nan")
+            )
+            rel_error = (
+                abs(predicted - actual) / actual
+                if pf_converged and math.isfinite(actual) and abs(actual) > 1e-12
+                else float("nan")
+            )
+            if math.isfinite(rel_error):
+                rel_errors.append(float(rel_error))
+            if pf_converged and not violated and math.isfinite(scale):
+                safe_scales.append(float(scale))
+            if not pf_converged:
+                pf_failed_calls += 1
+            trajectory.append(
+                {
+                    "scale": float(scale),
+                    "predicted_s_mva": float(predicted),
+                    "actual_s_mva": float(actual),
+                    "relative_error": float(rel_error),
+                    "violated": bool(violated),
+                    "pf_converged": bool(pf_converged),
+                }
+            )
+
+        gamma = float(search.conservatism_ratio)
+        validation_scale_violation = float(search.actual_violation_scale)
+        validation_scale_safe = _max_finite_or_nan(safe_scales)
+        max_rel_error = _max_finite_or_nan(rel_errors)
+
+        if math.isinf(gamma):
+            validated_radius = float(radius)
+        elif math.isfinite(gamma):
+            validated_radius = float(radius) * min(max(float(gamma), 0.0), 1.0)
+        else:
+            validated_radius = float("nan")
+
+        pf_replay_status = "pf_failed" if pf_failed_calls else "converged"
+        if pf_failed_calls and (not math.isfinite(gamma) or gamma < 1.0):
+            linearization_status = "nonlinear_unvalidated"
+        elif math.isfinite(gamma) and gamma < 1.0 - float(tol):
+            linearization_status = "nonlinear_optimistic"
+        else:
+            linearization_status = "validated_local"
+
+        compact = {
+            "radius_ac_l2_validated": float(validated_radius),
+            "validation_scale_safe": float(validation_scale_safe),
+            "validation_scale_violation": float(validation_scale_violation),
+            "nonlinear_conservatism_ratio": float(gamma),
+            "pf_replay_status": str(pf_replay_status),
+            "max_replay_rel_error": float(max_rel_error),
+            "nonlinear_validation_n_pf_calls": int(search.n_pf_calls),
+            "linearization_status": str(linearization_status),
+        }
+        results_lines[key].update(compact)
+
+        report_lines.append(
+            {
+                "rank": int(rank),
+                "line_id": int(lid),
+                "line_key": str(key),
+                "binding_end": str(binding_end),
+                "radius_ac_l2_linear": float(radius),
+                "radius_ac_l2_validated": float(validated_radius),
+                "s0_mva": float(s0),
+                "limit_mva": float(limit),
+                "margin_mva": float(margin),
+                "validation_scale_safe": float(validation_scale_safe),
+                "validation_scale_violation": float(validation_scale_violation),
+                "nonlinear_conservatism_ratio": float(gamma),
+                "pf_replay_status": str(pf_replay_status),
+                "linearization_status": str(linearization_status),
+                "max_replay_rel_error": float(max_rel_error),
+                "n_pf_calls": int(search.n_pf_calls),
+                "n_pf_failed": int(pf_failed_calls),
+                "search_converged": bool(search.converged),
+                "actual_s_at_violation_mva": float(search.actual_s_at_violation),
+                "trajectory": trajectory,
+            }
+        )
+
+    gammas = [float(x["nonlinear_conservatism_ratio"]) for x in report_lines]
+    n_pf_calls = int(sum(int(x["n_pf_calls"]) for x in report_lines))
+    n_pf_failed = int(sum(int(x["n_pf_failed"]) for x in report_lines))
+    finite_gammas = [float(x) for x in gammas if math.isfinite(float(x))]
+    summary = {
+        "n_pf_calls": int(n_pf_calls),
+        "n_converged": int(n_pf_calls - n_pf_failed),
+        "n_pf_failed": int(n_pf_failed),
+        "n_lines_pf_failed": int(
+            sum(1 for x in report_lines if str(x["pf_replay_status"]) == "pf_failed")
+        ),
+        "n_lines_gamma_lt_1": int(sum(1 for x in finite_gammas if x < 1.0)),
+        "n_lines_no_violation_up_to_scale_max": int(
+            sum(1 for x in gammas if math.isinf(float(x)))
+        ),
+        "median_gamma": _percentile_or_nan(finite_gammas, 50.0),
+        "p05_gamma": _percentile_or_nan(finite_gammas, 5.0),
+    }
+
+    return {
+        "schema_version": 1,
+        "case": str(case_tag),
+        "top_k_requested": int(top_k_eff),
+        "top_k_replayed": int(len(report_lines)),
+        "scale_max": float(scale_max),
+        "tol": float(tol),
+        "max_iter": int(max_iter),
+        "model_policy": {
+            "lossless": bool(lossless),
+            "balance": bool(balance),
+            "q_balance_block": "pq_buses" if q_bus_indices is not None else "all_buses",
+            "gen_dispatch_reapplied": bool(gen_dispatch_mw_by_name),
+        },
+        "summary": summary,
+        "lines": report_lines,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Adaptive headroom for DC OPF
 # ---------------------------------------------------------------------------
@@ -728,7 +1015,13 @@ def compute_results_for_case(
     if not bool(compute_dc) and not bool(compute_ac):
         raise ValueError("At least one of compute_dc or compute_ac must be enabled.")
 
-    # ac_lossless=False is now supported: lossy AC PF + lossy AC Jacobian.
+    if bool(compute_ac) and not bool(ac_lossless):
+        raise NotImplementedError(
+            "AC certificate with ac.lossless=false is not implemented: the current "
+            "ACOperator is a series-only model and would be inconsistent with a "
+            "full pandapower PF containing charging/shunts. Use ac.lossless=true "
+            "or implement the full pi-model Jacobian first."
+        )
 
     dc_probabilistic_enabled = bool(ext.probabilistic_enabled)
     dc_nminus1_enabled = bool(ext.nminus1_enabled)
@@ -1116,18 +1409,26 @@ def compute_results_for_case(
     ac_pf_attempt = "n/a"
     ac_pf_repairs: list[str] = []
     ac_distributed_slack_used = False
+    ac_q_limit_hit = False
+    ac_q_limit_events: list[dict[str, Any]] = []
     ac_sigma_computed = False
     ac_metric_computed = False
+    ac_nonlinear_validation_computed = False
     ac_feasibility: ACFeasibilityResult | None = None
     h_vectors_saved: dict[str, np.ndarray] | None = None
+    ac_validation_report: dict[str, Any] | None = None
 
-    # Determine whether h-vectors are needed (sigma, metric, or save).
+    # Determine whether h-vectors are needed (sigma, metric, validation, or save).
     ac_sigma_enabled = bool(
         str(ac_ext.sigma_p_mw_source).strip()
         and str(ac_ext.sigma_q_mvar_source).strip()
     )
+    ac_nonlinear_validation_enabled = bool(ac_ext.nonlinear_validation_enabled)
     ac_need_h = (
-        ac_sigma_enabled or bool(ac_ext.metric_enabled) or bool(ac_ext.save_h_vectors)
+        ac_sigma_enabled
+        or bool(ac_ext.metric_enabled)
+        or bool(ac_ext.save_h_vectors)
+        or bool(ac_nonlinear_validation_enabled)
     )
 
     if bool(compute_ac):
@@ -1152,6 +1453,8 @@ def compute_results_for_case(
                 ac_pf_attempt = str(bp_ac.pf_attempt)
                 ac_pf_repairs = list(bp_ac.pf_repairs)
                 ac_distributed_slack_used = bool(bp_ac.distributed_slack_used)
+                ac_q_limit_hit = bool(getattr(bp_ac, "q_limit_hit", False))
+                ac_q_limit_events = list(getattr(bp_ac, "q_limit_events", ()) or ())
             else:
                 with log_stage(
                     logger,
@@ -1175,6 +1478,8 @@ def compute_results_for_case(
                     ac_pf_attempt = str(bp_ac.pf_attempt)
                     ac_pf_repairs = list(bp_ac.pf_repairs)
                     ac_distributed_slack_used = bool(bp_ac.distributed_slack_used)
+                    ac_q_limit_hit = bool(getattr(bp_ac, "q_limit_hit", False))
+                    ac_q_limit_events = list(getattr(bp_ac, "q_limit_events", ()) or ())
         except Exception:
             logger.warning(
                 "%s: AC power flow failed to converge; "
@@ -1200,6 +1505,17 @@ def compute_results_for_case(
                     )
 
         if bool(compute_ac):
+            h_vecs_raw: dict[str, np.ndarray] | None = None
+            h_from_full: np.ndarray | None = None
+            h_to_full: np.ndarray | None = None
+            h_bind: np.ndarray | None = None
+            s0_mva: np.ndarray | None = None
+            s_limit_mva: np.ndarray | None = None
+            line_ids_ac: list[int] | None = None
+            bus_ids_ac: list[int] | None = None
+            n_bus_ac: int | None = None
+            pq_mask_ac: np.ndarray | None = None
+
             with log_stage(logger, f"{case_tag}: Compute Radii (AC L2)"):
                 from stability_radius.radii.ac_l2 import compute_ac_l2_radius
 
@@ -1220,34 +1536,43 @@ def compute_results_for_case(
 
                 results_lines = _merge_line_results(results_lines, ac)
 
+            if h_vecs_raw is not None:
+                bus_ids_ac = [int(x) for x in sorted(net.bus.index)]
+                n_bus_ac = len(bus_ids_ac)
+                slack_bus_id = resolve_slack_bus_id(net, int(slack_bus))
+                slack_pos = bus_ids_ac.index(slack_bus_id)
+                pq_mask_ac = h_vecs_raw.get("pq_mask")
+
+                h_from_full = _expand_h_reduced_to_full(
+                    h_vecs_raw["h_from"],
+                    n_bus=n_bus_ac,
+                    slack_pos=slack_pos,
+                    pq_mask=pq_mask_ac,
+                )
+                h_to_full = _expand_h_reduced_to_full(
+                    h_vecs_raw["h_to"],
+                    n_bus=n_bus_ac,
+                    slack_pos=slack_pos,
+                    pq_mask=pq_mask_ac,
+                )
+
+                h_bind, s0_mva, s_limit_mva, line_ids_ac = _extract_binding_end_data(
+                    ac_results=ac, h_from=h_from_full, h_to=h_to_full
+                )
+
             # ---------- AC sigma/metric post-processing ----------
-            if ac_sigma_enabled and h_vecs_raw is not None:
+            if (
+                ac_sigma_enabled
+                and h_bind is not None
+                and s0_mva is not None
+                and s_limit_mva is not None
+                and line_ids_ac is not None
+                and n_bus_ac is not None
+            ):
                 with log_stage(logger, f"{case_tag}: Compute Radii (AC Sigma)"):
-                    bus_ids = [int(x) for x in sorted(net.bus.index)]
-                    n_bus = len(bus_ids)
-                    slack_bus_id = resolve_slack_bus_id(net, int(slack_bus))
-                    slack_pos = bus_ids.index(slack_bus_id)
-
-                    h_from_full = _expand_h_reduced_to_full(
-                        h_vecs_raw["h_from"],
-                        n_bus=n_bus,
-                        slack_pos=slack_pos,
-                        pq_mask=h_vecs_raw.get("pq_mask"),
+                    sigma_p, sigma_q = _build_sigma_arrays(
+                        ac_ext=ac_ext, n_bus=n_bus_ac
                     )
-                    h_to_full = _expand_h_reduced_to_full(
-                        h_vecs_raw["h_to"],
-                        n_bus=n_bus,
-                        slack_pos=slack_pos,
-                        pq_mask=h_vecs_raw.get("pq_mask"),
-                    )
-
-                    h_bind, s0_mva, s_limit_mva, line_ids_ac = (
-                        _extract_binding_end_data(
-                            ac_results=ac, h_from=h_from_full, h_to=h_to_full
-                        )
-                    )
-
-                    sigma_p, sigma_q = _build_sigma_arrays(ac_ext=ac_ext, n_bus=n_bus)
 
                     from stability_radius.radii.ac_sigma_radius import (
                         compute_ac_sigma_radius,
@@ -1261,6 +1586,7 @@ def compute_results_for_case(
                         sigma_q_mvar=sigma_q,
                         line_ids=line_ids_ac,
                         balance=bool(ac_balance),
+                        pq_mask=pq_mask_ac,
                     )
                     results_lines = _merge_line_results(results_lines, ac_sigma)
                     ac_sigma_computed = True
@@ -1283,31 +1609,73 @@ def compute_results_for_case(
                             M=M_diag,
                             line_ids=line_ids_ac,
                             balance=bool(ac_balance),
+                            pq_mask=pq_mask_ac,
                         )
                         results_lines = _merge_line_results(results_lines, ac_metric)
                         ac_metric_computed = True
 
-            # ---------- h-vector saving ----------
-            if bool(ac_ext.save_h_vectors) and h_vecs_raw is not None:
-                bus_ids = [int(x) for x in sorted(net.bus.index)]
-                n_bus = len(bus_ids)
-                slack_bus_id = resolve_slack_bus_id(net, int(slack_bus))
-                slack_pos = bus_ids.index(slack_bus_id)
+            # ---------- AC nonlinear replay validation ----------
+            if (
+                ac_nonlinear_validation_enabled
+                and h_bind is not None
+                and s0_mva is not None
+                and s_limit_mva is not None
+                and line_ids_ac is not None
+                and n_bus_ac is not None
+            ):
+                with log_stage(
+                    logger, f"{case_tag}: Validate AC L2 (nonlinear replay)"
+                ):
+                    replay_gen_dispatch = dict(gen_dispatch_for_ac)
+                    if not replay_gen_dispatch:
+                        replay_gen_dispatch = dict(
+                            getattr(bp_ac, "gen_dispatch_mw_by_name", ()) or ()
+                        )
+                    ac_validation_report = _run_ac_nonlinear_validation_topk(
+                        net=net,
+                        case_tag=case_tag,
+                        results_lines=results_lines,
+                        h_bind=h_bind,
+                        s0_mva=s0_mva,
+                        s_limit_mva=s_limit_mva,
+                        line_ids=line_ids_ac,
+                        n_bus=int(n_bus_ac),
+                        pq_mask=pq_mask_ac,
+                        balance=bool(ac_balance),
+                        lossless=bool(ac_lossless),
+                        gen_dispatch_mw_by_name=replay_gen_dispatch,
+                        top_k=int(ac_ext.nonlinear_validation_top_k),
+                        scale_max=float(ac_ext.nonlinear_validation_scale_max),
+                        tol=float(ac_ext.nonlinear_validation_tol),
+                        max_iter=int(ac_ext.nonlinear_validation_max_iter),
+                    )
+                    ac_nonlinear_validation_computed = True
 
+            if bool(ac_q_limit_hit):
+                for row in results_lines.values():
+                    if not isinstance(row, dict) or "radius_ac_l2" not in row:
+                        continue
+                    row["q_limit_hit"] = True
+                    row["pv_pq_switch_detected"] = True
+                    row["linearization_status"] = "invalid_active_set_changed_q_limit"
+            elif bool(compute_ac):
+                for row in results_lines.values():
+                    if not isinstance(row, dict) or "radius_ac_l2" not in row:
+                        continue
+                    row.setdefault("q_limit_hit", False)
+                    row.setdefault("pv_pq_switch_detected", False)
+
+            # ---------- h-vector saving ----------
+            if (
+                bool(ac_ext.save_h_vectors)
+                and h_from_full is not None
+                and h_to_full is not None
+                and bus_ids_ac is not None
+            ):
                 h_vectors_saved = {
-                    "h_from": _expand_h_reduced_to_full(
-                        h_vecs_raw["h_from"],
-                        n_bus=n_bus,
-                        slack_pos=slack_pos,
-                        pq_mask=h_vecs_raw.get("pq_mask"),
-                    ),
-                    "h_to": _expand_h_reduced_to_full(
-                        h_vecs_raw["h_to"],
-                        n_bus=n_bus,
-                        slack_pos=slack_pos,
-                        pq_mask=h_vecs_raw.get("pq_mask"),
-                    ),
-                    "bus_ids": np.array(bus_ids, dtype=int),
+                    "h_from": h_from_full,
+                    "h_to": h_to_full,
+                    "bus_ids": np.array(bus_ids_ac, dtype=int),
                     "line_ids": np.array(
                         [int(x) for x in sorted(net.line.index)], dtype=int
                     ),
@@ -1374,6 +1742,8 @@ def compute_results_for_case(
                 "pf_status": str(ac_pf_status),
                 "pf_attempt": str(ac_pf_attempt),
                 "pf_repairs": list(ac_pf_repairs),
+                "q_limit_hit": bool(ac_q_limit_hit),
+                "q_limit_events": list(ac_q_limit_events),
                 "feasibility": ac_feasibility.to_meta_dict()
                 if ac_feasibility is not None
                 else None,
@@ -1385,6 +1755,18 @@ def compute_results_for_case(
                 "metric_enabled": bool(ac_ext.metric_enabled),
                 "metric_computed": bool(ac_metric_computed),
                 "save_h_vectors": bool(ac_ext.save_h_vectors),
+                "nonlinear_validation_enabled": bool(
+                    ac_ext.nonlinear_validation_enabled
+                ),
+                "nonlinear_validation_computed": bool(ac_nonlinear_validation_computed),
+                "nonlinear_validation_top_k": int(ac_ext.nonlinear_validation_top_k),
+                "nonlinear_validation_scale_max": float(
+                    ac_ext.nonlinear_validation_scale_max
+                ),
+                "nonlinear_validation_tol": float(ac_ext.nonlinear_validation_tol),
+                "nonlinear_validation_max_iter": int(
+                    ac_ext.nonlinear_validation_max_iter
+                ),
             },
             # critical artifacts for reproducibility & MC consistency checks
             "base_point_dc": bp_dc_meta,
@@ -1418,5 +1800,7 @@ def compute_results_for_case(
 
     if h_vectors_saved is not None:
         results["_h_vectors"] = h_vectors_saved
+    if ac_validation_report is not None:
+        results["_validation_report"] = ac_validation_report
 
     return results

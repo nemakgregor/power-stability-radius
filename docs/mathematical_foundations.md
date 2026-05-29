@@ -769,11 +769,12 @@ tilts towards buses with higher uncertainty (larger `sigma`).
 ### 8.5 Gaussian Overload Probability (AC)
 
 ```
-P(|S| > c) = Q((c - |S_0|) / sigma_flow) + Q((c + |S_0|) / sigma_flow)
+P(|S_0| + X > c) = Q((c - |S_0|) / sigma_flow)
 ```
 
-Same functional form as the DC case (Section 7.4), but using the AC-derived
-`sigma_flow`.
+This is one-sided because AC thermal security constrains apparent-power
+magnitude, `|S| <= c`. The signed two-sided expression in the DC case applies
+to signed flow variables with symmetric limits.
 
 ### 8.6 Balanced Projection (Sigma-Weighted)
 

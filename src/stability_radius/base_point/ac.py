@@ -45,7 +45,9 @@ def solve_ac_pf_base_point(
     trafo_model:
         Transformer model: ``"pi"`` or ``"t"``.
     """
-    # lossless=false is now supported (pi-model with losses).
+    # The public AC certificate path currently fail-fasts on lossless=false.
+    # Keep this lower-level wrapper explicit because it is also used by
+    # experiments that solve PF base points before certificate construction.
 
     solver_eff = str(pf_solver).strip().lower()
     if solver_eff not in {"pandapower", "pypsa"}:
@@ -116,6 +118,8 @@ def solve_ac_pf_base_point(
             getattr(base_pf, "distributed_slack_requested", False)
         ),
         distributed_slack_used=bool(getattr(base_pf, "distributed_slack_used", False)),
+        q_limit_hit=bool(getattr(base_pf, "q_limit_hit", False)),
+        q_limit_events=tuple(getattr(base_pf, "q_limit_events", ()) or ()),
         bus_p_mw=np.asarray(base_pf.bus_p_mw, dtype=float)
         if base_pf.bus_p_mw is not None
         else None,
@@ -204,6 +208,8 @@ def solve_ac_fpf_base_point(
             getattr(base_pf, "distributed_slack_requested", False)
         ),
         distributed_slack_used=bool(getattr(base_pf, "distributed_slack_used", False)),
+        q_limit_hit=bool(getattr(base_pf, "q_limit_hit", False)),
+        q_limit_events=tuple(getattr(base_pf, "q_limit_events", ()) or ()),
         bus_p_mw=np.asarray(base_pf.bus_p_mw, dtype=float)
         if base_pf.bus_p_mw is not None
         else None,

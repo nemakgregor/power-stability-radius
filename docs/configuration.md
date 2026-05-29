@@ -295,6 +295,11 @@ class ACExtensionsConfig:
     sigma_n_timesteps: int | None = None
     metric_enabled: bool = False
     save_h_vectors: bool = False
+    nonlinear_validation_enabled: bool = False
+    nonlinear_validation_top_k: int = 20
+    nonlinear_validation_scale_max: float = 5.0
+    nonlinear_validation_tol: float = 0.01
+    nonlinear_validation_max_iter: int = 20
 ```
 
 ### `ACFPFConfig` (in `base_point/pandapower_opp.py`)
@@ -395,10 +400,15 @@ or by adding `config_dc_extensions.yaml` to your experiment's
 | Balance | `compute.ac.balance` | `--ac-balance` | int | `1` | If 1, enforce balanced (zero-sum) disturbance directions in the AC certificate. |
 | PF solver | `ac.pf_solver` | `--ac-pf-solver` | str | `"pandapower"` | AC power flow backend. `"pandapower"` or `"pypsa"`. AC Monte Carlo currently only supports pandapower. |
 | PF init | `compute.ac.pf_init` | `--ac-pf-init` | str | `"flat"` | AC PF initialization strategy. `"flat"`: flat start. `"dc"`: DC theta angles as initial guess. `"pp"`: run pandapower PF first for an explicit initial guess (not a solver fallback). |
-| Lossless | `ac.lossless` | `--ac-lossless` | int | `1` | If 1, enforce lossless model (r=0 in series impedance) for both PF and Jacobian. `lossless=false` is required for lossy AC models but is not fully implemented for AC certificate/MC. |
+| Lossless | `ac.lossless` | `--ac-lossless` | int | `1` | If 1, enforce the supported lossless series-only model for both PF and Jacobian. `lossless=false` is fail-fast in certificate mode until the full pi/shunt Jacobian is implemented. |
 | Distributed slack | `compute.ac.distributed_slack` | N/A | bool | `true` (sweep) | Distribute active power losses proportionally to headroom (Pmax - Pset). Disable on networks where pandapower crashes (e.g., large GOC/PEGASE cases). |
 | Transformer model | `compute.ac.trafo_model` | N/A | str | `"pi"` | Transformer equivalent circuit model type. |
 | Save h-vectors | `compute.ac.save_h_vectors` | `--ac-save-h-vectors` | int | `0` | If 1, save full adjoint sensitivity h-vectors to a `.npz` file alongside results. |
+| Nonlinear validation | `compute.ac.validation.nonlinear.enabled` | `--ac-validate-nonlinear` | int | `0` | If 1, replay nonlinear pandapower PF for the top-k smallest finite AC L2 radii. |
+| Validation top-k | `compute.ac.validation.nonlinear.top_k` | `--ac-validation-top-k` | int | `20` | Number of AC L2 lines to replay when nonlinear validation is enabled. |
+| Validation scale max | `compute.ac.validation.nonlinear.scale_max` | `--ac-validation-scale-max` | float | `5.0` | Maximum scale searched relative to the linear boundary. |
+| Validation tolerance | `compute.ac.validation.nonlinear.tol` | `--ac-validation-tol` | float | `0.01` | Binary-search tolerance on the replay scale. |
+| Validation max iterations | `compute.ac.validation.nonlinear.max_iter` | `--ac-validation-max-iter` | int | `20` | Maximum violation-scale binary-search iterations. |
 
 ### AC Feasibility Power Flow (AC FPF)
 
@@ -456,7 +466,7 @@ stability certificates via random sampling.
 | AC sigma P | `monte_carlo.ac.sigma_p_mw` | `--ac-sigma-p-mw` | float | `1.0` | Gaussian standard deviation for active power perturbations (MW) in AC MC. |
 | AC sigma Q | `monte_carlo.ac.sigma_q_mvar` | `--ac-sigma-q-mvar` | float | `1.0` | Gaussian standard deviation for reactive power perturbations (Mvar) in AC MC. |
 | AC PF solver | `ac.pf_solver` | `--ac-pf-solver` | str | `"pandapower"` | AC power flow backend for per-sample evaluation. Only `"pandapower"` is supported for AC MC. |
-| AC lossless | `ac.lossless` | `--ac-lossless` | int | `1` | Lossless model flag (shared with compute). |
+| AC lossless | `ac.lossless` | `--ac-lossless` | int | `1` | Lossless series-only model flag. `0` is fail-fast for certificate mode until the full AC pi/shunt Jacobian is implemented. |
 | AC basepoint tol | `ac.basepoint_s_tol_mva` | `--ac-basepoint-s-tol-mva` | float | `1e-3` | Tolerance (MVA) for base-point consistency check. Compares |S| at both ends of every monitored line against results.json base fields. |
 
 ### Report generation
@@ -484,8 +494,8 @@ with semantics identical to the Monte Carlo subcommand.
 |-----------|----------|----------|------|---------|-------------|
 | Format | `table.format` | `--format` | str | `"sections"` | `"sections"`: print separate DC and AC tables. `"flat"`: print a single table with selected columns. |
 | Columns | `table.columns` | `--columns` | str/list | `[]` | Base column list (applies to both sections). Empty means use section-specific defaults. |
-| DC extra columns | `table.dc_extra_columns` | N/A | list | `[flow0_mw, p0_mw, p_limit_mw_est, margin_mw, norm_g, radius_l2]` | Additional columns for the DC section. |
-| AC extra columns | `table.ac_extra_columns` | N/A | list | `[ac_s_limit_mva, ac_s0_from_mva, ac_s0_to_mva, margin_ac_mva, "||h||2", binding_end, radius_ac_l2]` | Additional columns for the AC section. |
+| DC extra columns | `table.dc_extra_columns` | N/A | list | `[flow0_mw, p0_mw, p_limit_mw_est, margin_mw, norm_g, radius_l2, constraint_status_l2, certificate_radius_l2]` | Additional columns for the DC section. |
+| AC extra columns | `table.ac_extra_columns` | N/A | list | `[ac_s_limit_mva, ac_s0_from_mva, ac_s0_to_mva, margin_ac_mva, "||h||2", binding_end, radius_ac_l2, constraint_status_ac_l2, certificate_radius_ac_l2]` | Additional columns for the AC section. |
 | Radius field | N/A | `--radius-field` | str | `"radius_l2"` | Field to sort by in flat mode. |
 | Max rows | N/A | `--max-rows` | int | `null` | Limit the number of rows displayed. `null` means show all. |
 
@@ -549,7 +559,7 @@ compute:
     balance: true
     pf_init: dc
     pf_solver: pandapower
-    lossless: false
+    lossless: true
     distributed_slack: true
     trafo_model: pi
 

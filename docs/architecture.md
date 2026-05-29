@@ -154,7 +154,7 @@ Computes the operating point around which the stability radius is certified.
 
 **BasePointDC fields:** `bus_ids`, `bus_injections_mw`, `line_ids`, `line_flows_mw`, `line_limits_mw`, `gen_dispatch_mw_by_name`, `status`, `objective`.
 
-**BasePointAC fields:** `bus_ids`, `vm_pu`, `va_rad`, `line_ids`, `p_from_mw`, `q_from_mvar`, `p_to_mw`, `q_to_mvar`, `s_limit_mva`, `pf_solver`, `pf_init`, `lossless`, `pf_attempt`, `pf_repairs`, `distributed_slack_requested`, `distributed_slack_used`.
+**BasePointAC fields:** `bus_ids`, `vm_pu`, `va_rad`, `line_ids`, `p_from_mw`, `q_from_mvar`, `p_to_mw`, `q_to_mvar`, `s_limit_mva`, `pf_solver`, `pf_init`, `lossless`, `pf_attempt`, `pf_repairs`, `distributed_slack_requested`, `distributed_slack_used`, `q_limit_hit`, `q_limit_events`.
 
 ### 1.8 DC Model (`dc/dc_model.py`)
 
@@ -192,7 +192,7 @@ Implements the `ACOperator` frozen dataclass, which encapsulates the linearized 
 
 **Ybus and Jacobian construction:**
 
-- Builds sparse admittance matrix `Ybus` from line/transformer impedances (with optional lossless policy: `r = 0`).
+- Builds a sparse series-only admittance matrix `Ybus` from line/transformer impedances. The supported certificate path uses the lossless policy (`r = 0`, shunts/charging disabled); `ac.lossless=false` is fail-fast until a full pi/shunt Jacobian is implemented.
 - Constructs the reduced AC power flow Jacobian of the form:
 
   ```
@@ -224,9 +224,9 @@ The core mathematical engine. Each module implements one radius variant.
 | `l2.py` | `compute_l2_radius()` | DC L2 radius: wraps `DCOperator` + `core_l2` to produce per-line `r_i = (c_i - \|f0_i\|) / \|g_i\|_2` |
 | `ac_l2.py` | `compute_ac_l2_radius()` | AC L2 radius: uses `ACOperator` adjoint solves, processes lines in chunks for memory efficiency. Returns per-line radii and h-vectors |
 | `probabilistic.py` | `sigma_radius()`, `overload_probability_symmetric_limit()` | DC sigma-radius and Gaussian overload probability via the Q-function |
-| `ac_sigma_radius.py` | `compute_ac_sigma_radius()` | AC sigma-radius with precomputed h-vectors and sigma-squared-weighted balanced projection |
+| `ac_sigma_radius.py` | `compute_ac_sigma_radius()` | AC sigma-radius with precomputed h-vectors, sigma-squared-weighted balanced projection, and PQ-only Q block handling |
 | `metric.py` | `compute_metric_radius()` | DC metric radius with symmetric positive-definite (SPD) weight matrix via Cholesky factorization |
-| `ac_metric_radius.py` | `compute_ac_metric_radius()` | AC metric radius using precomputed h-vectors and a weight matrix |
+| `ac_metric_radius.py` | `compute_ac_metric_radius()` | AC metric radius using precomputed h-vectors, a weight matrix, and the constrained metric dual projection |
 | `nminus1.py` | `compute_nminus1_l2_radius()` | N-1 contingency radius with optional sensitivity updates via Woodbury/LODF approximation |
 | `ac_feasibility.py` | `check_ac_base_point_feasibility()` | AC feasibility check: validates whether the base operating point satisfies all thermal limits |
 | `common.py` | `LineBaseQuantities`, `estimate_line_limit_mva()`, `line_key()` | Shared dataclass and utilities for per-line base quantities, thermal limit extraction, and result key formatting |

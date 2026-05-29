@@ -1,0 +1,570 @@
+% MDPI-format manuscript prepared from the repository paper draft.
+% Compile from the paper/ directory with:
+%   latexmk -pdf template.tex
+% or:
+%   pdflatex template.tex
+%   bibtex template
+%   pdflatex template.tex
+%   pdflatex template.tex
+
+\documentclass[energies,article,submit,pdftex,moreauthors]{Definitions/mdpi}
+
+%=================================================================
+% MDPI internal commands
+\firstpage{1}
+\makeatletter
+\setcounter{page}{\@firstpage}
+\makeatother
+\pubvolume{1}
+\issuenum{1}
+\articlenumber{0}
+\pubyear{2026}
+\copyrightyear{2026}
+\datereceived{}
+\daterevised{}
+\dateaccepted{}
+\datepublished{}
+
+%=================================================================
+% Project-specific commands
+\graphicspath{{figures/}}
+\externalbibliography{yes}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\ones}{\mathbf{1}}
+\newcommand{\norm}[1]{\left\lVert #1 \right\rVert}
+\newcommand{\abs}[1]{\left\lvert #1 \right\rvert}
+\newcommand{\Proj}{\mathrm{Proj}}
+
+%=================================================================
+% Full title of the paper
+\Title{Balanced Stability-Radius Certificates for AC Power-System Thermal Security under Injection Uncertainty}
+
+% Author ORCID ID
+\newcommand{\orcidauthorA}{0000-0000-0000-0000}
+
+% Authors
+\Author{Author Name $^{1}$\orcidA{}}
+\AuthorNames{Author Name}
+
+% Affiliations
+\address{%
+$^{1}$ \quad Affiliation; author.email@example.org}
+
+% Corresponding author
+\corres{Correspondence: author.email@example.org}
+
+% Abstract
+\abstract{Power-system security assessment must increasingly quantify how far an operating point can move under continuous injection uncertainty before a thermal limit is reached. Existing security-constrained and chance-constrained optimal power-flow formulations optimize dispatch under finite contingency sets or assumed uncertainty models, while fast operational metrics such as loading ratio and headroom do not certify a multidimensional perturbation set. This paper proposes a balanced stability-radius framework for certifying line-thermal robustness of fixed operating points. The central object is the largest norm ball of balanced active and reactive injection perturbations that remains feasible under a DC model or a first-order AC power-flow linearization. For AC networks, line-end apparent-power constraints are handled through sparse adjoint solves of the reduced AC Jacobian, avoiding explicit construction of the full injection-to-flow sensitivity matrix. The framework also yields metric and sigma radii, worst-case perturbation directions, and Gaussian overload probabilities as special cases of a common dual-norm formula. We prove certificate soundness under the linearized model, slack-reference invariance under balanced projection, and equivalence between sigma radii and inverse-covariance metric radii. Preliminary experiments on PGLib-OPF networks and IEEE 118-bus uncertainty studies indicate that AC radii can differ substantially from DC radii, radius-based rankings correlate more strongly with empirical overload rates than loading-only metrics, and radius-aware dispatch can improve N-1 screening pass rates at measurable cost.}
+
+% Keywords
+\keyword{power-system security; stability radius; robust optimization; chance constraints; AC power flow; adjoint sensitivity; transmission constraints; uncertainty quantification; PGLib-OPF}
+
+\begin{document}
+
+\section{Introduction}
+
+Power-system operators need security margins that are fast enough for operational use and rigorous enough to support high-consequence decisions. A deterministic AC or DC optimal power-flow (OPF) dispatch provides one feasible point, and a security-constrained OPF (SCOPF) extends this point to a finite set of contingencies. Under high renewable and load uncertainty, however, the relevant disturbance set is continuous and high-dimensional: injections may move simultaneously at many buses, and the dangerous direction is not usually known before analysis.
+
+What is known is that robust and chance-constrained OPF can internalize uncertainty during dispatch \citep{BertsimasSim2004,BenTalNemirovski1998,BienstockChertkovHarnett2014,RoaldEtAl2016,LubinBackhausDvorkin2016}. These formulations provide powerful optimization models, but they usually require a chosen uncertainty distribution, a selected risk allocation, or a new dispatch solve. Classical security analysis and SCOPF handle contingency sets, but a finite list of outages does not answer how much continuous injection error can be tolerated around an already selected operating point. Fast metrics such as loading ratio, thermal headroom, PTDF sensitivities, and LODF-based screening are computationally attractive \citep{WoodWollenbergSheble2013}, but they either measure only margin or only sensitivity and do not certify a balanced multidimensional ball of perturbations.
+
+The missing element is therefore a certificate that is simultaneously:
+\begin{itemize}
+  \item operationally post-dispatch: it evaluates a fixed AC or DC operating point without re-solving a large stochastic or robust OPF;
+  \item geometrically explicit: it gives a distance to the nearest thermal constraint in a defined perturbation norm;
+  \item physically balanced: active and reactive perturbations are constrained to satisfy net balance rather than allowing unphysical all-bus shifts;
+  \item AC-aware: it accounts for apparent-power line-end limits, reactive effects, and voltage sensitivities through an AC power-flow Jacobian;
+  \item computationally scalable: it avoids dense inverse Jacobians and supports benchmark-scale networks.
+\end{itemize}
+
+This paper addresses that gap by formulating and computing \emph{balanced stability-radius certificates} for thermal security. The terminology follows the robust-control idea of a stability radius as a distance from a nominal object to the nearest loss of a desired property \citep{HinrichsenPritchard1986}, but the property here is static thermal feasibility rather than dynamic stability. The certificate is the radius of the largest ball, in a selected norm, centered at the base operating point such that every perturbation inside the ball satisfies all monitored line limits in the chosen linear model. The formulation turns line-security assessment into a family of dual-norm computations. For DC power flow this yields a projected PTDF norm. For AC power flow it yields a sparse adjoint algorithm in which each line-end apparent-power constraint is differentiated and mapped back to injection space by solving a transposed reduced-Jacobian system.
+
+The scientific contribution is not a larger simulation alone. The contribution is a unified certificate model and algorithmic framework with theoretical guarantees:
+\begin{enumerate}
+  \item We define a balanced stability-radius problem for thermal limits under DC and AC linearized power-flow models, including two-ended AC apparent-power constraints.
+  \item We derive closed-form line-wise radii as dual norms of projected sensitivity vectors and prove linear-model certificate soundness.
+  \item We develop an AC adjoint algorithm that computes line-end radii and worst-case perturbation directions without materializing the full AC sensitivity matrix.
+  \item We show that L2, sigma, and metric radii are special cases of the same formulation; inverse-covariance metrics recover sigma radii, and balanced sigma projection requires variance-weighted mean removal.
+  \item We propose a benchmark methodology that compares certificates against industry-style heuristics, chance-style probability estimates, ablations, nonlinear worst-case replay, Monte Carlo validation, scalability tests, and N-1 dispatch consequences.
+\end{enumerate}
+
+The rest of the paper is organized as follows. Section~\ref{sec:literature} positions the work relative to security-constrained OPF, robust and chance-constrained OPF, and sensitivity-based metrics. Section~\ref{sec:materials-methods} defines the stability-radius model and algorithm. Section~\ref{sec:evaluation} describes the experimental design. Section~\ref{sec:results} reports preliminary results from the current implementation. Section~\ref{sec:discussion} discusses implications, limitations, and submission-level experiments still required.
+
+\section{Literature Review}
+\label{sec:literature}
+
+\subsection{Deterministic OPF and Security-Constrained Operation}
+
+Deterministic OPF remains the standard computational primitive for dispatch and planning studies. Mature tools such as MATPOWER \citep{ZimmermanMurilloSanchezThomas2011}, pandapower \citep{ThurnerEtAl2018}, and PyPSA \citep{BrownHorschSchlachtberger2018} provide reproducible implementations of power-flow and optimization routines. The key strength of deterministic OPF is tractability: a single operating point can be computed and checked efficiently on large benchmark systems. SCOPF extends the model by enforcing constraints after selected contingencies, typically under N-1 criteria.
+
+The limitation is that deterministic OPF and finite-contingency SCOPF do not quantify robustness to continuous injection disturbances around the obtained point. A dispatch can satisfy all modeled base-case and contingency constraints and still be close to a thermal boundary in an unmodeled injection direction. Conversely, a heavily loaded line may be insensitive to likely perturbations and therefore less dangerous than its loading ratio suggests. This paper uses OPF and AC power flow to define the base point, but the contribution is a post-dispatch certificate that measures distance to violation in injection space.
+
+\subsection{Robust and Chance-Constrained OPF}
+
+Robust optimization provides feasibility guarantees over uncertainty sets \citep{BenTalNemirovski1998,BertsimasSim2004}. Chance-constrained OPF and related risk-aware formulations incorporate stochastic injection uncertainty into dispatch and can enforce probabilistic security levels \citep{BienstockChertkovHarnett2014,RoaldEtAl2016,LubinBackhausDvorkin2016}. Their strength is that they optimize decisions under uncertainty rather than merely evaluating a nominal point.
+
+Their limitation for the present purpose is different. They require solving a modified optimization problem and depend on an uncertainty model, risk allocation, or conservative reformulation. They do not directly provide an interpretable per-line distance from an arbitrary existing operating point to the closest thermal violation under balanced AC perturbations. The stability-radius certificate complements these models: it can evaluate any candidate dispatch, including one produced by OPF, SCOPF, robust OPF, or an operator tool, and it returns both a scalar margin and the worst-case perturbation direction.
+
+\subsection{Sensitivity, PTDF/LODF, and Heuristic Security Metrics}
+
+PTDF and LODF methods are central to fast security screening and contingency analysis \citep{WoodWollenbergSheble2013}. Loading ratio and headroom are widely used because they are easy to interpret; sensitivity norms are useful because they identify how strongly a line responds to redispatch or injection changes. The strength of this family is computational speed and compatibility with existing operations workflows.
+
+The remaining gap is certification. Loading ratio ignores directional sensitivity, while sensitivity alone ignores available thermal margin. A line-wise stability radius combines both quantities through a dual norm: radius equals margin divided by the largest possible flow change per unit balanced perturbation. The resulting quantity is still fast to compute but has a formal safety interpretation inside the linear model.
+
+\subsection{Benchmarks and Reproducible Software}
+
+The PGLib-OPF benchmark library was created to standardize AC-OPF comparisons across network data and formulations \citep{PGLibOPF2019}. This project uses PGLib-style MATPOWER inputs and a documented Python stack built on NumPy \citep{HarrisEtAl2020}, SciPy \citep{VirtanenEtAl2020}, pandapower, PyPSA, and HiGHS \citep{HiGHS2026}. Per-bus uncertainty inputs can be derived from UnitCommitment.jl data \citep{UnitCommitmentJL2024}. The methodological role of these tools is reproducibility; the scientific claim of the paper is the certificate formulation, its adjoint computation, and its evaluation methodology.
+
+\section{Materials and Methods}
+\label{sec:materials-methods}
+
+\subsection{Network, Base Point, and Perturbation Space}
+
+Let $\mathcal{N}$ be the set of buses, with $|\mathcal{N}|=n$, and let $\mathcal{L}$ be the set of monitored lines, with $|\mathcal{L}|=m$. A base operating point is specified by active and reactive bus injections $(p^0,q^0)$ and by line flows computed from either a DC model or a solved AC power-flow state. Each line $\ell\in\mathcal{L}$ has a symmetric thermal limit $c_\ell>0$. In DC analysis the monitored flow is active power $f_\ell$ in MW. In AC analysis each line has a from-end and to-end apparent-power magnitude, denoted $s_{\ell,e}$ for $e\in\{f,t\}$, in MVA.
+
+The physically admissible active-power perturbations are balanced:
+\begin{equation}
+  \mathcal{B}_P = \{ \Delta p\in\R^n : \ones^\top \Delta p = 0 \}.
+\end{equation}
+For AC certificates we use active and reactive perturbations
+\begin{equation}
+  \Delta u = (\Delta P,\Delta Q)\in\R^{2n},
+  \qquad
+  \mathcal{B}_{AC} =
+  \{ \Delta u : \ones^\top\Delta P=0,\ \ones^\top\Delta Q=0 \}.
+\end{equation}
+If reactive perturbations are defined only on a subset of buses after PV/PQ reduction, the projection is applied on the corresponding reactive coordinate block.
+
+\begin{Definition}[Stability-radius certificate]
+Given a linearized flow map and a norm $\norm{\cdot}$ on the perturbation space, a radius $r\ge 0$ is a stability-radius certificate if every admissible perturbation with $\norm{\Delta u}\le r$ satisfies all monitored line limits in the chosen model. The global stability radius $r^\star$ is the largest such certified radius obtained from the line-wise constraints.
+\end{Definition}
+
+The certificate is a lower-bound statement for the selected model. In DC it is exact for the DC linear power-flow equations. In AC it is a first-order certificate around the solved AC power-flow or feasible power-flow base point. Nonlinear AC replay is therefore used as an independent validation layer rather than as part of the certificate computation.
+
+\subsection{DC Radius}
+
+Let $H\in\R^{m\times n}$ be the DC sensitivity matrix such that $\Delta f=H\Delta p$. Let $g_\ell^\top$ be row $\ell$ of $H$, and let
+\begin{equation}
+  M_\ell^{DC}=c_\ell-\abs{f^0_\ell}
+\end{equation}
+be the thermal headroom of line $\ell$. The admissible perturbations satisfy $\Delta p\in\mathcal{B}_P$, hence the relevant dual norm is the norm of $g_\ell$ projected onto the ones-complement:
+\begin{equation}
+  \bar g_\ell
+  =
+  g_\ell - \frac{\ones^\top g_\ell}{n}\ones,
+  \qquad
+  d_\ell^{DC} = \norm{\bar g_\ell}_2.
+\end{equation}
+The line-wise and global DC certificates are
+\begin{equation}
+  r_\ell^{DC} =
+  \begin{cases}
+    M_\ell^{DC}/d_\ell^{DC}, & d_\ell^{DC}>0,\\
+    +\infty, & d_\ell^{DC}=0,\ M_\ell^{DC}\ge 0,\\
+    -\infty, & d_\ell^{DC}=0,\ M_\ell^{DC}<0,
+  \end{cases}
+  \qquad
+  r_\star^{DC}=\min_{\ell\in\mathcal{L}}r_\ell^{DC}.
+\end{equation}
+
+\subsection{AC Radius}
+
+For AC analysis, let $x=[\theta_{\mathcal{N}\setminus s};V_{\mathcal{PQ}}]$ be the reduced state vector, where one slack angle is eliminated and PV bus voltage magnitudes are fixed. Let $J=\partial(P,Q)/\partial x$ be the reduced AC power-flow Jacobian at the base point. For each line end $(\ell,e)$, define the apparent-power magnitude constraint
+\begin{equation}
+  s_{\ell,e}(x) \le c_\ell.
+\end{equation}
+Linearizing at the base point gives
+\begin{equation}
+  s_{\ell,e}(x^0+\Delta x)
+  \approx
+  s^0_{\ell,e}
+  +
+  b_{\ell,e}^\top \Delta x,
+\end{equation}
+where $b_{\ell,e}=\nabla_x s_{\ell,e}(x^0)$. The injection perturbation satisfies
+\begin{equation}
+  J\Delta x=\Delta u.
+\end{equation}
+The sensitivity of apparent power at line end $(\ell,e)$ to injections is obtained by the adjoint solve
+\begin{equation}
+  J^\top h_{\ell,e}=b_{\ell,e}.
+\end{equation}
+Then $h_{\ell,e}^\top \Delta u$ is the first-order flow-magnitude change induced by $\Delta u$. Let
+\begin{equation}
+  M_{\ell,e}^{AC}=c_\ell-s^0_{\ell,e}.
+\end{equation}
+The end-wise L2 radius is
+\begin{equation}
+  r_{\ell,e}^{AC} = \frac{M_{\ell,e}^{AC}}{\norm{\Proj_{\mathcal{B}_{AC}}(h_{\ell,e})}_2},
+\end{equation}
+with the same infinite-radius convention for zero denominators. The line radius selects the binding end:
+\begin{equation}
+  r_\ell^{AC}=\min\{r_{\ell,f}^{AC},r_{\ell,t}^{AC}\},
+  \qquad
+  e_\ell^\star\in\arg\min_{e\in\{f,t\}}r_{\ell,e}^{AC},
+  \qquad
+  r_\star^{AC}=\min_{\ell\in\mathcal{L}}r_\ell^{AC}.
+\end{equation}
+
+\subsection{Theoretical Properties}
+
+\begin{Theorem}[Linear-model soundness]
+\label{thm:soundness}
+Assume all base margins are nonnegative and the linearized line constraints have the form
+\begin{equation}
+  \abs{y_\ell^0 + a_\ell^\top\Delta u}\le c_\ell,
+  \qquad \ell\in\mathcal{L},
+\end{equation}
+where perturbations are restricted to a linear subspace $\mathcal{B}$ and measured in the Euclidean norm. If
+\begin{equation}
+  r^\star = \min_{\ell\in\mathcal{L}}
+  \frac{c_\ell-\abs{y_\ell^0}}{\norm{\Proj_{\mathcal{B}}(a_\ell)}_2},
+\end{equation}
+with the zero-denominator conventions stated above, then every $\Delta u\in\mathcal{B}$ satisfying $\norm{\Delta u}_2\le r^\star$ satisfies all line constraints.
+\end{Theorem}
+
+\begin{proof}
+For any line $\ell$ and any $\Delta u\in\mathcal{B}$,
+\begin{equation}
+  \abs{a_\ell^\top\Delta u}
+  =
+  \abs{\Proj_{\mathcal{B}}(a_\ell)^\top\Delta u}
+  \le
+  \norm{\Proj_{\mathcal{B}}(a_\ell)}_2\norm{\Delta u}_2
+  \le
+  c_\ell-\abs{y_\ell^0}.
+\end{equation}
+Therefore
+\begin{equation}
+  \abs{y_\ell^0+a_\ell^\top\Delta u}
+  \le
+  \abs{y_\ell^0}+\abs{a_\ell^\top\Delta u}
+  \le c_\ell.
+\end{equation}
+The result holds for every monitored line, hence for the system.
+\end{proof}
+
+\begin{Proposition}[Slack-reference invariance]
+\label{prop:slack}
+The balanced DC radius is invariant to the choice of slack reference if changing the slack adds a constant vector $\alpha\ones$ to each sensitivity row.
+\end{Proposition}
+
+\begin{proof}
+The projected row is
+\begin{equation}
+  \Proj(g+\alpha\ones)
+  =
+  g+\alpha\ones
+  -
+  \frac{\ones^\top g + \alpha n}{n}\ones
+  =
+  g-\frac{\ones^\top g}{n}\ones
+  =
+  \Proj(g).
+\end{equation}
+Thus the denominator, each line radius, and the global minimum are unchanged.
+\end{proof}
+
+\begin{Proposition}[Sigma-radius equivalence]
+\label{prop:sigma}
+Let $\Sigma=\mathrm{diag}(\sigma_1^2,\ldots,\sigma_d^2)$ be a diagonal covariance matrix and set $M=\Sigma^{-1}$. Then the metric radius equals the sigma radius:
+\begin{equation}
+  r_\ell^M
+  =
+  \frac{c_\ell-y_\ell^0}{\sqrt{h_\ell^\top\Sigma h_\ell}}
+  =
+  r_\ell^\sigma.
+\end{equation}
+Moreover, the worst-case perturbation on the sigma ball is proportional to $\Sigma h_\ell$.
+\end{Proposition}
+
+\begin{proof}
+Substituting $M=\Sigma^{-1}$ into the metric dual norm yields
+$\sqrt{h_\ell^\top\Sigma h_\ell}$. The optimizer of
+$\max h_\ell^\top\Delta u$ subject to
+$\Delta u^\top\Sigma^{-1}\Delta u\le r^2$ follows from the Lagrangian first-order condition
+$h_\ell-2\lambda\Sigma^{-1}\Delta u=0$, hence
+$\Delta u\propto \Sigma h_\ell$.
+\end{proof}
+
+For balanced sigma perturbations, the active block must satisfy $\ones^\top\Delta P=0$. Since the worst-case direction is $\Delta P_i\propto \sigma_{P,i}^2 h^P_i$, balance requires $\sum_i \sigma_{P,i}^2 h^P_i = 0$. Therefore the correct projection subtracts the variance-weighted mean,
+\begin{equation}
+  h_i^P \leftarrow h_i^P -
+  \frac{\sum_j \sigma_{P,j}^2 h_j^P}{\sum_j\sigma_{P,j}^2},
+\end{equation}
+with an analogous formula for the reactive block.
+
+\subsection{Sparse Adjoint Algorithm}
+
+The AC computation has two bottlenecks: factorizing the reduced Jacobian and solving one adjoint system per line end. The method follows the standard adjoint principle of evaluating many scalar sensitivities through transposed linearized systems \citep{GilesPierce2000}. It avoids explicit Jacobian inversion and processes constraints in chunks. The resulting workflow is summarized in Table~\ref{tab:algorithm}.
+
+\begin{table}[H]
+\centering
+\caption{AC balanced stability-radius algorithm.\label{tab:algorithm}}
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+\toprule
+Step & Operation \\
+\midrule
+1 & Parse the network and solve an AC PF or AC feasible PF base point. Store voltage magnitudes, voltage angles, base line-end $P/Q$ flows, and limits. \\
+2 & Build the reduced AC Jacobian $J$ using PV/PQ bus classification and factorize it once with sparse LU. \\
+3 & For each line end, compute the gradient $b_{\ell,e}=\nabla_x s_{\ell,e}$ by differentiating the apparent-power magnitude at the base point. \\
+4 & Solve $J^\top h_{\ell,e}=b_{\ell,e}$, in chunks, to map each line-end gradient into injection space. \\
+5 & Project $h_{\ell,e}$ onto the balanced active/reactive subspace. For sigma radii, use variance-weighted projection. \\
+6 & Compute each end-wise radius as margin divided by the selected dual norm; choose the binding end for each line and the global minimum across lines. \\
+7 & Optionally store $h$-vectors and worst-case perturbations for nonlinear replay and Monte Carlo verification. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Let $n_x$ denote the number of reduced AC state variables and $m$ the number of monitored lines. Jacobian assembly is $O(\mathrm{nnz}(Y_{\mathrm{bus}}))$, sparse LU factorization is the dominant one-time cost, and the adjoint phase requires $2m$ triangular solves. With chunk size $q$, peak adjoint right-hand-side storage is $O(n_x q)$ rather than $O(n_x m)$. The DC operator similarly factors the reduced susceptance matrix once and computes projected row norms either from a materialized PTDF matrix or from chunked operator solves.
+
+\subsection{N-1 Extension}
+
+For DC contingency analysis, the same radius principle can be applied after single-line outages by using LODF approximations. For contingency $k$, post-contingency flow on monitored line $m$ is approximated by
+\begin{equation}
+  f_m^{(k)}=f_m^0+\mathrm{LODF}_{m,k} f_k^0,
+\end{equation}
+and the sensitivity row can be updated as
+\begin{equation}
+  g_m^{(k)}=g_m+\mathrm{LODF}_{m,k}g_k.
+\end{equation}
+The effective N-1 radius is the minimum post-contingency radius over non-islanding single-line outages. This extension is not a substitute for full AC contingency simulation; it is a fast screening layer that can be benchmarked against nonlinear N-1 replay.
+
+\section{Experimental Design}
+\label{sec:evaluation}
+
+The experiments are designed around scientific questions rather than a single table of timings.
+
+\subsection{Research Questions}
+
+\begin{description}
+  \item[RQ1.] Does the AC stability radius differ materially from the DC radius when both are evaluated at a consistent base point?
+  \item[RQ2.] Does the adjoint AC certificate preserve linear-model feasibility and identify worst-case perturbation directions that are meaningful under nonlinear AC replay?
+  \item[RQ3.] Do radius-based metrics rank dangerous lines more accurately than loading ratio, headroom, performance index, and Cantelli bounds when compared with Monte Carlo overload frequencies?
+  \item[RQ4.] How does performance scale with buses and monitored lines across small, medium, large, and stress-test systems?
+  \item[RQ5.] Which components are necessary: balanced projection, AC rather than DC sensitivities, sigma weighting, metric generalization, binding-end selection, and sensitivity updates for N-1 radii?
+  \item[RQ6.] Can a radius-aware dispatch objective improve security margins and N-1 screening outcomes relative to cost OPF and SCOPF-style baselines, and what is the cost-security tradeoff?
+\end{description}
+
+\subsection{Benchmarks and Baselines}
+
+The benchmark suite uses PGLib-OPF cases from 5 to 10000 buses. The uncertainty-aware sigma experiments use synthetic load-proportional uncertainty and UnitCommitment.jl-derived hourly demand profiles where available. The required baselines are:
+\begin{itemize}
+  \item industry-style metrics: loading ratio, headroom, performance index, PTDF/LODF screening;
+  \item optimization baselines: case dispatch, cost OPF, SCOPF or N-1-constrained proxy dispatch, radius-aware dispatch;
+  \item probabilistic baselines: Gaussian overload probability and Cantelli upper bound;
+  \item ablations: no balance projection, DC-only sensitivities, AC L2 without sigma, sigma without variance-weighted balance, from-end-only AC constraints, no N-1 sensitivity update.
+\end{itemize}
+
+\subsection{Statistical Protocol}
+
+Monte Carlo experiments must use at least three independent seeds per case for final submission. For each metric and case, the paper should report mean, standard deviation, 95\% confidence intervals, and paired significance tests where a matched line-wise comparison is meaningful. Runtime experiments should use repeated runs after one warm-up run and report both wall-clock time and memory. Failure cases must be counted explicitly: AC PF non-convergence, infeasible base points, negative margins, islanding contingencies, and timeouts.
+
+\subsection{Reproducibility}
+
+The implementation records deterministic bus and line orderings, configuration files, solver choices, random seeds, schema version, and run artifacts. Submission-level experiments should report: hardware, operating system, Python version, package versions, HiGHS version, pandapower/PyPSA versions, solver tolerances, stopping criteria, input case checksums, and exact commands.
+
+\section{Results}
+\label{sec:results}
+
+This section reports evidence already available in the repository. These results are useful for shaping the paper, but they should be regenerated under one locked experimental configuration before submission.
+
+\subsection{DC--AC Radius Differences}
+
+A preliminary PGLib sweep attempted 21 networks. Nine cases had positive paired DC and AC global radii under the recorded configuration. Across those nine cases, the AC/DC radius ratio ranged from $0.031$ to $1.207$, with median $0.896$. The strongest observed disagreements occurred on ACTIVSg 200, IEEE RTS 73, GOC 2000, and IEEE RTS 24, where AC radii were much smaller than DC radii. This supports RQ1: DC radii are not a reliable surrogate for AC apparent-power security on all networks.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.82\textwidth]{fig1_dc_vs_ac_radius.png}
+\caption{DC versus AC global stability radii across the preliminary PGLib sweep. The figure answers RQ1 by showing that the DC certificate can either track or substantially overestimate the AC apparent-power margin, depending on the network and base point.\label{fig:dc-ac}}
+\end{figure}
+
+\input{tables/table_dc_ac_radii}
+
+The same sweep exposed important failure modes. Several large RTE cases failed AC PF initialization; two large cases timed out; and several cases had negative DC radii under the recorded configuration while the AC radius was positive. These are not nuisances to hide. They indicate that final experiments must enforce a consistent base-point policy and report infeasibility and solver failures as outcomes.
+
+\subsection{Sigma-Radius Experiments}
+
+Large-case sigma experiments demonstrate that the method scales to thousands of lines and exposes base infeasibility. In the 2000-bus GOC case, all 2737 monitored lines had finite positive sigma radii; the minimum was $5.48$ standard deviations and the median was $60.99$. In the 2736-bus Polish and 2869-bus PEGASE cases, the method identified four and three negative sigma-radius lines, respectively, meaning the average base point already exceeded the modeled thermal limit on those lines.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.76\textwidth]{fig2_l2_vs_sigma.pdf}
+\caption{Line-wise relationship between AC L2 radius and sigma radius for the IEEE 118-bus hourly uncertainty case. The scatter identifies whether uncertainty weighting changes the critical-line ranking relative to an isotropic L2 certificate.\label{fig:l2-sigma}}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.80\textwidth]{fig8_sigma_critical_lines.png}
+\caption{Lowest sigma-radius lines in the basic AC regime. This line-wise ranking complements the single global radius by showing which monitored branches become critical first under uncertainty-weighted injection perturbations.\label{fig:sigma-critical-lines}}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.78\textwidth]{fig9_flow_vs_limit_sigma.png}
+\caption{Base apparent-power flow versus thermal limit for the sigma-radius experiment. The figure separates current loading from uncertainty-driven vulnerability: several critical lines are not explained by loading alone.\label{fig:flow-vs-limit}}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.76\textwidth]{fig2b_sigma_heatmap.pdf}
+\caption{Per-bus active-power uncertainty used in the hourly sigma-radius experiment. This figure documents the heterogeneity that makes the sigma-radius different from an unweighted L2 margin.\label{fig:sigma-heatmap}}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.82\textwidth]{fig3_topology_sigma_radius.pdf}
+\caption{Topology visualization colored by sigma-radius for the hourly IEEE 118-bus experiment. The plot connects local uncertainty structure with line-level robustness margins.\label{fig:topology-sigma}}
+\end{figure}
+
+\input{tables/table_sigma_summary}
+
+Tightened-limit Monte Carlo tests at a target two-sigma margin provide a preliminary validation of the probability calculation. For example, the empirical overload probabilities were 0.0265 on case2000\_goc, 0.0305 on case2736sp\_k, 0.0310 on case2869\_pegase, and 0.0250 on the hourly case118 experiment. These are close to the one-sided Gaussian two-sigma reference of approximately 0.0228 when empirical flow variance is used, but the analytical sensitivity variance can overestimate or underestimate empirical variance depending on nonlinear AC behavior. This motivates reporting both analytical and empirical sigma-flow estimates.
+
+\subsection{Metric Ranking against Monte Carlo}
+
+The diagnostic question is not only how large the global radius is, but which metric actually finds dangerous lines. We therefore compare radius-based rankings with three families of alternatives. Directional-sensitivity metrics isolate response to selected transfers; headroom and loading ratio represent common operating heuristics; performance index compresses loading severity into a scalar score. On the case118 AC feasible-power-flow run with $\sigma_P=30$ MW and $\sigma_Q=30$ MVAr, AC radius metrics achieved Spearman correlation $\rho=0.832$ with empirical per-line overload probability, compared with $\rho=0.699$ for loading ratio and $\rho=0.722$ for headroom. Precision-at-5 was 0.504 for the radius metrics, compared with 0.487 for loading ratio and 0.500 for headroom. These differences are not yet a full benchmark claim, but they support the mechanism that radius combines margin and sensitivity information.
+
+\begin{figure}[H]
+\centering
+\subfloat[Directional sensitivity, max-generator to max-load transfer.]{\includegraphics[width=0.49\textwidth]{fig10_directional_sensitivity_classification.png}}
+\hfill
+\subfloat[Performance-index classification.]{\includegraphics[width=0.49\textwidth]{fig13_performance_index_classification.png}}
+\caption{Sensitivity-oriented and aggregate-performance baselines for dangerous-line classification. The plots show that transfer-specific sensitivity and classical performance index can miss empirically overloaded lines when the dangerous perturbation does not align with the assumed stress direction.\label{fig:sensitivity-performance-classifiers}}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\subfloat[Headroom classification.]{\includegraphics[width=0.49\textwidth]{fig11_headroom_classification.png}}
+\hfill
+\subfloat[Loading-ratio classification.]{\includegraphics[width=0.49\textwidth]{fig12_loading_ratio_classification.png}}
+\caption{Classical margin and loading heuristics for dangerous-line classification. These metrics are operationally familiar, but they do not explicitly account for the injection-space direction that most rapidly consumes the remaining margin.\label{fig:classical-classifiers}}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\subfloat[Sigma-radius classification.]{\includegraphics[width=0.49\textwidth]{fig14_sigma_radius_classification.png}}
+\hfill
+\subfloat[Overload-probability classification.]{\includegraphics[width=0.49\textwidth]{fig15_overload_probability_classification.png}}
+\caption{Radius-derived dangerous-line classifiers. The sigma-radius and its induced overload probability align more directly with Monte Carlo overload outcomes because they combine thermal margin, AC sensitivity, and the uncertainty metric.\label{fig:radius-probability-classifiers}}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.78\textwidth]{fig4_spearman_bar.png}
+\caption{Spearman rank correlation between security metrics and empirical overload probability in the IEEE 118-bus metric-comparison experiment. Radius-based metrics improve over loading-only indicators because they combine margin and sensitivity.\label{fig:spearman}}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.82\textwidth]{fig5_precision_at_k_curves.png}
+\caption{Precision-at-$k$ curves for metric-based critical-line screening. The figure answers whether the most dangerous lines selected by each metric are also empirically likely to overload under Monte Carlo perturbations.\label{fig:precision}}
+\end{figure}
+
+\input{tables/table_metric_comparison}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.88\textwidth]{fig16_hidden_danger_comparison.png}
+\caption{Mechanism behind hidden-danger lines. The decomposition $r=\mathrm{margin}/\norm{h}$ shows why a line with moderate loading can be empirically dangerous when its AC injection sensitivity is high.\label{fig:hidden-danger}}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.92\textwidth]{fig18_hidden_danger_metric_bars.png}
+\caption{Hidden-danger examples where conventional metrics suggest safety but the radius-based score identifies high risk confirmed by Monte Carlo. This figure supports the central claim that loading-only screening can miss sensitivity-driven risk.\label{fig:hidden-danger-bars}}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.82\textwidth]{fig17_transfer_margin_gap.png}
+\caption{Transfer-margin gap between the canonical stress direction and the stability-radius worst-case direction. The gap quantifies how much security can be overestimated when screening uses one prescribed transfer instead of the worst balanced injection perturbation.\label{fig:transfer-margin-gap}}
+\end{figure}
+
+\subsection{Radius-Aware Dispatch Use Case}
+
+The N-1 demo on the 118-bus case compared cost OPF, radius-aware OPF, and SCOPF-style baselines. In the recorded run, radius-aware OPF increased generation cost by 5.282\% relative to cost OPF, increased the minimum AC L2 radius from 0.8455 MW to 8.4564 MW, reduced maximum Gaussian overload probability from 0.4325 to 0.0453, and improved AC N-1 screening pass rate from 2.29\% to 85.71\%. This is a promising dispatch use case, but it should be positioned as an application of the certificate rather than as the central contribution unless the final paper develops the radius-aware OPF model and its own optimality guarantees.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.78\textwidth]{fig6_cost_security_tradeoff.png}
+\caption{Cost-security tradeoff in the IEEE 118-bus N-1 demo. The radius-aware dispatch increases cost while improving the certified radius and reducing probability-based overload risk.\label{fig:cost-security}}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.82\textwidth]{fig7_n1_overloads.png}
+\caption{N-1 screening outcomes for cost OPF, radius-aware OPF, and the SCOPF-style baseline. The result shows that a larger base-case stability radius can translate into fewer post-contingency overloads in nonlinear screening.\label{fig:n1-overloads}}
+\end{figure}
+
+\input{tables/table_dispatch_tradeoff}
+
+\section{Discussion}
+\label{sec:discussion}
+
+The preliminary evidence suggests three mechanisms. First, AC apparent-power constraints can be much tighter than DC active-power constraints because reactive flows, voltage magnitudes, and line-end asymmetry affect thermal loading. Second, radius-based metrics outperform loading-only metrics when danger is determined by both small margin and high sensitivity. Third, the certificate produces actionable directions: the worst-case perturbation is not merely a scalar score but an injection pattern that can be replayed in a nonlinear AC solver.
+
+The theoretical implications are also clear. Balanced projection is not a cosmetic modeling choice; it is required for slack-invariant certificates. The sigma radius is not an unrelated risk metric; it is the inverse-covariance metric radius, and its balanced projection must be variance-weighted. These properties make the framework coherent across deterministic, metric, and probabilistic interpretations.
+
+The practical implication is a post-dispatch screening layer. Operators or researchers can compute a radius for any candidate operating point, identify bottleneck lines, compare different dispatch policies, and replay worst-case perturbations. This complements OPF and SCOPF rather than replacing them.
+
+\subsection{Limitations and Failure Analysis}
+
+The AC certificate is local. Large perturbations can trigger nonlinear effects that are not captured by the fixed Jacobian, including PV/PQ switching, voltage-limit interactions, reactive power limits, or PF non-convergence. The current implementation focuses on static thermal limits and does not model dynamic stability, voltage-collapse margins, remedial actions, protection logic, storage, HVDC links, or multi-period operations.
+
+Several computational failure modes must be discussed explicitly in any submission. AC PF can fail on large or ill-conditioned networks. Base points can be infeasible, producing negative radii. Line outages can island the network, making LODF approximations undefined. Monte Carlo AC replay is expensive because every sample requires a nonlinear PF solve. Dense PTDF materialization is memory-intensive for the largest networks unless operator mode is used.
+
+\section{Conclusions}
+
+This paper proposes a balanced stability-radius framework for certifying the thermal robustness of power-system operating points under injection uncertainty. The key contribution is a unifying dual-norm formulation that covers DC, AC, L2, sigma, and metric radii, together with a sparse adjoint AC algorithm and theoretical guarantees for soundness, slack invariance, and metric-sigma equivalence. Preliminary experiments indicate that AC and DC radii can diverge substantially, that radius-based rankings can better predict empirical overloads than loading-only metrics, and that radius-aware dispatch can improve security margins at measurable cost. Before submission, the empirical section should be regenerated under a locked protocol with repeated runs, confidence intervals, ablations, and complete failure reporting.
+
+\section*{Reproducibility Checklist}
+
+The final manuscript should report all of the following:
+\begin{itemize}
+  \item datasets: PGLib-OPF case names and versions; UnitCommitment.jl instance versions;
+  \item hardware: CPU, memory, operating system, thread count;
+  \item software: Python, NumPy, SciPy, pandas, pandapower, PyPSA, HiGHS, and repository commit hash;
+  \item solver settings: AC PF initialization, tolerances, distributed slack policy, OPF headroom factor, time limits;
+  \item random settings: Monte Carlo seeds, number of samples, sampling distribution, balancing rule;
+  \item output contract: results schema version, units, bus/line ordering, and artifact paths;
+  \item statistics: means, standard deviations, 95\% confidence intervals, significance tests, and failure counts.
+\end{itemize}
+
+\authorcontributions{Conceptualization, A.N.; methodology, A.N.; software, A.N.; validation, A.N.; formal analysis, A.N.; investigation, A.N.; data curation, A.N.; writing---original draft preparation, A.N.; writing---review and editing, A.N.; visualization, A.N. The author has read and agreed to the published version of the manuscript.}
+
+\funding{This research received no external funding.}
+
+\institutionalreview{Not applicable.}
+
+\informedconsent{Not applicable.}
+
+\dataavailability{The benchmark inputs, code, and preliminary run artifacts used in this draft are contained in the project repository. Input cases are under \texttt{data/input/}; generated preliminary artifacts used for tables and figures are under \texttt{experiments/output/}, \texttt{analysis\_output/}, and \texttt{runs/}. A final submission should archive the exact repository commit and generated artifacts in a persistent public repository.}
+
+\acknowledgments{The author acknowledges the maintainers of the open-source power-system and scientific-computing packages used in this study.}
+
+\conflictsofinterest{The author declares no conflicts of interest.}
+
+\abbreviations{Abbreviations}{
+The following abbreviations are used in this manuscript:
+\\
+
+\noindent
+\begin{tabular}{@{}ll}
+AC & Alternating current\\
+DC & Direct current\\
+LODF & Line outage distribution factor\\
+OPF & Optimal power flow\\
+PF & Power flow\\
+PTDF & Power transfer distribution factor\\
+SCOPF & Security-constrained optimal power flow\\
+\end{tabular}
+}
+
+\begin{adjustwidth}{-\extralength}{0cm}
+\reftitle{References}
+\bibliography{references}
+\PublishersNote{}
+\end{adjustwidth}
+
+\end{document}

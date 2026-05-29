@@ -46,6 +46,7 @@ import numpy as np
 from stability_radius.base_point.pandapower_tools import (
     apply_lossless_policy_to_pandapower_net,
     apply_opp_result_to_pandapower_net,
+    detect_q_limit_events,
     ensure_ext_grid_at_slack,
     resolve_slack_bus_id,
 )
@@ -722,6 +723,14 @@ def solve_ac_fpf(
             "using OPP operating point directly (may cause Jacobian mismatch)."
         )
 
+    q_limit_events = detect_q_limit_events(nn)
+    if q_limit_events:
+        logger.warning(
+            "AC FPF/PF base point has %d generator reactive limit event(s); "
+            "fixed-PV/PQ AC linearization is diagnostic-only for this active set.",
+            int(len(q_limit_events)),
+        )
+
     return PyPSAAPFResult(
         bus_ids=tuple(bus_ids),
         v_mag_pu=v_mag,
@@ -736,6 +745,8 @@ def solve_ac_fpf(
         pf_repairs=list(pf_repairs),
         bus_p_mw=bus_p_mw_arr,
         bus_q_mvar=bus_q_mvar_arr,
+        q_limit_hit=bool(q_limit_events),
+        q_limit_events=tuple(q_limit_events),
         opp_gen_dispatch=opp_gen_dispatch,
         opp_vm_pu=opp_vm_pu,
     )

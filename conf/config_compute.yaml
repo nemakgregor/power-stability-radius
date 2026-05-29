@@ -65,6 +65,18 @@ compute:
     # Save full h-vectors (adjoint sensitivities) to .npz alongside results.json.
     save_h_vectors: false
 
+    # ---- Nonlinear AC replay validation ----
+    # Disabled by default because it runs additional pandapower PF solves.
+    # When enabled, compute replays worst-case directions for the top-k smallest
+    # finite AC L2 radii and writes validation_report.json/md.
+    validation:
+      nonlinear:
+        enabled: false
+        top_k: 20
+        scale_max: 5.0
+        tol: 0.01
+        max_iter: 20
+
   # ---- Outputs ----
   output:
     export_results: ""

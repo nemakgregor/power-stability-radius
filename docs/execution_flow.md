@@ -29,7 +29,8 @@ Common startup path:
 2. Persist the effective config, source config, and argv into the run directory.
 3. Translate CLI flags into `DCExtensionsConfig` and `ACExtensionsConfig`.
 4. Call `stability_radius.workflows.compute_results_for_case(...)`.
-5. Write `results.json`, optional `h_vectors.npz`, and formatted tables.
+5. Write `results.json`, optional `h_vectors.npz`, optional nonlinear
+   `validation_report.json/md`, and formatted tables.
 6. Optionally export a copy of `results.json` to a user-requested location.
 
 At a high level, `compute_results_for_case(...)` performs:
@@ -37,7 +38,9 @@ At a high level, `compute_results_for_case(...)` performs:
 1. Load the MATPOWER case and resolve the slack bus.
 2. Build the DC base point and compute selected DC radius variants.
 3. Build the AC base point and compute selected AC radius variants.
-4. Assemble per-line outputs plus `__meta__` provenance.
+4. If nonlinear AC validation is enabled, replay top-k worst-case AC L2
+   directions and merge compact validation fields into per-line outputs.
+5. Assemble per-line outputs plus `__meta__` provenance.
 
 ## `monte-carlo`
 

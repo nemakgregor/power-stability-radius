@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Sequence
 
 import numpy as np
@@ -12,6 +13,67 @@ from stability_radius.config import DEFAULT_OPF, OPFConfig
 logger = logging.getLogger(__name__)
 
 _RATING_ZERO_EPS = 1e-12
+
+
+class ConstraintStatus(str, Enum):
+    """Per-constraint certificate status used in result rows."""
+
+    OK_FINITE = "ok_finite"
+    OK_INFINITE = "ok_infinite"
+    BASE_INFEASIBLE = "base_infeasible"
+    DEGENERATE_SENSITIVITY = "degenerate_sensitivity"
+    UNCONSTRAINED_LIMIT = "unconstrained_limit"
+    PF_FAILED = "pf_failed"
+    JACOBIAN_SINGULAR = "jacobian_singular"
+    NONLINEAR_UNVALIDATED = "nonlinear_unvalidated"
+    NONLINEAR_OPTIMISTIC = "nonlinear_optimistic"
+    POST_CONTINGENCY_INFEASIBLE = "post_contingency_infeasible"
+    NONDIFFERENTIABLE_APPARENT_POWER = "nondifferentiable_apparent_power"
+
+
+def classify_constraint_certificate(
+    *,
+    margin: float,
+    dual_norm: float,
+    eps: float,
+    is_unconstrained: bool = False,
+) -> tuple[str, float, float]:
+    """
+    Classify one affine thermal constraint and return nonnegative radius fields.
+
+    Returns
+    -------
+    (status, certificate_radius, signed_distance)
+        ``certificate_radius`` is never negative. ``signed_distance`` preserves
+        the legacy signed margin/dual-norm distance for diagnostics and sorting.
+    """
+    margin_f = float(margin)
+    norm_f = float(dual_norm)
+    eps_f = float(eps)
+
+    if bool(is_unconstrained):
+        return (
+            ConstraintStatus.UNCONSTRAINED_LIMIT.value,
+            float("inf"),
+            float("inf"),
+        )
+
+    if not math.isfinite(margin_f) or not math.isfinite(norm_f) or norm_f < 0.0:
+        return (
+            ConstraintStatus.DEGENERATE_SENSITIVITY.value,
+            float("nan"),
+            float("nan"),
+        )
+
+    if margin_f < 0.0:
+        signed = margin_f / norm_f if norm_f > eps_f else float("-inf")
+        return ConstraintStatus.BASE_INFEASIBLE.value, 0.0, float(signed)
+
+    if norm_f <= eps_f:
+        return ConstraintStatus.OK_INFINITE.value, float("inf"), float("inf")
+
+    radius = margin_f / norm_f
+    return ConstraintStatus.OK_FINITE.value, float(max(radius, 0.0)), float(radius)
 
 
 @dataclass(frozen=True)

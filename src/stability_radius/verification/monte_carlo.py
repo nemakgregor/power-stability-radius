@@ -268,6 +268,31 @@ def _project_sum_zero_two_blocks_inplace(dp: np.ndarray, dq: np.ndarray) -> None
     dq -= np.mean(dq, axis=1, keepdims=True)
 
 
+def _project_gaussian_balance_weighted_inplace(
+    dp: np.ndarray,
+    dq: np.ndarray,
+    sigma_p: np.ndarray,
+    sigma_q: np.ndarray,
+) -> None:
+    """Condition diagonal Gaussian samples on zero P/Q sums."""
+    if dp.ndim != 2 or dq.ndim != 2:
+        raise ValueError("dp and dq must be 2D")
+    sigp2 = np.asarray(sigma_p, dtype=float).reshape(-1) ** 2
+    sigq2 = np.asarray(sigma_q, dtype=float).reshape(-1) ** 2
+    if sigp2.shape != (dp.shape[1],) or sigq2.shape != (dq.shape[1],):
+        raise ValueError("sigma arrays must match dp/dq bus dimension")
+
+    sum_sigp2 = float(np.sum(sigp2))
+    if sum_sigp2 > 0.0:
+        dp_sum = np.sum(dp, axis=1, keepdims=True)
+        dp -= sigp2[None, :] * dp_sum / sum_sigp2
+
+    sum_sigq2 = float(np.sum(sigq2))
+    if sum_sigq2 > 0.0:
+        dq_sum = np.sum(dq, axis=1, keepdims=True)
+        dq -= sigq2[None, :] * dq_sum / sum_sigq2
+
+
 def _sample_gaussian_ac(
     *,
     rng: np.random.Generator,
@@ -298,7 +323,7 @@ def _sample_gaussian_ac(
     z_q = rng.standard_normal(size=(int(n), int(n_bus)))
     dp = (sp[None, :] * z_p).astype(float, copy=False)
     dq = (sq[None, :] * z_q).astype(float, copy=False)
-    _project_sum_zero_two_blocks_inplace(dp, dq)
+    _project_gaussian_balance_weighted_inplace(dp, dq, sp, sq)
     return dp, dq
 
 
@@ -1121,8 +1146,6 @@ def run_monte_carlo_verification(
                 is_feas = False
                 worst = float("inf")
                 wpos = -1
-                if track_pl and per_line_overload_counts is not None:
-                    per_line_overload_counts += 1
             elif track_pl and per_line_overload_counts is not None:
                 is_feas, worst, wpos, overloaded = (
                     _ac_pf_sample_per_line_violations_mva(
@@ -1323,16 +1346,30 @@ def run_monte_carlo_verification(
     }
 
     if track_pl and per_line_overload_counts is not None:
-        n_eff = int(n_samples)
-        per_line_fracs = per_line_overload_counts.astype(float) / float(max(n_eff, 1))
+        n_pf_converged = max(int(n_samples) - int(pf_failures), 0)
+        per_line_fracs = per_line_overload_counts.astype(float) / float(
+            max(n_pf_converged, 1)
+        )
         comparisons["per_line_overload_counts"] = {
             line_key(int(line_ids[pos])): int(per_line_overload_counts[pos])
             for pos in range(len(line_ids))
         }
-        comparisons["per_line_overload_fractions"] = {
+        comparisons["per_line_overload_fractions_conditional_on_pf_converged"] = {
             line_key(int(line_ids[pos])): float(per_line_fracs[pos])
             for pos in range(len(line_ids))
         }
+        # Backward-compatible alias.  PF failures are excluded from the
+        # per-line denominator; use bad_sample_probability for overload-or-PF-fail.
+        comparisons["per_line_overload_fractions"] = comparisons[
+            "per_line_overload_fractions_conditional_on_pf_converged"
+        ]
+        comparisons["per_line_overload_fraction_denominator"] = int(n_pf_converged)
+        comparisons["bad_sample_probability"] = float(
+            1.0 - (float(feasible) / float(max(int(n_samples), 1)))
+        )
+        comparisons["pf_failure_probability"] = float(
+            float(pf_failures) / float(max(int(n_samples), 1))
+        )
 
     return VerificationResult(
         schema_version=1,

@@ -6,7 +6,12 @@ from typing import Any, Dict, Literal, Tuple
 
 import numpy as np
 
-from .common import LineBaseQuantities, get_line_base_quantities, line_key
+from .common import (
+    ConstraintStatus,
+    LineBaseQuantities,
+    get_line_base_quantities,
+    line_key,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -216,7 +221,7 @@ def effective_nminus1_l2_radii(
         f_post = f + alpha * fk
         f_post[k] = 0.0
 
-        margin_post = np.maximum(c - np.abs(f_post), 0.0)
+        margin_post = c - np.abs(f_post)
 
         if update_sensitivities:
             gk = Gm[k, :]  # (n,)
@@ -235,7 +240,7 @@ def effective_nminus1_l2_radii(
         else:
             denom = np.sqrt(g_proj_norm2)
 
-        radii_k = np.full(m, float("inf"), dtype=float)
+        radii_k = np.where(margin_post >= 0.0, float("inf"), float("-inf"))
         np.divide(margin_post, denom, out=radii_k, where=denom > eps)
 
         radii_k[k] = float("inf")  # skip the outaged line itself
@@ -303,12 +308,31 @@ def compute_nminus1_l2_radius(
         )
 
         k = line_key(lid)
+        r_n1 = float(best_r[pos])
+        if np.isfinite(r_n1) and r_n1 < 0.0:
+            status_n1 = ConstraintStatus.POST_CONTINGENCY_INFEASIBLE.value
+            cert_r_n1 = 0.0
+        elif np.isneginf(r_n1):
+            status_n1 = ConstraintStatus.POST_CONTINGENCY_INFEASIBLE.value
+            cert_r_n1 = 0.0
+        elif np.isposinf(r_n1):
+            status_n1 = ConstraintStatus.OK_INFINITE.value
+            cert_r_n1 = float("inf")
+        elif np.isfinite(r_n1):
+            status_n1 = ConstraintStatus.OK_FINITE.value
+            cert_r_n1 = max(float(r_n1), 0.0)
+        else:
+            status_n1 = ConstraintStatus.DEGENERATE_SENSITIVITY.value
+            cert_r_n1 = float("nan")
         results[k] = {
             "flow0_mw": float(base_q.flow0_mw[pos]),
             "p0_mw": float(base_q.p0_abs_mw[pos]),
             "p_limit_mw_est": float(base_q.limit_mva_assumed_mw[pos]),
             "margin_mw": float(base_q.margin_mw[pos]),
-            "radius_nminus1": float(best_r[pos]),
+            "radius_nminus1": float(r_n1),
+            "certificate_radius_nminus1": float(cert_r_n1),
+            "signed_distance_nminus1": float(r_n1),
+            "constraint_status_nminus1": str(status_n1),
             "worst_contingency": worst_pos,  # position in base_q.line_indices
             "worst_contingency_line_idx": worst_line_idx,
         }

@@ -27,12 +27,17 @@ import copy
 import logging
 import math
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 
 from stability_radius.base_point.pandapower_tools import (
     apply_lossless_policy_to_pandapower_net,
+    apply_gen_dispatch_to_pandapower_net,
+)
+from stability_radius.geometry.balanced import (
+    make_ac_block_specs,
+    worst_case_l2_direction,
 )
 from stability_radius.radii.common import estimate_line_limit_mva_with_flag
 
@@ -126,16 +131,10 @@ def _build_worst_case_perturbation(
     d = h.shape[0]
     n_bus = d // 2
 
-    if balance and n_bus > 0:
-        # Project each block onto the balanced subspace: x -= mean(x)
-        h[:n_bus] -= np.mean(h[:n_bus])
-        h[n_bus:] -= np.mean(h[n_bus:])
-
-    norm_h = float(np.linalg.norm(h, ord=2))
-    if norm_h < 1e-15:
-        return np.zeros(d, dtype=float)
-
-    direction = h / norm_h
+    direction = worst_case_l2_direction(
+        h,
+        make_ac_block_specs(n_bus, balance=bool(balance)),
+    )
     return direction * float(radius) * float(scale)
 
 
@@ -152,6 +151,7 @@ def verify_worst_case(
     lossless: bool = True,
     delta_u: np.ndarray | None = None,
     binding_end: str | None = None,
+    gen_dispatch_mw_by_name: Mapping[str, float] | None = None,
 ) -> WorstCaseVerificationResult:
     """
     Verify a worst-case perturbation by running a full nonlinear AC PF.
@@ -186,6 +186,9 @@ def verify_worst_case(
         ``"from"`` or ``"to"``.  If provided, the actual |S| is read
         from this specific line end (matching the analytical certificate)
         instead of taking ``max(S_from, S_to)``.
+    gen_dispatch_mw_by_name : mapping or None
+        Optional generator dispatch used to reproduce the certificate base
+        regime before applying the replay perturbation.
 
     Returns
     -------
@@ -230,6 +233,7 @@ def verify_worst_case(
     nn = copy.deepcopy(net)
     if lossless:
         nn = apply_lossless_policy_to_pandapower_net(nn)
+    apply_gen_dispatch_to_pandapower_net(nn, gen_dispatch_mw_by_name)
 
     # Apply perturbation as sgen injections
     dp = du[:n_bus]  # ΔP block (MW)
@@ -383,6 +387,7 @@ def find_violation_scale(
     scale_max: float = 50.0,
     tol: float = 0.01,
     max_iter: int = 30,
+    gen_dispatch_mw_by_name: Mapping[str, float] | None = None,
 ) -> ViolationScaleSearchResult:
     """Find the perturbation scale at which nonlinear PF violates the thermal limit.
 
@@ -422,6 +427,9 @@ def find_violation_scale(
         Convergence tolerance on the scale factor.
     max_iter : int
         Maximum binary search iterations.
+    gen_dispatch_mw_by_name : mapping or None
+        Optional generator dispatch used to reproduce the certificate base
+        regime before applying each replay perturbation.
 
     Returns
     -------
@@ -446,6 +454,7 @@ def find_violation_scale(
             lossless=lossless,
             delta_u=du,
             binding_end=binding_end,
+            gen_dispatch_mw_by_name=gen_dispatch_mw_by_name,
         )
         n_pf += 1
         trajectory.append({

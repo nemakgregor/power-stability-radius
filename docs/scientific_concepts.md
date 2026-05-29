@@ -320,14 +320,15 @@ implementations.
 **Question:** Under Gaussian injection uncertainty, what is the probability
 that a given line overloads?
 
-**Formula:** P(|f| > c) = Q((c - |f0|) / sigma) + Q((c + |f0|) / sigma)
+**DC formula:** P(|f| > c) = Q((c - |f0|) / sigma) + Q((c + |f0|) / sigma)
+
+**AC apparent-power formula:** P(|S0| + X > c) = Q((c - |S0|) / sigma)
 
 where Q is the Gaussian Q-function (tail probability).
 
-The second term accounts for the possibility of overload in the negative
-direction (flow reversal). For typical operating points where |f0| is much
-smaller than c, this second term is negligible, and the overload probability
-is approximately Q(r_sigma).
+For DC signed flows, the second term accounts for overload in the negative
+direction (flow reversal). For AC apparent power, the constraint is one-sided
+in the linearized magnitude variable, so the code reports the one-sided tail.
 
 **When to use:** When you need an explicit probability, e.g., for risk-based
 operations or planning studies.
@@ -336,7 +337,7 @@ operations or planning studies.
 - DC: `src/stability_radius/radii/probabilistic.py` (function
   `overload_probability_symmetric_limit`)
 - AC: `src/stability_radius/radii/ac_sigma_radius.py` (function
-  `_overload_probability_symmetric_limit`)
+  `overload_probability_one_sided_limit`)
 
 ### 5.5 N-1 Radius -- Contingency-Aware Security
 
@@ -406,6 +407,10 @@ by a **sigma-squared-weighted mean subtraction**:
 This differs from the standard mean subtraction used in the L2 case because
 the perturbation ellipsoid is anisotropic (Sigma-weighted). The unweighted
 mean subtraction would enforce balance in the wrong geometry.
+
+For AC reactive-power coordinates, this projection is applied only over the
+PQ-bus Q block of the reduced Jacobian. PV and slack Q entries in the expanded
+2n-vector representation remain zero/excluded.
 
 **Implemented in:** `src/stability_radius/radii/ac_sigma_radius.py`, within
 the `compute_ac_sigma_radius()` function (see the `if balance:` block).

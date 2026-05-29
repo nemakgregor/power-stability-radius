@@ -10,6 +10,7 @@ from .common import (
     LineBaseQuantities,
     as_1d_vector,
     as_2d_square_matrix,
+    classify_constraint_certificate,
     get_line_base_quantities,
     line_key,
 )
@@ -172,6 +173,17 @@ def compute_sigma_radius(
 
         margin = float(base_q.margin_mw[pos])
         r = sigma_radius(margin, sig)
+        is_unconstrained = False
+        if base_q.is_unconstrained is not None:
+            is_unconstrained = bool(
+                np.asarray(base_q.is_unconstrained, dtype=bool).reshape(-1)[pos]
+            )
+        status, cert_radius, signed_distance = classify_constraint_certificate(
+            margin=margin,
+            dual_norm=sig,
+            eps=1e-12,
+            is_unconstrained=is_unconstrained,
+        )
 
         c = float(base_q.limit_mva_assumed_mw[pos])
         f0 = float(base_q.flow0_mw[pos])
@@ -185,6 +197,9 @@ def compute_sigma_radius(
             "margin_mw": margin,
             "sigma_flow": float(sig),
             "radius_sigma": float(r),
+            "certificate_radius_sigma": float(cert_radius),
+            "signed_distance_sigma": float(signed_distance),
+            "constraint_status_sigma": str(status),
             "overload_probability": float(prob),
         }
 

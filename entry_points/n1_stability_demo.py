@@ -1064,7 +1064,7 @@ def _compute_sigma_and_baselines(
     # sigma-radius: r_sigma = margin / sigma_flow
     r_sigma = np.where(sigma_flow > eps, margin / sigma_flow, float("inf"))
 
-    # Overload probability (Gaussian): P(|S| > c)
+    # Overload probability (Gaussian): P(S0 + X > c) for apparent-power limits.
     overload_probs = np.zeros(n_actual, dtype=float)
     for i in range(n_actual):
         sf = float(sigma_flow[i])
@@ -1072,13 +1072,13 @@ def _compute_sigma_and_baselines(
             overload_probs[i] = 0.0 if margin[i] > 0 else 1.0
         else:
             from stability_radius.radii.ac_sigma_radius import (
-                _overload_probability_symmetric_limit,
+                overload_probability_one_sided_limit,
             )
 
-            overload_probs[i] = _overload_probability_symmetric_limit(
-                s0_mva=float(s0_arr[i]),
-                c_mva=float(s_limit_arr[i]),
-                sigma_mva=sf,
+            overload_probs[i] = overload_probability_one_sided_limit(
+                y0=float(s0_arr[i]),
+                limit=float(s_limit_arr[i]),
+                sigma=sf,
             )
 
     # --- Baseline metrics ---

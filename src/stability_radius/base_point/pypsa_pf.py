@@ -52,6 +52,7 @@ import numpy as np
 from stability_radius.base_point.pandapower_tools import (
     apply_gen_dispatch_to_pandapower_net,
     apply_lossless_policy_to_pandapower_net,
+    detect_q_limit_events,
     ensure_ext_grid_at_slack,
     resolve_slack_bus_id,
 )
@@ -98,6 +99,8 @@ class PyPSAAPFResult:
     distributed_slack_used: bool = False
     bus_p_mw: np.ndarray | None = None  # (n_bus,) net P injection per bus from AC PF
     bus_q_mvar: np.ndarray | None = None  # (n_bus,) net Q injection per bus from AC PF
+    q_limit_hit: bool = False
+    q_limit_events: tuple[dict[str, Any], ...] = ()
     opp_gen_dispatch: dict[str, float] | None = None  # gen_id -> P_mw from OPP
     opp_vm_pu: dict[int, float] | None = None  # bus_id -> Vm from OPP
 
@@ -491,6 +494,14 @@ def _solve_ac_pf_with_pandapower(
     if not hasattr(nn, "res_line") or nn.res_line is None or len(nn.res_line) == 0:
         raise RuntimeError("pandapower did not produce res_line results.")
 
+    q_limit_events = detect_q_limit_events(nn)
+    if q_limit_events:
+        logger.warning(
+            "pandapower AC PF solved with %d generator reactive limit event(s); "
+            "fixed-PV/PQ AC linearization is diagnostic-only for this active set.",
+            int(len(q_limit_events)),
+        )
+
     idx = [int(x) for x in line_indices]
     p0 = np.zeros(len(idx), dtype=float)
     q0 = np.zeros(len(idx), dtype=float)
@@ -539,6 +550,8 @@ def _solve_ac_pf_with_pandapower(
         distributed_slack_used=bool(distributed_slack_used),
         bus_p_mw=bus_p_mw_arr,
         bus_q_mvar=bus_q_mvar_arr,
+        q_limit_hit=bool(q_limit_events),
+        q_limit_events=tuple(q_limit_events),
     )
 
 

@@ -57,6 +57,8 @@ def test_ac_l2_radius_smoke_small_net() -> None:
     assert "radius_ac_l2" in row
     r = float(row["radius_ac_l2"])
     assert math.isfinite(r) or math.isinf(r)
+    assert "constraint_status_ac_l2" in row
+    assert float(row["certificate_radius_ac_l2"]) >= 0.0
 
     assert float(row["ac_s_limit_mva"]) > 0.0
     assert float(row["ac_s0_from_mva"]) >= 0.0
@@ -74,6 +76,8 @@ def test_ac_l2_radius_near_zero_flow_keeps_nonzero_sensitivity() -> None:
     Contract:
     - The computed sensitivity norm must remain strictly positive (||h||2 > 0).
     - The resulting radius must be > 0 (finite or +inf).
+    - The nonnegative certificate field is not treated as strict because the
+      apparent-power norm is nondifferentiable at |S0|=0.
     """
     from stability_radius.base_point.pypsa_pf import (
         solve_ac_pf_base_point_from_pandapower,
@@ -132,3 +136,6 @@ def test_ac_l2_radius_near_zero_flow_keeps_nonzero_sensitivity() -> None:
 
     assert float(row["||h||2"]) > 0.0
     assert float(row["radius_ac_l2"]) > 0.0
+    assert row["nondifferentiable_apparent_power"] is True
+    assert row["constraint_status_ac_l2"] == "nondifferentiable_apparent_power"
+    assert float(row["certificate_radius_ac_l2"]) == 0.0

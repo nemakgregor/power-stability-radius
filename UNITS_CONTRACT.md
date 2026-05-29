@@ -325,6 +325,10 @@ Each line has two ends, and the certificate treats them separately:
 ### 8.4 AC Balancing
 
 When AC balancing is enabled, perturbations are projected so that both active and reactive totals remain balanced in the intended subspace.
+For the reduced AC model, independent reactive perturbations are restricted
+to PQ-bus coordinates. PV and slack-bus Q coordinates are zeroed/excluded in
+AC sigma and metric radii unless a future active-set model explicitly adds
+them.
 
 ### 8.5 AC Metric Radius (CURRENT)
 
@@ -333,7 +337,10 @@ The AC metric radius generalizes the AC L2 radius to a positive-definite metric.
 Contract:
 
 - if `M = I`, the metric radius matches the AC L2 radius;
-- diagonal inverse-variance choices recover sigma-like weighted behavior.
+- diagonal inverse-variance choices recover sigma-like weighted behavior;
+- under balance, the metric dual norm uses the constrained projection
+  `M^{-1} - M^{-1}C^T(CM^{-1}C^T)^+CM^{-1}`, not unweighted
+  mean-subtraction.
 
 #### Implementation
 
@@ -342,10 +349,16 @@ Contract:
 ### 8.6 AC Sigma Radius (CURRENT)
 
 The AC sigma-radius normalizes line-end margin by the line-end flow standard deviation induced by bus-level `sigma_p` and `sigma_q`.
+The Q block uses only PQ-bus coordinates from the reduced AC model; PV and
+slack Q entries are not independent uncertainty coordinates for the
+certificate.
 
 #### Overload Probability
 
-Under the Gaussian approximation, the same ingredients provide an approximate overload probability.
+Under the Gaussian approximation, the same ingredients provide an approximate
+overload probability. For AC apparent power the reported probability is
+one-sided: `P(|S0| + X > c) = Q((c - |S0|) / sigma_flow)`. The two-sided
+signed-flow probability remains the DC convention.
 
 #### Sigma Sources
 
@@ -354,6 +367,31 @@ Sigma can come from:
 - uniform scalar values;
 - UC.jl-derived profiles;
 - synthetic load-proportional rules in experiment pipelines.
+
+### 8.7 Nonlinear Replay Validation (CURRENT)
+
+`radius_ac_l2_linear` is the exact dual-norm radius for the frozen first-order
+AC model. When `compute.ac.validation.nonlinear.enabled=true`, the compute
+pipeline additionally replays the top-k worst-case AC L2 directions with
+nonlinear pandapower PF and reports optional validation fields.
+
+Contract:
+
+- `radius_ac_l2_validated` is nonnegative and never exceeds the linear
+  certificate radius for the replayed line.
+- `nonlinear_conservatism_ratio > 1` means nonlinear replay did not violate
+  before the linear boundary; `< 1` means the linear approximation was
+  optimistic for that replayed direction.
+- `linearization_status` records the validation state without changing the
+  meaning of the linear certificate.
+- `q_limit_hit` and `pv_pq_switch_detected` diagnose generator reactive-limit
+  events that invalidate strict fixed-PV/PQ linearization claims.
+- If the binding apparent-power base point has `|S0| <= eps`, the norm
+  gradient is nondifferentiable. Legacy `radius_ac_l2` remains a diagnostic
+  fallback radius, while `certificate_radius_ac_l2` is set to zero and
+  `constraint_status_ac_l2 = nondifferentiable_apparent_power`.
+- Detailed replay trajectories are stored outside `results.json` in
+  `validation_report.json`.
 
 #### Implementation
 
@@ -376,6 +414,9 @@ Worst-case verification applies the analytical worst-case perturbation direction
 ### 8.8 AC Sigma Monte Carlo (CURRENT)
 
 This workflow samples AC perturbations, solves a PF for each sample, and compares empirical overload behavior with sigma-radius expectations.
+For heterogeneous sigma, balance uses the sigma-squared weighted conditional
+Gaussian projection. PF failures are reported as bad samples and as a PF
+failure probability, but they are not counted as overloads on every line.
 
 #### Implementation
 
@@ -438,9 +479,15 @@ Typical DC fields include:
 - `margin_mw`
 - `norm_g`
 - `radius_l2`
+- `constraint_status_l2`
+- `certificate_radius_l2`
+- `signed_distance_l2`
 - `radius_sigma`
 - `overload_probability`
 - `radius_nminus1`
+- `constraint_status_nminus1`
+- `certificate_radius_nminus1`
+- `signed_distance_nminus1`
 - `worst_contingency_line_idx`
 
 ### 10.4 Per-Line Fields (AC)
@@ -454,11 +501,27 @@ Minimal AC fields:
 - `||h||2`
 - `binding_end`
 - `radius_ac_l2`
+- `radius_ac_l2_linear`
+- `constraint_status_ac_l2`
+- `certificate_radius_ac_l2`
+- `signed_distance_ac_l2`
+- `nondifferentiable_apparent_power`
+- `radius_ac_l2_validated`
+- `validation_scale_safe`
+- `validation_scale_violation`
+- `nonlinear_conservatism_ratio`
+- `pf_replay_status`
+- `max_replay_rel_error`
+- `nonlinear_validation_n_pf_calls`
+- `linearization_status`
 
 If AC sigma is computed, additional fields may include:
 
 - `sigma_flow_mva`
 - `radius_ac_sigma`
+- `constraint_status_ac_sigma`
+- `certificate_radius_ac_sigma`
+- `signed_distance_ac_sigma`
 - `overload_probability_ac`
 - `worst_case_dp_mw`
 - `worst_case_dq_mvar`
@@ -477,6 +540,29 @@ This can mean either:
 - a base point inconsistent with the modeled limits.
 
 Verification status handling distinguishes these situations.
+
+### 11.1.1 Constraint-Level Certificate Status
+
+Per-line result rows may include a `constraint_status_*` field alongside the
+legacy `radius_*` field. The nonnegative certificate radius is stored in
+`certificate_radius_*`; `signed_distance_*` preserves the signed
+`margin / dual_norm` diagnostic when the base point is already infeasible.
+
+Known status values:
+
+- `ok_finite`
+- `ok_infinite`
+- `base_infeasible`
+- `degenerate_sensitivity`
+- `unconstrained_limit`
+- `pf_failed`
+- `jacobian_singular`
+- `nonlinear_unvalidated`
+- `nonlinear_optimistic`
+
+In schema version 3, legacy `radius_*` fields are retained for compatibility
+and can still be negative for base-infeasible constraints. New consumers should
+prefer `constraint_status_*` and `certificate_radius_*`.
 
 ### 11.2 AC PF Non-Convergence in Monte Carlo
 

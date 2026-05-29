@@ -22,12 +22,13 @@ power-stability-radius project.  For each format the following are covered:
    2. [Monte Carlo Verification JSON](#22-monte-carlo-verification-json)
    3. [Verification Report (Markdown)](#23-verification-report-markdown)
    4. [h-Vectors (NumPy .npz)](#24-h-vectors-numpy-npz)
-   5. [ASCII Results Tables](#25-ascii-results-tables)
-   6. [CSV Outputs](#26-csv-outputs)
-   7. [Plot Outputs](#27-plot-outputs)
-   8. [Run Artifacts](#28-run-artifacts)
-   9. [Experiment Outputs](#29-experiment-outputs)
-   10. [Debug Logs](#210-debug-logs)
+   5. [Nonlinear Validation Report](#25-nonlinear-validation-report)
+   6. [ASCII Results Tables](#26-ascii-results-tables)
+   7. [CSV Outputs](#27-csv-outputs)
+   8. [Plot Outputs](#28-plot-outputs)
+   9. [Run Artifacts](#29-run-artifacts)
+   10. [Experiment Outputs](#210-experiment-outputs)
+   11. [Debug Logs](#211-debug-logs)
 
 ---
 
@@ -418,6 +419,8 @@ table:
     - margin_mw
     - norm_g
     - radius_l2
+    - constraint_status_l2
+    - certificate_radius_l2
   ac_extra_columns:                # str[] - AC section columns
     - ac_s_limit_mva
     - ac_s0_from_mva
@@ -426,6 +429,8 @@ table:
     - "||h||2"
     - binding_end
     - radius_ac_l2
+    - constraint_status_ac_l2
+    - certificate_radius_ac_l2
 ```
 
 #### Schema: `config_compute.yaml`
@@ -453,6 +458,13 @@ compute:
     metric:
       enabled: false               # bool - compute metric-radius cross-check
     save_h_vectors: false          # bool - save h-vectors to .npz
+    validation:
+      nonlinear:
+        enabled: false             # bool - replay top-k worst-case directions
+        top_k: 20                  # int - number of smallest AC L2 radii
+        scale_max: 5.0             # float - max scale searched
+        tol: 0.01                  # float - scale binary-search tolerance
+        max_iter: 20               # int - binary-search iterations
 
   output:
     export_results: ""             # str - copy results.json to this path
@@ -639,6 +651,12 @@ Top-level JSON object with two kinds of keys:
 | `metric_enabled` | bool | Whether metric-radius was requested. |
 | `metric_computed` | bool | Whether metric-radius was computed. |
 | `save_h_vectors` | bool | Whether h-vectors were saved to .npz. |
+| `nonlinear_validation_enabled` | bool | Whether nonlinear top-k replay was requested. |
+| `nonlinear_validation_computed` | bool | Whether nonlinear top-k replay was run. |
+| `nonlinear_validation_top_k` | int | Requested number of AC L2 lines to replay. |
+| `nonlinear_validation_scale_max` | float | Maximum replay scale searched. |
+| `nonlinear_validation_tol` | float | Scale tolerance for replay binary search. |
+| `nonlinear_validation_max_iter` | int | Maximum binary-search iterations. |
 
 **`__meta__.opf` object:**
 
@@ -670,21 +688,30 @@ Each `line_<N>` key maps to a dict containing DC fields, AC fields, or both:
 | `is_unconstrained` | bool | -- | True if the line has no real thermal constraint. |
 | `margin_mw` | float | MW | `p_limit_mw_est - p0_mw`. Can be negative. |
 | `norm_g` | float | -- | L2 norm of the projected sensitivity row vector `||g||_2`. |
-| `radius_l2` | float | MW | DC L2 stability radius: `margin_mw / norm_g`. |
+| `radius_l2` | float | MW | Legacy signed DC L2 distance: `margin_mw / norm_g`. |
+| `constraint_status_l2` | string | -- | Constraint-level status such as `ok_finite`, `base_infeasible`, or `unconstrained_limit`. |
+| `certificate_radius_l2` | float | MW | Nonnegative DC L2 certificate radius. |
+| `signed_distance_l2` | float | MW | Signed diagnostic distance `margin_mw / norm_g`. |
 
 **DC probabilistic fields** (present when `dc.probabilistic_enabled=true`):
 
 | Key | Type | Unit | Description |
 |-----|------|------|-------------|
 | `sigma_flow` | float | MW | Standard deviation of line flow: `inj_std_mw * norm_g`. |
-| `radius_sigma` | float | -- | Sigma-weighted radius: `margin_mw / sigma_flow`. |
+| `radius_sigma` | float | -- | Legacy signed sigma distance: `margin_mw / sigma_flow`. |
+| `constraint_status_sigma` | string | -- | Constraint-level status for the sigma model. |
+| `certificate_radius_sigma` | float | -- | Nonnegative sigma certificate radius. |
+| `signed_distance_sigma` | float | -- | Signed diagnostic sigma distance. |
 | `overload_probability` | float | [0,1] | Two-sided Gaussian overload probability. |
 
 **DC N-1 fields** (present when `dc.nminus1_enabled=true`):
 
 | Key | Type | Unit | Description |
 |-----|------|------|-------------|
-| `radius_nminus1` | float | MW | Effective N-1 radius. |
+| `radius_nminus1` | float | MW | Legacy signed effective N-1 distance. Negative values indicate a post-contingency base infeasibility. |
+| `constraint_status_nminus1` | string | -- | `ok_finite`, `ok_infinite`, or `post_contingency_infeasible`. |
+| `certificate_radius_nminus1` | float | MW | Nonnegative N-1 certificate radius. |
+| `signed_distance_nminus1` | float | MW | Signed N-1 diagnostic distance. |
 
 **AC fields** (present when `compute_ac=true`):
 
@@ -696,21 +723,42 @@ Each `line_<N>` key maps to a dict containing DC fields, AC fields, or both:
 | `binding_end` | string | -- | `"from"` or `"to"` -- which end is closer to the limit. |
 | `margin_ac_mva` | float | MVA | `ac_s_limit_mva - max(ac_s0_from_mva, ac_s0_to_mva)`. |
 | `\|\|h\|\|2` | float | -- | L2 norm of the binding-end h-vector. |
-| `radius_ac_l2` | float | MW | AC L2 stability radius: `margin_ac_mva / ||h||_2`. |
+| `radius_ac_l2` | float | MW | Legacy signed AC L2 distance: `margin_ac_mva / ||h||_2`. |
+| `radius_ac_l2_linear` | float | MW | Alias for the legacy linear first-order AC L2 distance. |
+| `constraint_status_ac_l2` | string | -- | Constraint-level AC L2 status. |
+| `certificate_radius_ac_l2` | float | MW | Nonnegative linear AC L2 certificate radius. |
+| `signed_distance_ac_l2` | float | MW | Signed diagnostic distance `margin_ac_mva / ||h||_2`. |
+| `nondifferentiable_apparent_power` | bool | -- | True when the binding AC apparent-power base point has `|S0|` near zero; the legacy radius is diagnostic, not a strict first-order certificate. |
+| `radius_ac_l2_validated` | float | MW | Nonnegative radius retained after nonlinear replay; present when top-k replay is enabled. |
+| `validation_scale_safe` | float | -- | Largest replay scale observed converged and non-violating. |
+| `validation_scale_violation` | float | -- | Estimated first nonlinear violation scale relative to the linear boundary. |
+| `nonlinear_conservatism_ratio` | float | -- | Same scale ratio; `>1` conservative, `<1` optimistic, `inf` no violation up to `scale_max`. |
+| `pf_replay_status` | string | -- | Nonlinear replay PF status summary, e.g. `"converged"` or `"pf_failed"`. |
+| `max_replay_rel_error` | float | -- | Maximum relative error between replayed nonlinear apparent power and linear prediction over converged replay points. |
+| `nonlinear_validation_n_pf_calls` | int | -- | Number of PF calls used for this line's violation-scale search. |
+| `linearization_status` | string | -- | Nonlinear validation or active-set status; `nonlinear_unvalidated`, `validated_local`, `nonlinear_optimistic`, or `invalid_active_set_changed_q_limit`. |
+| `q_limit_hit` | bool | -- | True if the AC base PF detected a generator/ext_grid reactive-limit event. |
+| `pv_pq_switch_detected` | bool | -- | True when Q-limit diagnostics indicate that the fixed PV/PQ active set is no longer a strict certificate model. |
 
 **AC sigma fields** (present when sigma arrays are provided):
 
 | Key | Type | Unit | Description |
 |-----|------|------|-------------|
 | `sigma_flow_mva` | float | MVA | Standard deviation of linearised flow: `||diag(sigma) * h||_2`. |
-| `radius_ac_sigma` | float | -- | Sigma-weighted AC radius: `margin_ac_mva / sigma_flow_mva`. |
-| `overload_probability_ac` | float | [0,1] | Two-sided Gaussian overload probability. |
+| `radius_ac_sigma` | float | -- | Legacy signed AC sigma distance: `margin_ac_mva / sigma_flow_mva`. |
+| `constraint_status_ac_sigma` | string | -- | Constraint-level AC sigma status. |
+| `certificate_radius_ac_sigma` | float | -- | Nonnegative AC sigma certificate radius. |
+| `signed_distance_ac_sigma` | float | -- | Signed diagnostic AC sigma distance. |
+| `overload_probability_ac` | float | [0,1] | One-sided Gaussian apparent-power overload probability. |
 
 **AC metric fields** (present when `ac.metric.enabled=true`):
 
 | Key | Type | Unit | Description |
 |-----|------|------|-------------|
 | `radius_ac_metric` | float | -- | Metric-radius with `M = diag(1/sigma^2)`. |
+| `constraint_status_ac_metric` | string | -- | Constraint-level AC metric status. |
+| `certificate_radius_ac_metric` | float | -- | Nonnegative AC metric certificate radius. |
+| `signed_distance_ac_metric` | float | -- | Signed diagnostic AC metric distance. |
 
 **AC worst-case fields:**
 
@@ -805,7 +853,11 @@ The output is the JSON serialisation of `VerificationResult.to_dict()`:
   "comparisons": {
     "dc_violation_count": 0,
     "dc_n_samples": 50000,
+    "per_line_overload_fractions_conditional_on_pf_converged": { "line_0": 0.0, "line_1": 0.001 },
     "per_line_overload_fractions": { "line_0": 0.0, "line_1": 0.001 },
+    "per_line_overload_fraction_denominator": 50000,
+    "pf_failure_probability": 0.0,
+    "bad_sample_probability": 0.001,
     "pf_failures_gaussian": 0,
     "ac_mc_bound_violations": 0
   },
@@ -960,7 +1012,45 @@ NumPy compressed archive (`.npz`) with the following arrays:
 
 ---
 
-### 2.5 ASCII Results Tables
+### 2.5 Nonlinear Validation Report
+
+#### Purpose
+
+Store the independent nonlinear AC replay diagnostics produced by
+`compute.ac.validation.nonlinear.enabled=true`. The linear AC L2 radius remains
+the first-order certificate; this report records how far the worst-case
+directions survive under nonlinear pandapower replay.
+
+#### Producer
+
+**Module:** `src/stability_radius/application/cli.py` (via `run_compute()`)
+
+Output locations:
+
+- `<runs_dir>/<run_id>/validation_report.json`
+- `<runs_dir>/<run_id>/validation_report.md`
+
+#### JSON Schema
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `schema_version` | int | Validation report schema version. |
+| `case` | string | Case tag/input stem. |
+| `top_k_requested` | int | Requested number of replayed AC L2 lines. |
+| `top_k_replayed` | int | Number of lines actually replayed. |
+| `scale_max` | float | Maximum scale searched beyond the linear boundary. |
+| `summary` | object | PF-call counts and gamma distribution summary. |
+| `lines` | object[] | Per-line replay summaries and full scale trajectories. |
+
+Per-line entries include `line_id`, `binding_end`, `radius_ac_l2_linear`,
+`radius_ac_l2_validated`, `validation_scale_safe`,
+`validation_scale_violation`, `nonlinear_conservatism_ratio`,
+`pf_replay_status`, `linearization_status`, `max_replay_rel_error`, and
+`trajectory`.
+
+---
+
+### 2.6 ASCII Results Tables
 
 #### Purpose
 
@@ -1003,11 +1093,11 @@ Summary(radius_l2): lines=41, finite_radii=41, mean=1234.56, min=12.34, max=9876
 
 ---
 
-### 2.6 CSV Outputs
+### 2.7 CSV Outputs
 
 Several CSV formats are produced by different components:
 
-#### 2.6.1 Per-Line Results CSV
+#### 2.7.1 Per-Line Results CSV
 
 **Producer:** `format_results_csv()` and `format_results_csv_sections()` in
 `src/stability_radius/postprocess/table.py`
@@ -1026,7 +1116,7 @@ line_0,12.345,12.345,400.0,387.655,0.28012,1383.52
 line_1,-56.789,56.789,426.0,369.211,0.31456,1173.83
 ```
 
-#### 2.6.2 Unified Per-Line Metrics CSV
+#### 2.7.2 Unified Per-Line Metrics CSV
 
 **Producer:** `entry_points/metrics_analysis.py` (`main()`)
 
@@ -1050,7 +1140,7 @@ Output location: `<output_dir>/unified_per_line_metrics.csv`
 | `cheb_prob_upper` | float | Cantelli upper bound on overload. |
 | `empirical_overload_prob` | float | MC-derived empirical overload fraction. |
 
-#### 2.6.3 Spearman Correlations CSV
+#### 2.7.3 Spearman Correlations CSV
 
 **Producer:** `entry_points/metrics_analysis.py`
 
@@ -1062,7 +1152,7 @@ Output location: `<output_dir>/spearman_correlations.csv`
 | `spearman_rho` | float | Spearman rank correlation coefficient. |
 | `p_value` | float | Two-sided p-value. |
 
-#### 2.6.4 Precision-at-k CSV
+#### 2.7.4 Precision-at-k CSV
 
 **Producer:** `entry_points/metrics_analysis.py`
 
@@ -1075,7 +1165,7 @@ Output location: `<output_dir>/precision_at_k.csv`
 | `mean_empirical_prob` | float | Mean empirical overload probability for top-k lines. |
 | `max_empirical_prob` | float | Maximum empirical overload probability for top-k lines. |
 
-#### 2.6.5 Experiment Summary CSV
+#### 2.7.5 Experiment Summary CSV
 
 **Producer:** `src/stability_radius/postprocess/collect_results.py` (`collect()`)
 
@@ -1104,7 +1194,7 @@ Output location: `run_artifacts/collect_results/all_results.csv`
 | `sigma_r_max` | string | Maximum AC sigma-radius. |
 | `sigma_r_count` | int | Number of finite sigma radii. |
 
-#### 2.6.6 Sigma-Radius Table CSV
+#### 2.7.6 Sigma-Radius Table CSV
 
 **Producer:** `entry_points/run_sigma_radius.py`
 
@@ -1115,11 +1205,11 @@ formatted for paper inclusion.
 
 ---
 
-### 2.7 Plot Outputs
+### 2.8 Plot Outputs
 
 All plots are generated with matplotlib using the `Agg` backend (no display).
 
-#### 2.7.1 Metrics Analysis Plots
+#### 2.8.1 Metrics Analysis Plots
 
 **Producer:** `entry_points/metrics_analysis.py`
 
@@ -1131,7 +1221,7 @@ All plots are generated with matplotlib using the `Agg` backend (no display).
 
 DPI: 150 for scatter plots, 150 for bar and histogram charts.
 
-#### 2.7.2 Experiment Plots
+#### 2.8.2 Experiment Plots
 
 **Producer:** `entry_points/run_sigma_radius.py`
 
@@ -1170,7 +1260,7 @@ DPI: 150 for scatter plots, 150 for bar and histogram charts.
 
 ---
 
-### 2.8 Run Artifacts
+### 2.9 Run Artifacts
 
 Every CLI invocation creates a timestamped run directory (or named directory
 when `run_dir_mode=overwrite`).
@@ -1196,6 +1286,8 @@ run_artifacts/<module>/<run_name>/     # when run_dir_mode=overwrite
 | `results_table_ac.csv` | CSV | AC results table (sections mode). |
 | `results_table.csv` | CSV | Flat-mode results table. |
 | `h_vectors.npz` | NumPy | h-vectors (when `save_h_vectors=true`). |
+| `validation_report.json` | JSON | Nonlinear AC replay report (when enabled). |
+| `validation_report.md` | Markdown | Compact nonlinear AC replay summary (when enabled). |
 | `monte_carlo_stats.json` | JSON | Monte Carlo verification output. |
 | `verification_report.md` | Markdown | Verification report (report command). |
 | `debug.log` | Text | Detailed timestamped log (level=DEBUG). |
@@ -1204,9 +1296,9 @@ run_artifacts/<module>/<run_name>/     # when run_dir_mode=overwrite
 
 ---
 
-### 2.9 Experiment Outputs
+### 2.10 Experiment Outputs
 
-#### 2.9.1 PGLib Sweep (`run_pglib_sweep.py`)
+#### 2.10.1 PGLib Sweep (`run_pglib_sweep.py`)
 
 Output directory: configured via `output_dir` in YAML (e.g., `run_artifacts/run_pglib_sweep/test_run_6/`)
 
@@ -1216,7 +1308,7 @@ Output directory: configured via `output_dir` in YAML (e.g., `run_artifacts/run_
 | `summary.json` | JSON | Aggregated results across all cases. Per case: `n_bus`, `n_line`, `dc_radius_l2_min`, `ac_radius_l2_min`, `compute_time_sec`, etc. |
 | `fig1_dc_vs_ac_radius.png` | PNG | DC vs AC radius comparison plot. |
 
-#### 2.9.2 Sigma-Radius Experiment (`run_sigma_radius.py`)
+#### 2.10.2 Sigma-Radius Experiment (`run_sigma_radius.py`)
 
 Output directory: configured via `output_dir` in YAML (e.g., `run_artifacts/run_sigma_radius/sigma_radius_hourly/`)
 
@@ -1232,13 +1324,13 @@ Output directory: configured via `output_dir` in YAML (e.g., `run_artifacts/run_
 | `validation.json` | JSON | MC validation results. |
 | `verification_results.json` | JSON | Per-line nonlinear worst-case verification. |
 
-#### 2.9.3 Worst-Case Verification (`run_worst_case_verify.py`)
+#### 2.10.3 Worst-Case Verification (`run_worst_case_verify.py`)
 
 | File | Format | Description |
 |------|--------|-------------|
 | `*_worst_case.json` | JSON | Worst-case verification results per line. |
 
-#### 2.9.4 Scalability (`run_scalability.py`)
+#### 2.10.4 Scalability (`run_scalability.py`)
 
 | File | Format | Description |
 |------|--------|-------------|
@@ -1246,7 +1338,7 @@ Output directory: configured via `output_dir` in YAML (e.g., `run_artifacts/run_
 
 ---
 
-### 2.10 Debug Logs
+### 2.11 Debug Logs
 
 #### Purpose
 

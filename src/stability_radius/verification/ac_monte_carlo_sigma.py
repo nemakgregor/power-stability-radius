@@ -19,8 +19,9 @@ Draw ``z ~ N(0, I_{2n})``, then scale element-wise::
 
 Balance enforcement
 -------------------
-Project each sample onto ``1ᵀΔP = 0,  1ᵀΔQ = 0`` by mean-subtraction
-(same projection used in the AC L2 and sigma-radius certificates).
+Project each sample onto balanced active and reactive subspaces with the
+sigma-squared weighted conditional Gaussian projection. This keeps the
+sampling model consistent with the AC sigma-radius denominator.
 
 Soundness metric
 ----------------
@@ -57,7 +58,15 @@ class ACSigmaMCResult:
     n_pf_failures : int
         Number of samples where AC power flow did not converge.
     empirical_overload_probability : dict[str, float]
-        Per-line empirical overload probability, keyed by ``line_<id>``.
+        Per-line empirical overload probability conditional on PF convergence,
+        keyed by ``line_<id>``. PF failures are counted in
+        ``bad_sample_probability`` but are not assigned to every line.
+    empirical_overload_probability_conditional_on_pf_converged : dict[str, float]
+        Explicit alias for the conditional per-line overload probability.
+    pf_failure_probability : float
+        Fraction of samples where AC PF did not converge.
+    bad_sample_probability : float
+        Fraction of samples with either a thermal overload or PF non-convergence.
     soundness_inside_sigma_ball : float
         Fraction of samples with ``‖Σ^{-1/2} Δu‖₂ ≤ r_σ`` that have
         no violations.  NaN if no samples fell inside the sigma ball.
@@ -67,6 +76,11 @@ class ACSigmaMCResult:
     n_violations: int
     n_pf_failures: int
     empirical_overload_probability: dict[str, float] = field(default_factory=dict)
+    empirical_overload_probability_conditional_on_pf_converged: dict[str, float] = (
+        field(default_factory=dict)
+    )
+    pf_failure_probability: float = 0.0
+    bad_sample_probability: float = 0.0
     soundness_inside_sigma_ball: float = float("nan")
 
 
@@ -329,7 +343,6 @@ def run_ac_monte_carlo_sigma(
         if not conv:
             n_pf_failures += 1
             n_violations += 1
-            per_line_overload_counts += 1
             continue
 
         is_feas, overloaded = _check_sample_violations(
@@ -347,11 +360,14 @@ def run_ac_monte_carlo_sigma(
 
     # Empirical overload probability per line
     empirical_overload_prob: dict[str, float] = {}
+    empirical_overload_prob_cond: dict[str, float] = {}
+    n_pf_converged = max(int(n_samples) - int(n_pf_failures), 0)
     for pos, lid in enumerate(line_ids):
         k = line_key(int(lid))
-        empirical_overload_prob[k] = float(per_line_overload_counts[pos]) / float(
-            max(n_samples, 1)
+        empirical_overload_prob_cond[k] = float(per_line_overload_counts[pos]) / float(
+            max(n_pf_converged, 1)
         )
+        empirical_overload_prob[k] = empirical_overload_prob_cond[k]
 
     # Soundness inside sigma ball
     if n_inside_ball > 0:
@@ -375,5 +391,8 @@ def run_ac_monte_carlo_sigma(
         n_violations=int(n_violations),
         n_pf_failures=int(n_pf_failures),
         empirical_overload_probability=empirical_overload_prob,
+        empirical_overload_probability_conditional_on_pf_converged=empirical_overload_prob_cond,
+        pf_failure_probability=float(n_pf_failures) / float(max(n_samples, 1)),
+        bad_sample_probability=float(n_violations) / float(max(n_samples, 1)),
         soundness_inside_sigma_ball=float(soundness),
     )

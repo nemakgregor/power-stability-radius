@@ -407,6 +407,36 @@ def build_parser(cfg: Any) -> argparse.ArgumentParser:
         type=int,
         default=int(_cfg_get(cfg, "compute.ac.save_h_vectors", 0)),
     )
+    p_compute.add_argument(
+        "--ac-validate-nonlinear",
+        type=int,
+        default=int(_cfg_get(cfg, "compute.ac.validation.nonlinear.enabled", 0)),
+        help="If 1, replay nonlinear AC PF for top-k finite AC L2 radii.",
+    )
+    p_compute.add_argument(
+        "--ac-validation-top-k",
+        type=int,
+        default=int(_cfg_get(cfg, "compute.ac.validation.nonlinear.top_k", 20)),
+        help="Number of smallest finite AC L2 radii to replay when nonlinear validation is enabled.",
+    )
+    p_compute.add_argument(
+        "--ac-validation-scale-max",
+        type=float,
+        default=float(_cfg_get(cfg, "compute.ac.validation.nonlinear.scale_max", 5.0)),
+        help="Maximum nonlinear replay scale searched beyond the linear boundary.",
+    )
+    p_compute.add_argument(
+        "--ac-validation-tol",
+        type=float,
+        default=float(_cfg_get(cfg, "compute.ac.validation.nonlinear.tol", 0.01)),
+        help="Scale tolerance for nonlinear violation binary search.",
+    )
+    p_compute.add_argument(
+        "--ac-validation-max-iter",
+        type=int,
+        default=int(_cfg_get(cfg, "compute.ac.validation.nonlinear.max_iter", 20)),
+        help="Maximum binary-search iterations for nonlinear violation scale.",
+    )
 
     # outputs
     p_compute.add_argument(
@@ -703,6 +733,53 @@ def _results_has_field(results: dict[str, Any], field: str) -> bool:
     return False
 
 
+def _format_validation_report_md(report: dict[str, Any]) -> str:
+    """Render the nonlinear AC replay report as compact Markdown."""
+    summary = report.get("summary", {})
+    if not isinstance(summary, dict):
+        summary = {}
+    lines = report.get("lines", [])
+    if not isinstance(lines, list):
+        lines = []
+
+    out: list[str] = [
+        "# Nonlinear AC Replay Validation",
+        "",
+        f"- Case: `{report.get('case', '')}`",
+        f"- Top-k requested: {report.get('top_k_requested', 0)}",
+        f"- Top-k replayed: {report.get('top_k_replayed', 0)}",
+        f"- Scale max: {report.get('scale_max', '')}",
+        f"- PF calls: {summary.get('n_pf_calls', 0)}",
+        f"- PF failed calls: {summary.get('n_pf_failed', 0)}",
+        f"- Lines with gamma < 1: {summary.get('n_lines_gamma_lt_1', 0)}",
+        f"- Median finite gamma: {summary.get('median_gamma', 'nan')}",
+        f"- 5th percentile finite gamma: {summary.get('p05_gamma', 'nan')}",
+        "",
+        "| rank | line | end | r_linear | r_validated | gamma | status | pf | max_rel_error |",
+        "|---:|---:|:---:|---:|---:|---:|:---|:---|---:|",
+    ]
+
+    for row in lines:
+        if not isinstance(row, dict):
+            continue
+        out.append(
+            "| {rank} | {line_id} | {binding_end} | {r_lin} | {r_val} | "
+            "{gamma} | {status} | {pf} | {rel} |".format(
+                rank=row.get("rank", ""),
+                line_id=row.get("line_id", ""),
+                binding_end=row.get("binding_end", ""),
+                r_lin=row.get("radius_ac_l2_linear", ""),
+                r_val=row.get("radius_ac_l2_validated", ""),
+                gamma=row.get("nonlinear_conservatism_ratio", ""),
+                status=row.get("linearization_status", ""),
+                pf=row.get("pf_replay_status", ""),
+                rel=row.get("max_replay_rel_error", ""),
+            )
+        )
+
+    return "\n".join(out) + "\n"
+
+
 def run_compute(
     args: argparse.Namespace, *, cfg_loaded: Any, cfg_path: Path, argv: Sequence[str]
 ) -> int:
@@ -751,6 +828,15 @@ def run_compute(
                     "enabled": int(args.ac_metric_enabled),
                 },
                 "save_h_vectors": int(args.ac_save_h_vectors),
+                "validation": {
+                    "nonlinear": {
+                        "enabled": int(args.ac_validate_nonlinear),
+                        "top_k": int(args.ac_validation_top_k),
+                        "scale_max": float(args.ac_validation_scale_max),
+                        "tol": float(args.ac_validation_tol),
+                        "max_iter": int(args.ac_validation_max_iter),
+                    }
+                },
             },
             "ac_fpf": {
                 "pg0_source": str(args.ac_fpf_pg0_source),
@@ -783,6 +869,11 @@ def run_compute(
         sigma_q_mvar_uniform=float(args.ac_sigma_q_uniform),
         metric_enabled=bool(int(args.ac_metric_enabled)),
         save_h_vectors=bool(int(args.ac_save_h_vectors)),
+        nonlinear_validation_enabled=bool(int(args.ac_validate_nonlinear)),
+        nonlinear_validation_top_k=int(args.ac_validation_top_k),
+        nonlinear_validation_scale_max=float(args.ac_validation_scale_max),
+        nonlinear_validation_tol=float(args.ac_validation_tol),
+        nonlinear_validation_max_iter=int(args.ac_validation_max_iter),
     )
 
     results = compute_results_for_case(
@@ -817,6 +908,21 @@ def run_compute(
         with log_stage(logger, "Write h-vectors (.npz)"):
             np.savez_compressed(str(h_path), **h_vectors_data)
             logger.info("Saved h-vectors: %s", str(h_path))
+
+    validation_report = results.pop("_validation_report", None)
+    if validation_report is not None:
+        with log_stage(logger, "Write nonlinear validation report"):
+            validation_json = (
+                json.dumps(validation_report, indent=2, ensure_ascii=False) + "\n"
+            )
+            (run_dir / "validation_report.json").write_text(
+                validation_json, encoding="utf-8"
+            )
+            (run_dir / "validation_report.md").write_text(
+                _format_validation_report_md(validation_report),
+                encoding="utf-8",
+            )
+            logger.info("Saved nonlinear validation report: %s", str(run_dir))
 
     with log_stage(logger, "Write Results (JSON)"):
         (run_dir / "results.json").write_text(
@@ -873,6 +979,8 @@ def run_compute(
         summary_fields.append("radius_nminus1")
     if _results_has_field(results, "radius_ac_l2"):
         summary_fields.append("radius_ac_l2")
+    if _results_has_field(results, "radius_ac_l2_validated"):
+        summary_fields.append("radius_ac_l2_validated")
     if _results_has_field(results, "radius_ac_sigma"):
         summary_fields.append("radius_ac_sigma")
     if _results_has_field(results, "radius_ac_metric"):

@@ -105,6 +105,8 @@ class BasePointAC:
     pf_repairs: tuple[str, ...] = ()  # list of repair actions applied
     distributed_slack_requested: bool = False
     distributed_slack_used: bool = False
+    q_limit_hit: bool = False
+    q_limit_events: tuple[dict[str, Any], ...] = ()
 
     # Optional: net active power injection per bus (MW), aligned with bus_ids.
     # From AC PF solution (includes losses at slack). Used by acpf dispatch mode.
@@ -129,6 +131,8 @@ class BasePointAC:
             "pf_repairs": list(self.pf_repairs),
             "distributed_slack_requested": bool(self.distributed_slack_requested),
             "distributed_slack_used": bool(self.distributed_slack_used),
+            "q_limit_hit": bool(self.q_limit_hit),
+            "q_limit_events": list(self.q_limit_events),
             "gen_dispatch_mw_by_name": [
                 (str(k), float(v)) for k, v in self.gen_dispatch_mw_by_name
             ],

@@ -1058,19 +1058,19 @@ def _run_tightened_limit_mc(
 
     # Analytical prediction (using empirical sigma)
     from stability_radius.radii.ac_sigma_radius import (
-        _overload_probability_symmetric_limit,
+        overload_probability_one_sided_limit,
     )
 
-    analytical_prob_empirical = _overload_probability_symmetric_limit(
-        s0_mva=s0_pf,
-        c_mva=tight_limit,
-        sigma_mva=sigma_flow_empirical,
+    analytical_prob_empirical = overload_probability_one_sided_limit(
+        y0=s0_pf,
+        limit=tight_limit,
+        sigma=sigma_flow_empirical,
     )
     # Also compute with analytical sigma for comparison
-    analytical_prob_analytical = _overload_probability_symmetric_limit(
-        s0_mva=s0,
-        c_mva=tight_limit,
-        sigma_mva=sigma_flow_analytical,
+    analytical_prob_analytical = overload_probability_one_sided_limit(
+        y0=s0,
+        limit=tight_limit,
+        sigma=sigma_flow_analytical,
     )
 
     logger.info(
