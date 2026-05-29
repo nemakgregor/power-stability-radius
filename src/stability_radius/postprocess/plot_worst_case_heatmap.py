@@ -22,11 +22,13 @@ _DEFAULT_INPUT_DIR = Path(ARTIFACTS_ROOT_NAME) / "run_worst_case_verify"
 
 
 def _load_json(path: Path) -> list | dict:
+    """Internal helper for module-local processing."""
     with path.open(encoding="utf-8") as fh:
         return json.load(fh)
 
 
 def plot(input_dir: Path, output_dir: Path) -> None:
+    """Execute the documented operation."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
     all_records: list[dict] = []
@@ -131,6 +133,7 @@ def plot(input_dir: Path, output_dir: Path) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """Run the command-line entry point."""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",

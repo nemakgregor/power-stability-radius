@@ -127,15 +127,6 @@ def overload_probability_two_sided_signed(
     return _qfunc((c - f_abs) / s) + _qfunc((c + f_abs) / s)
 
 
-def _overload_probability_symmetric_limit(
-    *, s0_mva: float, c_mva: float, sigma_mva: float
-) -> float:
-    """Backward-compatible wrapper for the signed two-sided helper."""
-    return overload_probability_two_sided_signed(
-        flow0=float(s0_mva), limit=float(c_mva), sigma=float(sigma_mva)
-    )
-
-
 def _validate_inputs(
     *,
     h_vectors: np.ndarray,
@@ -146,6 +137,7 @@ def _validate_inputs(
     line_ids: Sequence[int] | None,
     pq_mask: np.ndarray | None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, tuple[int, ...]]:
+    """Internal helper for module-local processing."""
     H = np.asarray(h_vectors, dtype=float)
     if H.ndim != 2:
         raise ValueError(f"h_vectors must be 2D, got shape={H.shape}")

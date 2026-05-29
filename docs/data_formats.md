@@ -688,7 +688,7 @@ Each `line_<N>` key maps to a dict containing DC fields, AC fields, or both:
 | `is_unconstrained` | bool | -- | True if the line has no real thermal constraint. |
 | `margin_mw` | float | MW | `p_limit_mw_est - p0_mw`. Can be negative. |
 | `norm_g` | float | -- | L2 norm of the projected sensitivity row vector `||g||_2`. |
-| `radius_l2` | float | MW | Legacy signed DC L2 distance: `margin_mw / norm_g`. |
+| `radius_l2` | float | MW | Signed DC L2 diagnostic distance: `margin_mw / norm_g`. |
 | `constraint_status_l2` | string | -- | Constraint-level status such as `ok_finite`, `base_infeasible`, or `unconstrained_limit`. |
 | `certificate_radius_l2` | float | MW | Nonnegative DC L2 certificate radius. |
 | `signed_distance_l2` | float | MW | Signed diagnostic distance `margin_mw / norm_g`. |
@@ -698,7 +698,7 @@ Each `line_<N>` key maps to a dict containing DC fields, AC fields, or both:
 | Key | Type | Unit | Description |
 |-----|------|------|-------------|
 | `sigma_flow` | float | MW | Standard deviation of line flow: `inj_std_mw * norm_g`. |
-| `radius_sigma` | float | -- | Legacy signed sigma distance: `margin_mw / sigma_flow`. |
+| `radius_sigma` | float | -- | Signed sigma diagnostic distance: `margin_mw / sigma_flow`. |
 | `constraint_status_sigma` | string | -- | Constraint-level status for the sigma model. |
 | `certificate_radius_sigma` | float | -- | Nonnegative sigma certificate radius. |
 | `signed_distance_sigma` | float | -- | Signed diagnostic sigma distance. |
@@ -708,7 +708,7 @@ Each `line_<N>` key maps to a dict containing DC fields, AC fields, or both:
 
 | Key | Type | Unit | Description |
 |-----|------|------|-------------|
-| `radius_nminus1` | float | MW | Legacy signed effective N-1 distance. Negative values indicate a post-contingency base infeasibility. |
+| `radius_nminus1` | float | MW | Signed effective N-1 diagnostic distance. Negative values indicate a post-contingency base infeasibility. |
 | `constraint_status_nminus1` | string | -- | `ok_finite`, `ok_infinite`, or `post_contingency_infeasible`. |
 | `certificate_radius_nminus1` | float | MW | Nonnegative N-1 certificate radius. |
 | `signed_distance_nminus1` | float | MW | Signed N-1 diagnostic distance. |
@@ -723,12 +723,12 @@ Each `line_<N>` key maps to a dict containing DC fields, AC fields, or both:
 | `binding_end` | string | -- | `"from"` or `"to"` -- which end is closer to the limit. |
 | `margin_ac_mva` | float | MVA | `ac_s_limit_mva - max(ac_s0_from_mva, ac_s0_to_mva)`. |
 | `\|\|h\|\|2` | float | -- | L2 norm of the binding-end h-vector. |
-| `radius_ac_l2` | float | MW | Legacy signed AC L2 distance: `margin_ac_mva / ||h||_2`. |
-| `radius_ac_l2_linear` | float | MW | Alias for the legacy linear first-order AC L2 distance. |
+| `radius_ac_l2` | float | MW | Signed AC L2 diagnostic distance: `margin_ac_mva / ||h||_2`. |
+| `radius_ac_l2_linear` | float | MW | Linear first-order AC L2 diagnostic distance. |
 | `constraint_status_ac_l2` | string | -- | Constraint-level AC L2 status. |
 | `certificate_radius_ac_l2` | float | MW | Nonnegative linear AC L2 certificate radius. |
 | `signed_distance_ac_l2` | float | MW | Signed diagnostic distance `margin_ac_mva / ||h||_2`. |
-| `nondifferentiable_apparent_power` | bool | -- | True when the binding AC apparent-power base point has `|S0|` near zero; the legacy radius is diagnostic, not a strict first-order certificate. |
+| `nondifferentiable_apparent_power` | bool | -- | True when the binding AC apparent-power base point has `|S0|` near zero; the signed radius is diagnostic, not a strict first-order certificate. |
 | `radius_ac_l2_validated` | float | MW | Nonnegative radius retained after nonlinear replay; present when top-k replay is enabled. |
 | `validation_scale_safe` | float | -- | Largest replay scale observed converged and non-violating. |
 | `validation_scale_violation` | float | -- | Estimated first nonlinear violation scale relative to the linear boundary. |
@@ -745,7 +745,7 @@ Each `line_<N>` key maps to a dict containing DC fields, AC fields, or both:
 | Key | Type | Unit | Description |
 |-----|------|------|-------------|
 | `sigma_flow_mva` | float | MVA | Standard deviation of linearised flow: `||diag(sigma) * h||_2`. |
-| `radius_ac_sigma` | float | -- | Legacy signed AC sigma distance: `margin_ac_mva / sigma_flow_mva`. |
+| `radius_ac_sigma` | float | -- | Signed AC sigma diagnostic distance: `margin_ac_mva / sigma_flow_mva`. |
 | `constraint_status_ac_sigma` | string | -- | Constraint-level AC sigma status. |
 | `certificate_radius_ac_sigma` | float | -- | Nonnegative AC sigma certificate radius. |
 | `signed_distance_ac_sigma` | float | -- | Signed diagnostic AC sigma distance. |
@@ -854,7 +854,6 @@ The output is the JSON serialisation of `VerificationResult.to_dict()`:
     "dc_violation_count": 0,
     "dc_n_samples": 50000,
     "per_line_overload_fractions_conditional_on_pf_converged": { "line_0": 0.0, "line_1": 0.001 },
-    "per_line_overload_fractions": { "line_0": 0.0, "line_1": 0.001 },
     "per_line_overload_fraction_denominator": 50000,
     "pf_failure_probability": 0.0,
     "bad_sample_probability": 0.001,

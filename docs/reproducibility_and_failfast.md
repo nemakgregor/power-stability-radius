@@ -1,9 +1,9 @@
-# Reproducibility And Fallbacks
+# Reproducibility And Fail-Fast Rules
 
 This document is the source of truth for runtime behaviors that are deterministic
 but can still change the chosen operating point, feasibility status, or metadata.
-These behaviors are not random; they are explicit repair rules, fallback chains,
-and surrogate values that the code applies in well-defined situations.
+These behaviors are not random; they are explicit guards, fail-fast rules, and
+surrogate values that the code applies in well-defined situations.
 
 ## Deterministic Tie-Breaks
 
@@ -19,7 +19,7 @@ The slack-bus rule matters because MATPOWER conversions can produce multiple
 `ext_grid` rows. The project now treats this as a deterministic tie-break rather
 than "first row wins".
 
-## Base-Point Repair And Fallback Chains
+## Base-Point Solves And Guards
 
 ### HiGHS deterministic defaults
 
@@ -31,37 +31,23 @@ reproducibility matters more than runtime. Multi-threaded HiGHS can change
 pivot order and produce different dispatch choices on tied or weakly conditioned
 LPs. The default `random_seed=42` is aligned across the same entrypoints.
 
-### DC OPF adaptive headroom
+### DC OPF headroom
 
 Location: `workflows.py`
 
-When `base_dispatch=dc_opf`, the solver first tries the configured
-`opf.headroom_factor`. If the OPF is infeasible, the workflow relaxes toward
-`1.0` using this deterministic schedule:
+When `base_dispatch=dc_opf`, the solver uses the configured
+`opf.headroom_factor` exactly once. If the OPF is infeasible, the compute run
+fails. The value used is recorded in `__meta__.opf.headroom_factor_used`.
 
-1. Configured `headroom_factor`
-2. `0.92`
-3. `0.95`
-4. `0.98`
-5. `1.0`
-
-Only values strictly larger than the configured headroom are appended. The
-actual value that succeeded is recorded in `__meta__.opf.headroom_factor_used`.
-
-### AC PF repair cascade
+### AC PF fail-fast policy
 
 Location: `base_point/pypsa_pf.py`
 
-For `solver="pandapower"`, the Newton-Raphson solve uses a fixed three-stage
-repair cascade:
-
-1. Primary attempt with the requested init
-2. Retry with the opposite init (`flat` <-> `dc`)
-3. Relaxed retry with `enforce_q_lims=False`, `distributed_slack=False`,
-   `init="flat"`
-
-The winning stage is recorded in `pf_attempt`. Any modifications are recorded in
-`pf_repairs`.
+For `solver="pandapower"`, the Newton-Raphson solve uses the requested init and
+model policy exactly once. If the solve fails, AC certificate computation fails
+instead of changing initialization, disabling Q limits, or substituting another
+base-point model. `pf_attempt` is therefore `"primary"` for successful AC PF
+base points.
 
 ### Large-network distributed-slack guard
 
@@ -78,11 +64,12 @@ Metadata:
 - `distributed_slack`: effective setting used by the successful solve
 - `pf_repairs` may include `distributed_slack_auto_disabled_large_network`
 
-### AC FPF repair cascade
+### AC FPF bounded attempts
 
 Location: `base_point/pandapower_opp.py`
 
-The AC feasibility solve (`pandapower.runopp`) uses at most three attempts:
+The AC feasibility solve (`pandapower.runopp`) uses at most the configured
+number of OPP attempts:
 
 1. `primary`: configured voltage bounds and init
 2. `relaxed_v`: voltage bounds widened to `[0.85, 1.15]`, `init="flat"`
@@ -131,7 +118,7 @@ Location: `base_point/pypsa_pf.py`
 
 When distributed slack is enabled, participation weights are based on generator
 headroom `max_p_mw - p_mw`. If no generator has positive headroom, the
-`ext_grid` receives a fixed fallback weight of `100.0` MW.
+`ext_grid` receives a fixed deterministic surrogate weight of `100.0` MW.
 
 ### Auto-created slack source
 

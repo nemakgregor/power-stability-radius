@@ -137,6 +137,7 @@ def _metric_balance_blocks(
 def _constraint_matrix_from_blocks(
     *, d: int, blocks: tuple[BlockSpec, ...]
 ) -> np.ndarray:
+    """Internal helper for module-local processing."""
     rows: list[np.ndarray] = []
     for block in blocks:
         idx = np.asarray(block.indices, dtype=int).reshape(-1)

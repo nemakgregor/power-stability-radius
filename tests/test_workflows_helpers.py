@@ -10,12 +10,11 @@ import pytest
 from stability_radius.config import OPFConfig
 from stability_radius.workflows import (
     ACExtensionsConfig,
-    _build_headroom_schedule,
     _build_sigma_arrays,
     compute_results_for_case,
     _merge_line_results,
     _run_ac_nonlinear_validation_topk,
-    _solve_dc_opf_with_adaptive_headroom,
+    _solve_dc_opf_once,
 )
 from stability_radius.verification.verify_worst_case import ViolationScaleSearchResult
 
@@ -150,13 +149,8 @@ class TestBuildSigmaArrays:
         np.testing.assert_array_equal(sq, sq_arr)
 
 
-class TestAdaptiveHeadroom:
-    def test_build_headroom_schedule_relaxes_towards_one(self):
-        assert _build_headroom_schedule(0.90) == [0.9, 0.92, 0.95, 0.98, 1.0]
-        assert _build_headroom_schedule(0.98) == [0.98, 1.0]
-        assert _build_headroom_schedule(1.0) == [1.0]
-
-    def test_solve_dc_opf_with_adaptive_headroom_retries_in_order(self):
+class TestDCOPFHeadroom:
+    def test_solve_dc_opf_once_uses_configured_headroom_only(self):
         cfg = OPFConfig(headroom_factor=0.90)
         bp_obj = object()
         base_obj = object()
@@ -164,15 +158,13 @@ class TestAdaptiveHeadroom:
 
         def _fake_build_dc_base_point_dc_opf(*, net, slack_bus, opf_cfg, limit_factor):
             seen.append(float(opf_cfg.headroom_factor))
-            if float(opf_cfg.headroom_factor) < 0.95:
-                raise RuntimeError("infeasible for this headroom")
             return bp_obj, base_obj
 
         with patch(
             "stability_radius.workflows.build_dc_base_point_dc_opf",
             side_effect=_fake_build_dc_base_point_dc_opf,
         ):
-            bp_dc, base_dc, used = _solve_dc_opf_with_adaptive_headroom(
+            bp_dc, base_dc, used = _solve_dc_opf_once(
                 net=object(),
                 slack_bus=0,
                 opf_cfg=cfg,
@@ -182,8 +174,31 @@ class TestAdaptiveHeadroom:
 
         assert bp_dc is bp_obj
         assert base_dc is base_obj
-        assert used == pytest.approx(0.95)
-        assert seen == [0.9, 0.92, 0.95]
+        assert used == pytest.approx(0.90)
+        assert seen == [0.9]
+
+    def test_solve_dc_opf_once_does_not_retry_on_infeasible(self):
+        cfg = OPFConfig(headroom_factor=0.90)
+        seen: list[float] = []
+
+        def _fake_build_dc_base_point_dc_opf(*, net, slack_bus, opf_cfg, limit_factor):
+            seen.append(float(opf_cfg.headroom_factor))
+            raise RuntimeError("infeasible for this headroom")
+
+        with patch(
+            "stability_radius.workflows.build_dc_base_point_dc_opf",
+            side_effect=_fake_build_dc_base_point_dc_opf,
+        ):
+            with pytest.raises(RuntimeError, match="infeasible"):
+                _solve_dc_opf_once(
+                    net=object(),
+                    slack_bus=0,
+                    opf_cfg=cfg,
+                    limit_factor=1.0,
+                    case_tag="case30",
+                )
+
+        assert seen == [0.9]
 
 
 def test_compute_ac_lossless_false_fails_before_certificate_build() -> None:

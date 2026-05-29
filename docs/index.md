@@ -19,7 +19,7 @@ This directory is the documentation source of truth for the repository. The proj
 | [experiments_and_evaluation.md](experiments_and_evaluation.md) | Benchmarking and experimental framing |
 | [metrics.md](metrics.md) | Metric definitions and interpretation |
 | [limitations_and_assumptions.md](limitations_and_assumptions.md) | Known modeling and implementation limits |
-| [reproducibility_and_fallbacks.md](reproducibility_and_fallbacks.md) | Determinism and fallback policy |
+| [reproducibility_and_failfast.md](reproducibility_and_failfast.md) | Determinism and fail-fast policy |
 | [n1_demo.md](n1_demo.md) | Details for the dedicated `n1_stability_demo` workflow |
 | [glossary.md](glossary.md) | Terminology and symbols |
 

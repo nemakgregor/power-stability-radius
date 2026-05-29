@@ -183,7 +183,8 @@ For AC mode with 10000 samples on a 2000-bus network, this can take minutes to h
 
 - Uses Newton-Raphson power flow
 - May not converge for heavily loaded or ill-conditioned networks
-- The 3-attempt retry cascade mitigates this but is not guaranteed to succeed
+- AC certificate computation fails fast on non-convergence instead of changing
+  initialization, disabling Q limits, or substituting another dispatch model
 
 ### 4.3 pandapower.runopp (AC FPF)
 
@@ -203,7 +204,7 @@ When ||g_l|| ≈ 0 (a line has near-zero sensitivity to all bus injections), the
 
 ### 5.2 Near-Zero Apparent Power
 
-**Source**: `radii/ac_l2.py`, `_FALLBACK_WP_WQ = 1/sqrt(2)`
+**Source**: `radii/ac_l2.py`, `_DIAGNOSTIC_SUBGRADIENT_WP_WQ = 1/sqrt(2)`
 
 When |S0| ≈ 0 at a line end, the gradient of the norm ||S|| is undefined. The code falls back to equal P/Q weights (w_P = w_Q = 1/√2), which is conservative but may not be tight.
 
@@ -250,7 +251,7 @@ If the base point is obtained from a dispatch (e.g., DC OPF) that doesn't fully 
 The MATPOWER parser uses a single deterministic path: internal `.m` parsing to
 PPC, then pandapower `from_ppc()` conversion. Some non-standard `.m` files may
 still fail parsing or conversion, but there is no secondary runtime parser
-fallback.
+path.
 
 ---
 

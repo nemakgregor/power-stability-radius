@@ -66,6 +66,7 @@ _SUPPORTED_COMMANDS: tuple[str, ...] = (
 
 
 def _dtype_from_str(s: str) -> np.dtype:
+    """Internal helper for module-local processing."""
     ss = str(s).strip().lower()
     if ss in ("float64", "f64"):
         return np.float64
@@ -75,17 +76,20 @@ def _dtype_from_str(s: str) -> np.dtype:
 
 
 def _parse_columns(value: str, *, default_columns: Sequence[str]) -> tuple[str, ...]:
+    """Internal helper for module-local processing."""
     if not str(value).strip():
         return tuple(default_columns)
     return tuple(x.strip() for x in str(value).split(",") if x.strip())
 
 
 def _resolve_path(p: str) -> str:
+    """Internal helper for module-local processing."""
     path = Path(str(p).strip()).expanduser()
     return str(path.resolve())
 
 
 def _run_self_tests(*, project_root: Path) -> int:
+    """Internal helper for module-local processing."""
     import pytest  # type: ignore
 
     tests_dir = project_root / "tests"
@@ -95,6 +99,7 @@ def _run_self_tests(*, project_root: Path) -> int:
 
 
 def _preparse_config_path(argv: Sequence[str] | None) -> str:
+    """Internal helper for module-local processing."""
     pre = argparse.ArgumentParser(add_help=False)
     pre.add_argument("--config", type=str, default="conf/config.yaml")
     ns, _ = pre.parse_known_args(list(argv) if argv is not None else None)
@@ -102,6 +107,7 @@ def _preparse_config_path(argv: Sequence[str] | None) -> str:
 
 
 def _unknown_is_tail(argv: Sequence[str], unknown: Sequence[str]) -> bool:
+    """Internal helper for module-local processing."""
     u = list(unknown)
     a = list(argv)
     if not u:
@@ -112,10 +118,12 @@ def _unknown_is_tail(argv: Sequence[str], unknown: Sequence[str]) -> bool:
 
 
 def _load_yaml_config(path: Path) -> Any:
+    """Internal helper for module-local processing."""
     return load_project_config(path, allow_missing=False)
 
 
 def _cfg_get(cfg: Any, key: str, default: Any) -> Any:
+    """Internal helper for module-local processing."""
     if cfg is None or (not HAVE_OMEGACONF) or OmegaConf is None:
         return default
     try:
@@ -126,6 +134,7 @@ def _cfg_get(cfg: Any, key: str, default: Any) -> Any:
 
 
 def _infer_default_command(cfg_loaded: Any) -> str | None:
+    """Internal helper for module-local processing."""
     v = _cfg_get(cfg_loaded, "command", None)
     if v is None:
         return None
@@ -134,35 +143,38 @@ def _infer_default_command(cfg_loaded: Any) -> str | None:
 
 
 def _table_columns_from_cfg(
-    cfg: Any, key: str, fallback: Sequence[str]
+    cfg: Any, key: str, default_columns: Sequence[str]
 ) -> tuple[str, ...]:
+    """Internal helper for module-local processing."""
     cols = _cfg_get(cfg, key, None)
     if cols is None:
-        return tuple(fallback)
+        return tuple(default_columns)
     if isinstance(cols, str):
         parsed = [x.strip() for x in cols.split(",") if x.strip()]
-        return tuple(parsed) if parsed else tuple(fallback)
+        return tuple(parsed) if parsed else tuple(default_columns)
     if isinstance(cols, SequenceABC) and not isinstance(cols, (str, bytes, bytearray)):
         out: list[str] = []
         for x in cols:
             sx = str(x).strip()
             if sx:
                 out.append(sx)
-        return tuple(out) if out else tuple(fallback)
-    return tuple(fallback)
+        return tuple(out) if out else tuple(default_columns)
+    return tuple(default_columns)
 
 
 def _compose_section_columns(
-    cfg: Any, *, section: str, fallback_extra: Sequence[str]
+    cfg: Any, *, section: str, default_extra: Sequence[str]
 ) -> tuple[str, ...]:
+    """Internal helper for module-local processing."""
     base = _table_columns_from_cfg(cfg, "table.columns", ())
     extra = _table_columns_from_cfg(
-        cfg, f"table.{section}_extra_columns", fallback_extra
+        cfg, f"table.{section}_extra_columns", default_extra
     )
     return tuple(base) + tuple(extra)
 
 
 def build_parser(cfg: Any) -> argparse.ArgumentParser:
+    """Execute the documented operation."""
     parser = argparse.ArgumentParser(prog="power_stability_radius")
 
     parser.add_argument("--config", type=str, default="conf/config.yaml")
@@ -678,6 +690,7 @@ def _write_run_artifacts(
     cfg_used: dict[str, Any],
     argv: Sequence[str],
 ) -> None:
+    """Internal helper for module-local processing."""
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "argv.txt").write_text(" ".join(argv) + "\n", encoding="utf-8")
     if cfg_source_path.exists():
@@ -690,6 +703,7 @@ def _write_run_artifacts(
 
 
 def _make_opf_cfg(args: argparse.Namespace) -> OPFConfig:
+    """Internal helper for module-local processing."""
     highs = HiGHSConfig(
         solver_name=str(args.opf_solver_name),
         threads=int(args.opf_threads),
@@ -704,6 +718,7 @@ def _make_opf_cfg(args: argparse.Namespace) -> OPFConfig:
 
 
 def _setup_run_and_logging(args: argparse.Namespace) -> Path:
+    """Internal helper for module-local processing."""
     command_name = str(getattr(args, "command", "general") or "general").strip().lower()
     if command_name == "demo":
         command_name = "compute"
@@ -783,6 +798,7 @@ def _format_validation_report_md(report: dict[str, Any]) -> str:
 def run_compute(
     args: argparse.Namespace, *, cfg_loaded: Any, cfg_path: Path, argv: Sequence[str]
 ) -> int:
+    """Execute the documented operation."""
     if not str(getattr(args, "input", "")).strip():
         raise ValueError("compute requires --input (empty).")
 
@@ -946,10 +962,10 @@ def run_compute(
             )
     else:
         dc_cols = _compose_section_columns(
-            cfg_loaded, section="dc", fallback_extra=DEFAULT_DC_COLUMNS
+            cfg_loaded, section="dc", default_extra=DEFAULT_DC_COLUMNS
         )
         ac_cols = _compose_section_columns(
-            cfg_loaded, section="ac", fallback_extra=DEFAULT_AC_COLUMNS
+            cfg_loaded, section="ac", default_extra=DEFAULT_AC_COLUMNS
         )
         table_str = format_results_table_sections(
             results, dc_columns=dc_cols, ac_columns=ac_cols, max_rows=max_rows
@@ -1008,6 +1024,7 @@ def run_compute(
 def _parse_report_cases_from_cfg(
     *, cfg_loaded: Any, results_dir_abs: Path, base_dir: Path
 ) -> list[ReportCaseSpec]:
+    """Internal helper for module-local processing."""
     return parse_report_cases_from_cfg(
         cfg_loaded=cfg_loaded,
         results_dir_abs=results_dir_abs,
@@ -1019,6 +1036,7 @@ def _parse_report_cases_from_cfg(
 def run_report(
     args: argparse.Namespace, *, cfg_loaded: Any, cfg_path: Path, argv: Sequence[str]
 ) -> int:
+    """Execute the documented operation."""
     if cfg_loaded is None:
         raise ValueError("report requires a loaded YAML config (report.cases).")
 
@@ -1075,6 +1093,7 @@ def run_report(
 def run_monte_carlo(
     args: argparse.Namespace, *, cfg_loaded: Any, cfg_path: Path, argv: Sequence[str]
 ) -> int:
+    """Execute the documented operation."""
     results_path_raw = str(getattr(args, "results", "")).strip()
     input_path_raw = str(getattr(args, "input", "")).strip()
     if not results_path_raw:
@@ -1158,6 +1177,7 @@ def run_monte_carlo(
 def run_table(
     args: argparse.Namespace, *, cfg_loaded: Any, cfg_path: Path, argv: Sequence[str]
 ) -> int:
+    """Execute the documented operation."""
     results_path = Path(_resolve_path(str(getattr(args, "results_json", "")).strip()))
     if not results_path.exists():
         raise FileNotFoundError(f"results.json not found: {results_path}")
@@ -1178,10 +1198,10 @@ def run_table(
         table_str = format_results_table(results, columns=cols, max_rows=max_rows)
     else:
         dc_cols = _compose_section_columns(
-            cfg_loaded, section="dc", fallback_extra=DEFAULT_DC_COLUMNS
+            cfg_loaded, section="dc", default_extra=DEFAULT_DC_COLUMNS
         )
         ac_cols = _compose_section_columns(
-            cfg_loaded, section="ac", fallback_extra=DEFAULT_AC_COLUMNS
+            cfg_loaded, section="ac", default_extra=DEFAULT_AC_COLUMNS
         )
         table_str = format_results_table_sections(
             results, dc_columns=dc_cols, ac_columns=ac_cols, max_rows=max_rows
@@ -1195,6 +1215,7 @@ def run_table(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """Run the command-line entry point."""
     argv_list = list(argv) if argv is not None else sys.argv[1:]
 
     cfg_path_str = _preparse_config_path(argv_list)

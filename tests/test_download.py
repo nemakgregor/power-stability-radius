@@ -31,7 +31,7 @@ class _FakeSession:
 
 class _FailFirstThenSucceedSession:
     """
-    Fake session used to validate deterministic URL fallback:
+    Fake session used to validate deterministic URL candidate order:
     - First URL that contains "raw.githubusercontent.com" fails.
     - Second candidate succeeds.
     """

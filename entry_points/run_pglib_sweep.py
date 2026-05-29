@@ -59,6 +59,7 @@ _DEFAULT_CONFIG = (
 
 
 def _load_config(path: Path) -> dict:
+    """Internal helper for module-local processing."""
     with path.open(encoding="utf-8") as fh:
         return yaml.safe_load(fh)
 
@@ -74,7 +75,7 @@ def _detect_slack_bus(net) -> int:
         for _, row in net.ext_grid.iterrows():
             if bool(row.get("in_service", True)):
                 return int(row["bus"])
-    # Fallback: first bus in sorted order.
+    # Deterministic default: first bus in sorted order.
     return int(sorted(net.bus.index)[0])
 
 
@@ -401,7 +402,7 @@ def _extract_summary_row(name: str, combined: dict, time_total: float) -> dict:
     # Dispatch method tracking.
     dispatch_method = meta.get("base_dispatch", "")
     dispatch_requested = meta.get("base_dispatch_requested", dispatch_method)
-    dispatch_fallback = str(dispatch_method) != str(dispatch_requested)
+    dispatch_changed = str(dispatch_method) != str(dispatch_requested)
 
     # Determine status based on result content.
     ac_available = np.isfinite(ac_r_star)
@@ -440,7 +441,7 @@ def _extract_summary_row(name: str, combined: dict, time_total: float) -> dict:
         else None,
         "ext_grid_absorption_mw": ext_absorb_mw if ext_absorb_mw > 1e-3 else 0.0,
         "dispatch_method": dispatch_method,
-        "dispatch_fallback": dispatch_fallback,
+        "dispatch_changed": dispatch_changed,
     }
 
 
@@ -556,7 +557,7 @@ def _plot_bar_chart(rows: list[dict], output_dir: Path) -> Path:
         )
     ]
     if not plot_rows:
-        plot_rows = rows  # fallback: plot everything
+        plot_rows = rows
 
     # Sort by n_buses for readability.
     plot_rows = sorted(
@@ -712,6 +713,7 @@ def _setup_logging(output_dir: Path) -> logging.FileHandler:
 
 
 def run(config_path: Path, reuse_dir: Path | None = None) -> None:
+    """Run the configured workflow."""
     cfg = _load_config(config_path)
     cases = cfg["cases"]
     compute_cfg = cfg.get("compute", {})
@@ -1008,6 +1010,7 @@ def run(config_path: Path, reuse_dir: Path | None = None) -> None:
 
 
 def main() -> None:
+    """Run the command-line entry point."""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",

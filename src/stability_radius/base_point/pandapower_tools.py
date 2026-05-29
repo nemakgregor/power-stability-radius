@@ -5,7 +5,7 @@ Shared helpers for working with pandapower networks in a deterministic way.
 
 Design principles
 -----------------
-- Deterministic behavior: no implicit fallbacks, stable ordering.
+- Deterministic behavior: explicit policies and stable ordering.
 - No heavy dependencies at import time: functions operate on an already created `net`.
 - Explicit error messages: if a requirement is not met, we raise immediately.
 

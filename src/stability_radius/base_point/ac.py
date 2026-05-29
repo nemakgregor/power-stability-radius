@@ -46,8 +46,8 @@ def solve_ac_pf_base_point(
         Transformer model: ``"pi"`` or ``"t"``.
     """
     # The public AC certificate path currently fail-fasts on lossless=false.
-    # Keep this lower-level wrapper explicit because it is also used by
-    # experiments that solve PF base points before certificate construction.
+    # This lower-level function is also used by experiments that solve PF base
+    # points before certificate construction.
 
     solver_eff = str(pf_solver).strip().lower()
     if solver_eff not in {"pandapower", "pypsa"}:

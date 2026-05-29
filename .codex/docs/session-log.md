@@ -2,6 +2,21 @@
 
 Keep this log short. Each entry should capture durable context, not a transcript.
 
+## 2026-05-29 - Quality Gates And Fail-Fast Cleanup
+
+- Removed unused `src/stability_radius/opf` duplicate OPF/PF package.
+- Changed AC PF and `base_dispatch=acpf/ac_fpf` paths to fail fast instead of
+  switching solver/model policy after failure; DC OPF now uses the configured
+  headroom exactly once.
+- Removed compatibility aliases in AC Monte Carlo per-line overload output and
+  cleaned old compatibility terminology from code/docs.
+- Added application-wide docstring and prohibited-design-term static tests.
+- Added coverage configuration with a 70% gate over domain code after omitting
+  CLI/workflow/report orchestration from the denominator.
+- Verified with `python -m pytest -q` (334 passed),
+  `python -m pytest --cov=stability_radius --cov-report=term-missing -q`
+  (71.33%, gate 70%), and `python -m ruff format --check .`.
+
 ## 2026-05-29 - Codex Project Memory Bootstrap
 
 - Reviewed repository structure, public docs, `UNITS_CONTRACT.md`, configs,
@@ -47,8 +62,8 @@ Keep this log short. Each entry should capture durable context, not a transcript
   while keeping a two-sided signed-flow helper for DC-style semantics.
 - Added constraint-level status fields plus nonnegative `certificate_radius_*`
   and signed diagnostic `signed_distance_*` fields for DC L2/sigma and AC
-  L2/sigma/metric outputs; legacy signed `radius_*` fields remain for schema-v3
-  compatibility.
+  L2/sigma/metric outputs; signed `radius_*` fields remain schema-v3
+  diagnostics.
 - Updated table defaults, unit/data-format docs, and focused tests.
 - Verified with `python -m pytest -q` (316 passed) and
   `python -m ruff format --check .`; `poetry run ...` was blocked by a broken
@@ -95,7 +110,7 @@ Keep this log short. Each entry should capture durable context, not a transcript
 - Made `ac.lossless=false` fail-fast in certificate mode and added Q-limit
   active-set diagnostics (`q_limit_hit`, `invalid_active_set_changed_q_limit`).
 - Marked binding `|S0|≈0` AC apparent-power constraints as
-  `nondifferentiable_apparent_power`; their legacy radius remains diagnostic
+  `nondifferentiable_apparent_power`; their signed radius remains diagnostic
   but the strict certificate radius is zero.
 - Verified with targeted pytest subset covering sigma/metric, N-1, MC, workflow,
   and Q-limit helper changes.

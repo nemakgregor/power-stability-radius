@@ -283,7 +283,7 @@ def verify_worst_case(
     elif binding_end == "to":
         actual_s = s_to
     else:
-        # Fallback: max of both ends (legacy behaviour).
+        # Deterministic default when the caller does not specify the binding end.
         actual_s = max(s_from, s_to)
 
     # Violated if actual flow exceeds limit

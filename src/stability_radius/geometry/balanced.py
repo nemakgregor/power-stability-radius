@@ -26,6 +26,7 @@ class BlockSpec:
 
 
 def _as_indices(indices: np.ndarray, *, name: str) -> np.ndarray:
+    """Internal helper for module-local processing."""
     idx = np.asarray(indices, dtype=int).reshape(-1)
     if np.any(idx < 0):
         raise ValueError(f"{name}.indices must be non-negative.")
@@ -33,6 +34,7 @@ def _as_indices(indices: np.ndarray, *, name: str) -> np.ndarray:
 
 
 def _as_weights(weights: np.ndarray | None, n: int, *, name: str) -> np.ndarray | None:
+    """Internal helper for module-local processing."""
     if weights is None:
         return None
     w = np.asarray(weights, dtype=float).reshape(-1)
@@ -132,6 +134,7 @@ def worst_case_l2_direction(h: np.ndarray, blocks: Sequence[BlockSpec]) -> np.nd
 def _balanced_block_projected_norm2(
     values: np.ndarray, *, total_size: int | None
 ) -> float:
+    """Internal helper for module-local processing."""
     v = np.asarray(values, dtype=float).reshape(-1)
     n = int(v.size if total_size is None else total_size)
     t = float(np.dot(v, v))

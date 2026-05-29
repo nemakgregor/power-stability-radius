@@ -67,7 +67,7 @@ def test_ac_l2_radius_smoke_small_net() -> None:
 
 def test_ac_l2_radius_near_zero_flow_keeps_nonzero_sensitivity() -> None:
     """
-    Regression test for the |S|≈0 fallback (certificate soundness / symmetry).
+    Regression test for the |S|≈0 diagnostic subgradient.
 
     We build a 2-bus system with two parallel lines:
     - line_fast: normal impedance, carries essentially all (tiny) load
@@ -114,7 +114,7 @@ def test_ac_l2_radius_near_zero_flow_keeps_nonzero_sensitivity() -> None:
     assert len(line_ids) == 2
     lid_slow = int(line_ids[1])
 
-    # Explicit MVA limits (avoid dependence on current-based fallback).
+    # Explicit MVA limits (avoid dependence on current-based surrogate).
     net.line.loc[line_ids, "rateA"] = 100.0
 
     # Use pandapower PF backend to keep the base point robust for extreme impedances.

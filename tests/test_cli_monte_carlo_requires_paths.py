@@ -13,7 +13,7 @@ def test_report_requires_cases_in_config_and_fails_fast_without_side_effects(
     - `report` must not silently assume a hard-coded case list.
     - If cfg_loaded is None (no YAML), it must fail before creating run artifacts.
     """
-    from entry_points.power_stability_radius import build_parser, run_report
+    from stability_radius.application.cli import build_parser, run_report
 
     monkeypatch.chdir(tmp_path)
 
@@ -41,7 +41,7 @@ def test_report_requires_cases_in_config_and_fails_fast_without_side_effects(
 
 
 def test_compute_accepts_ac_nonlinear_validation_flags() -> None:
-    from entry_points.power_stability_radius import build_parser
+    from stability_radius.application.cli import build_parser
 
     parser = build_parser(cfg=None)
     args = parser.parse_args(

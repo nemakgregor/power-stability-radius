@@ -87,11 +87,13 @@ _SIGMA_FLOOR = 1e-6
 
 
 def _load_config(path: Path) -> dict:
+    """Internal helper for module-local processing."""
     with path.open(encoding="utf-8") as fh:
         return yaml.safe_load(fh)
 
 
 def _clamp_sigma(sigma: np.ndarray, floor: float = _SIGMA_FLOOR) -> np.ndarray:
+    """Internal helper for module-local processing."""
     out = sigma.copy()
     out[out < floor] = floor
     return out
@@ -1836,6 +1838,7 @@ def _plot_topology(
 
 
 def run(config_path: Path) -> None:
+    """Run the configured workflow."""
     cfg = _load_config(config_path)
     case_cfg = cfg["case"]
     compute_cfg = cfg.get("compute", {})
@@ -2246,6 +2249,7 @@ def run(config_path: Path) -> None:
 
 
 def main() -> None:
+    """Run the command-line entry point."""
     parser = argparse.ArgumentParser(
         description="Experiment 2: sigma-radius at average operating point.",
     )

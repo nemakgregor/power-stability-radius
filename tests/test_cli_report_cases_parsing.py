@@ -18,7 +18,7 @@ def test_parse_report_cases_accepts_omegaconf_listconfig(tmp_path: Path) -> None
     from omegaconf import OmegaConf
 
     from stability_radius.domain import ReportCaseSpec
-    from entry_points.power_stability_radius import _parse_report_cases_from_cfg
+    from stability_radius.application.cli import _parse_report_cases_from_cfg
 
     cfg = OmegaConf.create(
         {

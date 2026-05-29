@@ -10,7 +10,7 @@ The main CLI is the operational front door:
 python entry_points/power_stability_radius.py --config conf/config.yaml <command>
 ```
 
-`entry_points/power_stability_radius.py` is an interface wrapper. The actual CLI orchestration lives in `src/stability_radius/application/cli.py`.
+`entry_points/power_stability_radius.py` is an interface launcher. The actual CLI orchestration lives in `src/stability_radius/application/cli.py`.
 
 Common startup path:
 

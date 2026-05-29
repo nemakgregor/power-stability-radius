@@ -126,7 +126,7 @@ def test_ac_sigma_negative_margin_exports_nonnegative_certificate_radius() -> No
     )
 
     row = res["line_0"]
-    assert float(row["radius_ac_sigma"]) < 0.0  # legacy signed field
+    assert float(row["radius_ac_sigma"]) < 0.0  # signed diagnostic field
     assert row["constraint_status_ac_sigma"] == "base_infeasible"
     assert float(row["certificate_radius_ac_sigma"]) == 0.0
     assert float(row["signed_distance_ac_sigma"]) < 0.0

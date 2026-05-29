@@ -93,7 +93,7 @@ Both the "from" and "to" ends of each line are evaluated; the binding end
 With `balance=True` (default), the h-vector is projected onto the
 kernel of the all-ones vector (enforcing `sum(dP) = 0` and `sum(dQ) = 0`).
 If the binding base apparent power is near zero, the gradient of `|S|` is
-nondifferentiable; `radius_ac_l2` is then retained as a diagnostic legacy
+nondifferentiable; `radius_ac_l2` is then retained as a signed diagnostic
 distance, but `certificate_radius_ac_l2` is zero and the status is
 `nondifferentiable_apparent_power`.
 

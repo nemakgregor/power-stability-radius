@@ -10,6 +10,7 @@ from stability_radius.domain import ReportCaseSpec
 
 
 def _is_seq_not_str(value: Any) -> bool:
+    """Internal helper for module-local processing."""
     return isinstance(value, Sequence) and not isinstance(
         value, (str, bytes, bytearray)
     )

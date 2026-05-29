@@ -7,7 +7,7 @@ Design goals
 ------------
 - Deterministic behavior:
   * stable candidate URL ordering
-  * no implicit/randomized fallbacks
+  * no randomized candidate choice
   * controlled retry policy (default: 1 try per candidate URL)
 - Clear error messages and logging for debugging connectivity issues.
 - Testability:
@@ -22,9 +22,6 @@ You can fully override the base URL candidate list via environment variables:
 
 If an env var is set (non-empty), it is used *as-is* (no additional defaults).
 
-Deprecated API
---------------
-- download_ieee30(): deprecated wrapper, use download_ieee_case(30, ...) instead.
 """
 
 import gzip
@@ -77,6 +74,7 @@ class DownloadError(RuntimeError):
     """
 
     def __init__(self, message: str, *, urls: Sequence[str] | None = None) -> None:
+        """Initialize the object."""
         super().__init__(str(message))
         self.urls: tuple[str, ...] = tuple(str(u) for u in (urls or ()))
 
@@ -115,7 +113,7 @@ def _candidate_base_urls(
 
     Priority
     --------
-    1) If env var is set -> use it (exactly, no implicit fallbacks).
+    1) If env var is set -> use it exactly.
     2) Otherwise -> [explicit_base_url] + defaults (deduplicated).
     """
     env_urls = _parse_env_base_urls(env_var)
@@ -282,7 +280,7 @@ def download_ieee_case(
     Determinism note
     ----------------
     By default, each candidate URL is attempted exactly once. This is important for
-    reproducible behavior and for tests that validate fallback ordering.
+    reproducible behavior and for tests that validate candidate ordering.
 
     You can override the base URL candidate list explicitly via environment variable:
       - SR_MATPOWER_BASE_URLS="https://...,https://..."
@@ -349,8 +347,7 @@ def download_pglib_opf_case(
     ----------------
     By default, each candidate URL is attempted exactly once. This is intentional:
     when the first candidate fails (e.g., DNS issue for raw.githubusercontent.com),
-    we immediately fall back to the next mirror, which improves robustness in CI and
-    matches expected deterministic fallback semantics.
+    the next configured mirror is attempted in deterministic order.
 
     You can override the candidate list explicitly via environment variable:
       - SR_PGLIB_OPF_BASE_URLS="https://...,https://..."

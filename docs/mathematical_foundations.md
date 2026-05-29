@@ -528,9 +528,10 @@ d|S|/dP = P / |S| = w_P
 d|S|/dQ = Q / |S| = w_Q
 ```
 
-**Fallback at zero flow:** When `|S_0| < epsilon` (near zero), the gradient of
-the norm is undefined.  The implementation uses a conservative, unbiased
-direction `(w_P, w_Q) = (1/sqrt(2), 1/sqrt(2))`.
+**Diagnostic subgradient at zero flow:** When `|S_0| < epsilon` (near zero),
+the gradient of the norm is undefined. The implementation marks the row
+`nondifferentiable_apparent_power` and uses
+`(w_P, w_Q) = (1/sqrt(2), 1/sqrt(2))` only for signed diagnostics.
 
 ### 6.4 Chain Rule: Flow-to-Injection Sensitivity
 
@@ -1136,7 +1137,7 @@ with special cases:
 | `src/stability_radius/dc/dc_model.py` | DC model: `B` matrix, PTDF matrix `H`, `DCOperator` with LU-cached solves |
 | `src/stability_radius/ac/ac_model.py` | AC model: `Ybus`, Jacobian `J`, `ACOperator` with adjoint solves |
 | `src/stability_radius/radii/core_l2.py` | Pure L2 certificate: margins, norms, radii, balanced projection helpers |
-| `src/stability_radius/radii/l2.py` | High-level DC L2 radius wrapper |
+| `src/stability_radius/radii/l2.py` | High-level DC L2 radius computation |
 | `src/stability_radius/radii/probabilistic.py` | DC sigma-radius and Gaussian overload probability |
 | `src/stability_radius/radii/metric.py` | DC metric radius with Cholesky-based computation |
 | `src/stability_radius/radii/nminus1.py` | N-1 contingency radius with LODF computation |

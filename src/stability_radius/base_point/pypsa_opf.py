@@ -41,6 +41,7 @@ class PyPSAOPFResult:
 def _line_r_x_ohm_from_pp(
     net: Any, line_row: Any, *, line_id: int
 ) -> tuple[float, float]:
+    """Internal helper for module-local processing."""
     fb = int(line_row.get("from_bus", -1))
     tb = int(line_row.get("to_bus", -1))
 
@@ -80,6 +81,7 @@ def _line_r_x_ohm_from_pp(
 
 
 def _sum_p_by_bus(net: Any, table_name: str, *, p_col: str) -> dict[int, float]:
+    """Internal helper for module-local processing."""
     if not hasattr(net, table_name):
         return {}
     table = getattr(net, table_name)
@@ -103,6 +105,7 @@ def _sum_p_by_bus(net: Any, table_name: str, *, p_col: str) -> dict[int, float]:
 def _pp_gen_p_bounds_to_pypsa(
     *, gid: int, p_min_mw: float, p_max_mw: float
 ) -> tuple[float, float] | None:
+    """Internal helper for module-local processing."""
     p_min = float(p_min_mw)
     p_max = float(p_max_mw)
 
@@ -124,6 +127,7 @@ def _pp_gen_p_bounds_to_pypsa(
 
 
 def _ensure_carrier_table(n: Any, carrier_name: str) -> None:
+    """Internal helper for module-local processing."""
     if not hasattr(n, "carriers"):
         return
     try:
@@ -136,6 +140,7 @@ def _ensure_carrier_table(n: Any, carrier_name: str) -> None:
 
 
 def _trafo_series_rx_pu_from_pp_row(trafo_row: Any) -> tuple[float, float]:
+    """Internal helper for module-local processing."""
     vk_percent = float(trafo_row.get("vk_percent", np.nan))
     if not math.isfinite(vk_percent):
         raise ValueError("Trafo: vk_percent invalid")

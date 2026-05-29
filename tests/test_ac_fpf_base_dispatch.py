@@ -3,7 +3,7 @@
 Covers:
 - solve_ac_fpf() convergence on a 3-bus network.
 - PyPSAAPFResult bus_p_mw extraction from runopp.
-- solve_ac_fpf_base_point() wrapper produces correct BasePointAC.
+- solve_ac_fpf_base_point() produces correct BasePointAC.
 - DC base point from AC FPF bus injections.
 - pg0_source="midpoint" initial guess works.
 - Voltage bounds are respected in solution.
@@ -105,7 +105,7 @@ def test_solve_ac_fpf_result_has_bus_p_mw() -> None:
     assert result.bus_p_mw.shape == (len(result.bus_ids),)
 
 
-def test_solve_ac_fpf_base_point_wrapper() -> None:
+def test_solve_ac_fpf_base_point_result() -> None:
     """solve_ac_fpf_base_point should produce a valid BasePointAC."""
     from stability_radius.base_point.ac import solve_ac_fpf_base_point
 

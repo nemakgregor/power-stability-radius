@@ -62,13 +62,13 @@ def test_entry_points_directory_contains_only_runnable_fronts() -> None:
         assert (ROOT / "src" / "stability_radius" / "postprocess" / helper).exists()
 
 
-def test_main_entry_point_is_a_thin_application_wrapper() -> None:
+def test_main_entry_point_is_a_cli_launcher() -> None:
     content = _read(ROOT / "entry_points" / "power_stability_radius.py")
     application_content = _read(
         ROOT / "src" / "stability_radius" / "application" / "cli.py"
     )
 
-    assert "from stability_radius.application.cli import (" in content
+    assert "from stability_radius.application.cli import main" in content
     assert "argparse" not in content
     assert "from stability_radius.postprocess.table import (" in application_content
     assert (

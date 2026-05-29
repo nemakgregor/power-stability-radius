@@ -185,7 +185,7 @@ p_compute.add_argument(
     type=int,
     default=int(_cfg_get(cfg, "dc.chunk_size", DEFAULT_DC.chunk_size)),
     #                        ^^^^^^^^^^^^^^    ^^^^^^^^^^^^^^^^^^^^^^
-    #                        YAML key path     Python fallback (256)
+    #                        YAML key path     Python default (256)
 )
 ```
 
@@ -206,8 +206,8 @@ Python `DCConfig.chunk_size` default (256) is used.
 
 ## Dataclass reference (Python defaults)
 
-These frozen dataclasses in `src/stability_radius/config.py` serve as
-the ultimate fallback when YAML values are missing.
+These frozen dataclasses in `src/stability_radius/config.py` provide the
+programmatic defaults when YAML values are missing.
 
 ### `LoggingConfig`
 
@@ -355,7 +355,7 @@ The DC OPF is used only when `base_dispatch=dc_opf`.
 | Random seed | `opf.random_seed` | `--opf-random-seed` | int | `42` | HiGHS random seed for tie-breaking. | **[determinism-critical]** |
 | Headroom factor | `opf.headroom_factor` | `--opf-headroom-factor` | float | `0.98` | Fraction of thermal capacity used as OPF line constraint. `0.98` means 2% security margin. | **[determinism-critical]** Valid range: (0, 1]. Values below ~0.90 can cause OPF infeasibility on tight networks. |
 | Unconstrained line limit | `opf.unconstrained_line_nom_mw` | `--opf-unconstrained-line-nom-mw` | float | `1e5` | Surrogate finite thermal limit (MW) for lines with `rateA=0/inf/NaN`. PyPSA requires finite limits. | **[determinism-critical]** Must match `DEFAULT_UNCONSTRAINED_LINE_NOM_MW` in Python. |
-| Ext grid marginal cost | `opf.ext_grid_marginal_cost_base` | `--opf-ext-grid-marginal-cost-base` | float | `1000.0` | Cost assigned to the external grid "generator" in PyPSA DC OPF. Must be large enough to act as a feasibility fallback, but not so large as to cause LP scaling issues. | Typical range: 100--10000. |
+| Ext grid marginal cost | `opf.ext_grid_marginal_cost_base` | `--opf-ext-grid-marginal-cost-base` | float | `1000.0` | Cost assigned to the external grid "generator" in PyPSA DC OPF. Must be large enough to represent slack feasibility, but not so large as to cause LP scaling issues. | Typical range: 100--10000. |
 
 ### HiGHS solver
 
@@ -399,7 +399,7 @@ or by adding `config_dc_extensions.yaml` to your experiment's
 | Chunk size | `compute.ac.chunk_size` | `--ac-chunk-size` | int | `256` | Lines per LU-solve batch for AC sensitivity computation. | **[performance-critical]**
 | Balance | `compute.ac.balance` | `--ac-balance` | int | `1` | If 1, enforce balanced (zero-sum) disturbance directions in the AC certificate. |
 | PF solver | `ac.pf_solver` | `--ac-pf-solver` | str | `"pandapower"` | AC power flow backend. `"pandapower"` or `"pypsa"`. AC Monte Carlo currently only supports pandapower. |
-| PF init | `compute.ac.pf_init` | `--ac-pf-init` | str | `"flat"` | AC PF initialization strategy. `"flat"`: flat start. `"dc"`: DC theta angles as initial guess. `"pp"`: run pandapower PF first for an explicit initial guess (not a solver fallback). |
+| PF init | `compute.ac.pf_init` | `--ac-pf-init` | str | `"flat"` | AC PF initialization strategy. `"flat"`: flat start. `"dc"`: DC theta angles as initial guess. `"pp"`: run pandapower PF first for an explicit initial guess. |
 | Lossless | `ac.lossless` | `--ac-lossless` | int | `1` | If 1, enforce the supported lossless series-only model for both PF and Jacobian. `lossless=false` is fail-fast in certificate mode until the full pi/shunt Jacobian is implemented. |
 | Distributed slack | `compute.ac.distributed_slack` | N/A | bool | `true` (sweep) | Distribute active power losses proportionally to headroom (Pmax - Pset). Disable on networks where pandapower crashes (e.g., large GOC/PEGASE cases). |
 | Transformer model | `compute.ac.trafo_model` | N/A | str | `"pi"` | Transformer equivalent circuit model type. |
@@ -424,7 +424,7 @@ feasible operating point.
 | Max iterations | `compute.ac_fpf.max_iteration` | N/A | int | `300` | [50, 1000] | Maximum PDIPM interior-point iterations. Increase for hard-to-converge networks. |
 | Max loading % | `compute.ac_fpf.max_loading_percent` | N/A | float | `99.0` | [80, 100] | Line loading limit for OPF (%). Set below 100 to compensate for PDIPM solver tolerance, ensuring the solution satisfies the true 100% limit. | **[performance-critical]**
 | Init | `compute.ac_fpf.init` | N/A | str | `"dc"` | `"dc"`, `"flat"` | Power flow initialization for `runopp()`. `"dc"` provides a warm start from DC angles; `"flat"` starts from V=1, theta=0. Use `"flat"` when DC init causes convergence issues (e.g., networks with many transformers). |
-| Max attempts | `compute.ac_fpf.max_attempts` | N/A | int | `1` | [1, 3] | Number of `runopp()` attempts before giving up. Attempt 1 uses configured bounds; attempt 2 widens to [0.85, 1.15]; attempt 3 widens to [0.80, 1.20]. Fallback to `runpp` + DC OPF if all attempts fail. |
+| Max attempts | `compute.ac_fpf.max_attempts` | N/A | int | `1` | [1, 3] | Number of bounded `runopp()` attempts before giving up. Attempt 1 uses configured bounds; attempt 2 widens to [0.85, 1.15]; attempt 3 widens to [0.80, 1.20]. If all attempts fail, the AC FPF run fails. |
 | Per-attempt timeout | `compute.ac_fpf.per_attempt_timeout` | N/A | float | `0` | >= 0 | Timeout in seconds for each `runopp()` call. `0` means no timeout. A positive value (e.g., 180) prevents a single slow attempt from exhausting the subprocess timeout. | **[performance-critical]**
 | PDIPM feastol | `compute.ac_fpf.pdipm_feastol` | N/A | float | `1e-4` | (0, 1) | Feasibility (equality constraint) tolerance. `0` uses the OPF_VIOLATION default. |
 | PDIPM gradtol | `compute.ac_fpf.pdipm_gradtol` | N/A | float | `1e-4` | (0, 1) | Gradient (optimality) tolerance. |

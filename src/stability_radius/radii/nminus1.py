@@ -262,7 +262,7 @@ def compute_nminus1_l2_radius(
     base: LineBaseQuantities | None = None,
 ) -> Dict[str, Dict[str, Any]]:
     """
-    High-level wrapper: compute effective N-1 L2 radii on a pandapower network.
+    Compute effective N-1 L2 radii on a pandapower network.
 
     Notes
     -----

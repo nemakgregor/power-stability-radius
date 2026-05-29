@@ -21,7 +21,7 @@ from entry_points.n1_stability_demo import (
 )
 
 
-def test_resolve_output_dir_normalizes_legacy_analysis_output_under_runs(
+def test_resolve_output_dir_normalizes_analysis_output_under_runs(
     tmp_path, monkeypatch
 ) -> None:
     monkeypatch.chdir(tmp_path)

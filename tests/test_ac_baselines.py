@@ -155,5 +155,5 @@ class TestComputeBaselineMetrics:
         baselines = compute_baseline_metrics(results)
         b = baselines["line_0"]
         assert b["loading_ratio"] == pytest.approx(0.8)
-        # cantelli with NaN sigma returns 0.0 (safe fallback)
+        # cantelli with NaN sigma returns 0.0 (safe diagnostic value)
         assert b["cheb_prob_upper"] == 0.0

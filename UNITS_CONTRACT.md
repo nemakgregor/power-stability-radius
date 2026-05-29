@@ -387,8 +387,8 @@ Contract:
 - `q_limit_hit` and `pv_pq_switch_detected` diagnose generator reactive-limit
   events that invalidate strict fixed-PV/PQ linearization claims.
 - If the binding apparent-power base point has `|S0| <= eps`, the norm
-  gradient is nondifferentiable. Legacy `radius_ac_l2` remains a diagnostic
-  fallback radius, while `certificate_radius_ac_l2` is set to zero and
+  gradient is nondifferentiable. `radius_ac_l2` remains a signed diagnostic
+  distance, while `certificate_radius_ac_l2` is set to zero and
   `constraint_status_ac_l2 = nondifferentiable_apparent_power`.
 - Detailed replay trajectories are stored outside `results.json` in
   `validation_report.json`.
@@ -544,8 +544,8 @@ Verification status handling distinguishes these situations.
 ### 11.1.1 Constraint-Level Certificate Status
 
 Per-line result rows may include a `constraint_status_*` field alongside the
-legacy `radius_*` field. The nonnegative certificate radius is stored in
-`certificate_radius_*`; `signed_distance_*` preserves the signed
+signed diagnostic `radius_*` field. The nonnegative certificate radius is stored
+in `certificate_radius_*`; `signed_distance_*` preserves the signed
 `margin / dual_norm` diagnostic when the base point is already infeasible.
 
 Known status values:
@@ -560,9 +560,9 @@ Known status values:
 - `nonlinear_unvalidated`
 - `nonlinear_optimistic`
 
-In schema version 3, legacy `radius_*` fields are retained for compatibility
-and can still be negative for base-infeasible constraints. New consumers should
-prefer `constraint_status_*` and `certificate_radius_*`.
+In schema version 3, `radius_*` fields are signed diagnostic distances and can
+still be negative for base-infeasible constraints. Consumers should prefer
+`constraint_status_*` and `certificate_radius_*` for certificate claims.
 
 ### 11.2 AC PF Non-Convergence in Monte Carlo
 

@@ -25,7 +25,7 @@ import logging
 import math
 import os
 import time
-from dataclasses import dataclass, replace as _dataclass_replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -481,7 +481,7 @@ def _expand_h_reduced_to_full(
     n_red = n_bus - 1
 
     if pq_mask is None:
-        # Legacy path: all non-slack buses are PQ.
+        # Default reduced layout: all non-slack buses are PQ.
         if h.ndim != 2 or h.shape[1] != 2 * n_red:
             raise ValueError(f"h_reduced shape must be (m, {2 * n_red}), got {h.shape}")
         m = h.shape[0]
@@ -612,11 +612,13 @@ def _extract_binding_end_data(
 
 
 def _max_finite_or_nan(values: list[float]) -> float:
+    """Internal helper for module-local processing."""
     finite = [float(x) for x in values if math.isfinite(float(x))]
     return float(max(finite)) if finite else float("nan")
 
 
 def _percentile_or_nan(values: list[float], q: float) -> float:
+    """Internal helper for module-local processing."""
     finite = [float(x) for x in values if math.isfinite(float(x))]
     if not finite:
         return float("nan")
@@ -873,25 +875,9 @@ def _run_ac_nonlinear_validation_topk(
 # Adaptive headroom for DC OPF
 # ---------------------------------------------------------------------------
 
+
 # Default schedule: configured headroom first, then relax towards 1.0.
-_HEADROOM_FALLBACK_VALUES = (0.92, 0.95, 0.98, 1.0)
-
-
-def _build_headroom_schedule(base_headroom: float) -> list[float]:
-    """Build adaptive headroom schedule starting from *base_headroom*.
-
-    The schedule starts with the user-configured headroom (most aggressive,
-    i.e. most thermal margin reserved for AC deviations).  If DC OPF is
-    infeasible at that level, subsequent attempts relax towards 1.0.
-    """
-    schedule = [float(base_headroom)]
-    for fb in _HEADROOM_FALLBACK_VALUES:
-        if fb > base_headroom:
-            schedule.append(float(fb))
-    return schedule
-
-
-def _solve_dc_opf_with_adaptive_headroom(
+def _solve_dc_opf_once(
     *,
     net: Any,
     slack_bus: int,
@@ -899,49 +885,23 @@ def _solve_dc_opf_with_adaptive_headroom(
     limit_factor: float,
     case_tag: str,
 ) -> tuple[Any, "LineBaseQuantities", float]:
-    """Attempt DC OPF with adaptive headroom schedule.
+    """Solve DC OPF once with the configured headroom factor.
 
-    Returns (bp_dc, base_dc, used_headroom_factor).  Raises RuntimeError
-    if all headroom values fail.
+    Returns (bp_dc, base_dc, used_headroom_factor). Raises RuntimeError if the
+    configured OPF is infeasible or otherwise fails.
     """
-    schedule = _build_headroom_schedule(float(opf_cfg.headroom_factor))
-
-    last_error: Exception | None = None
-    for hf in schedule:
-        trial_cfg = _dataclass_replace(opf_cfg, headroom_factor=float(hf))
-        try:
-            bp_dc, base_dc = build_dc_base_point_dc_opf(
-                net=net,
-                slack_bus=int(slack_bus),
-                opf_cfg=trial_cfg,
-                limit_factor=float(limit_factor),
-            )
-            if hf != schedule[0]:
-                logger.info(
-                    "%s: DC OPF succeeded with relaxed headroom_factor=%.4f "
-                    "(original=%.4f, %d attempts)",
-                    case_tag,
-                    hf,
-                    float(opf_cfg.headroom_factor),
-                    schedule.index(hf) + 1,
-                )
-            return bp_dc, base_dc, float(hf)
-        except RuntimeError as e:
-            if "infeasible" in str(e).lower():
-                logger.warning(
-                    "%s: DC OPF infeasible with headroom_factor=%.4f, "
-                    "trying next value...",
-                    case_tag,
-                    hf,
-                )
-                last_error = e
-                continue
-            raise  # non-infeasibility RuntimeError: re-raise
-
-    raise RuntimeError(
-        f"{case_tag}: DC OPF infeasible for all headroom values "
-        f"{schedule}. Last error: {last_error}"
+    bp_dc, base_dc = build_dc_base_point_dc_opf(
+        net=net,
+        slack_bus=int(slack_bus),
+        opf_cfg=opf_cfg,
+        limit_factor=float(limit_factor),
     )
+    logger.info(
+        "%s: DC OPF solved with headroom_factor=%.4f",
+        case_tag,
+        float(opf_cfg.headroom_factor),
+    )
+    return bp_dc, base_dc, float(opf_cfg.headroom_factor)
 
 
 def compute_results_for_case(
@@ -1056,7 +1016,7 @@ def compute_results_for_case(
 
     if bd == "dc_opf":
         with log_stage(logger, f"{case_tag}: Base dispatch via DC OPF (PyPSA+HiGHS)"):
-            bp_dc, base_dc, used_headroom_factor = _solve_dc_opf_with_adaptive_headroom(
+            bp_dc, base_dc, used_headroom_factor = _solve_dc_opf_once(
                 net=net,
                 slack_bus=int(slack_bus),
                 opf_cfg=cfg,
@@ -1065,12 +1025,10 @@ def compute_results_for_case(
             )
             bp_dc_meta = bp_dc.to_meta_dict()
             gen_dispatch_for_ac = dict(bp_dc.gen_dispatch_mw_by_name)
-    elif bd in {"acpf", "ac_fpf"}:
-        logger.info(
-            "%s: base_dispatch=%s: AC FPF (runopp) → acpf (runpp) → dc_opf fallback chain.",
-            case_tag,
-            bd,
-        )
+    elif bd == "acpf":
+        logger.info("%s: base_dispatch=acpf: solving AC PF base point.", case_tag)
+    elif bd == "ac_fpf":
+        logger.info("%s: base_dispatch=ac_fpf: solving AC FPF base point.", case_tag)
     else:
         logger.info("%s: base_dispatch=case: using case dispatch (NO OPF).", case_tag)
 
@@ -1082,21 +1040,15 @@ def compute_results_for_case(
     acpf_base_pf: _PyPSAAPFResult | None = None
     acpf_loss_correction_mw: float = 0.0
 
-    # ---------- Unified AC base point resolution (ac_fpf / acpf) ----------
-    # Fallback chain: AC FPF (runopp) → acpf (runpp) → DC OPF + runpp
-    # Both "acpf" and "ac_fpf" dispatch modes use the same chain.
+    # ---------- Explicit AC base point resolution (ac_fpf / acpf) ----------
     if bd in {"acpf", "ac_fpf"} and (bool(compute_dc) or bool(compute_ac)):
-        from stability_radius.base_point.pandapower_opp import (
-            ACFPFConfig as _ACFPFConfig,
-        )
+        line_indices_sorted = [int(x) for x in sorted(net.line.index)]
+        if bd == "ac_fpf":
+            from stability_radius.base_point.pandapower_opp import (
+                ACFPFConfig as _ACFPFConfig,
+            )
 
-        _ac_unified_ok = False
-
-        # --- Step 1: Try AC FPF (runopp = ACOPF) ---
-        try:
-            with log_stage(
-                logger, f"{case_tag}: AC FPF (runopp) for {bd} base dispatch"
-            ):
+            with log_stage(logger, f"{case_tag}: AC FPF (runopp) base dispatch"):
                 n_buses_net = (
                     int(len(net.bus))
                     if hasattr(net, "bus") and net.bus is not None
@@ -1133,7 +1085,7 @@ def compute_results_for_case(
                     lossless=bool(ac_lossless),
                     fpf_cfg=fpf_cfg,
                     opf_cfg=cfg,
-                    line_indices=[int(x) for x in sorted(net.line.index)],
+                    line_indices=line_indices_sorted,
                 )
                 logger.info(
                     "%s: AC FPF: runopp solve completed (status=%s, attempt=%s, repairs=%s)",
@@ -1147,77 +1099,34 @@ def compute_results_for_case(
                         "AC FPF mode requires bus_p_mw from runopp solver."
                     )
                 acpf_loss_correction_mw = float(np.sum(acpf_base_pf.bus_p_mw))
-                bd = "ac_fpf"
-                _ac_unified_ok = True
                 logger.info(
                     "%s: AC FPF solved; AC loss imbalance=%.6g MW "
                     "(will be absorbed by slack for DC model).",
                     case_tag,
                     acpf_loss_correction_mw,
                 )
-        except Exception:
-            logger.warning(
-                "%s: AC FPF (runopp) FAILED; falling back to acpf (runpp with case dispatch).",
-                case_tag,
-                exc_info=True,
-            )
-
-        # --- Step 2: Fallback to acpf (runpp with case dispatch) ---
-        if not _ac_unified_ok:
-            try:
-                with log_stage(
-                    logger,
-                    f"{case_tag}: Fallback acpf (runpp) after AC FPF failure",
-                ):
-                    acpf_bp_ac, acpf_base_pf = solve_ac_pf_base_point(
-                        net=net,
-                        slack_bus=int(slack_bus),
-                        pf_solver=str(ac_pf_solver),
-                        pf_init="flat",
-                        lossless=bool(ac_lossless),
-                        gen_dispatch_mw_by_name={},
-                        line_indices=[int(x) for x in sorted(net.line.index)],
-                        distributed_slack=bool(ac_distributed_slack),
-                        trafo_model=str(ac_trafo_model),
-                    )
-                    if acpf_base_pf.bus_p_mw is None:
-                        raise RuntimeError("acpf fallback: bus_p_mw is None")
-                    acpf_loss_correction_mw = float(np.sum(acpf_base_pf.bus_p_mw))
-                    bd = "acpf"
-                    _ac_unified_ok = True
-                    logger.info(
-                        "%s: acpf fallback succeeded (AC loss=%.6g MW).",
-                        case_tag,
-                        acpf_loss_correction_mw,
-                    )
-            except Exception:
-                logger.warning(
-                    "%s: acpf fallback also FAILED; falling back to dc_opf.",
+        else:
+            with log_stage(logger, f"{case_tag}: AC PF base dispatch"):
+                acpf_bp_ac, acpf_base_pf = solve_ac_pf_base_point(
+                    net=net,
+                    slack_bus=int(slack_bus),
+                    pf_solver=str(ac_pf_solver),
+                    pf_init=str(ac_pf_init),
+                    lossless=bool(ac_lossless),
+                    gen_dispatch_mw_by_name={},
+                    line_indices=line_indices_sorted,
+                    distributed_slack=bool(ac_distributed_slack),
+                    trafo_model=str(ac_trafo_model),
+                )
+                if acpf_base_pf.bus_p_mw is None:
+                    raise RuntimeError("AC PF mode requires bus_p_mw from runpp.")
+                acpf_loss_correction_mw = float(np.sum(acpf_base_pf.bus_p_mw))
+                logger.info(
+                    "%s: AC PF solved; AC loss imbalance=%.6g MW "
+                    "(will be absorbed by slack for DC model).",
                     case_tag,
-                    exc_info=True,
+                    acpf_loss_correction_mw,
                 )
-
-        # --- Step 3: Fallback to DC OPF (last resort) ---
-        if not _ac_unified_ok:
-            bd = "dc_opf"
-            acpf_bp_ac = None
-            acpf_base_pf = None
-            acpf_loss_correction_mw = 0.0
-            with log_stage(
-                logger,
-                f"{case_tag}: Fallback DC OPF (PyPSA+HiGHS) after AC FPF+acpf failure",
-            ):
-                bp_dc, base_dc, used_headroom_factor = (
-                    _solve_dc_opf_with_adaptive_headroom(
-                        net=net,
-                        slack_bus=int(slack_bus),
-                        opf_cfg=cfg,
-                        limit_factor=1.0,
-                        case_tag=case_tag,
-                    )
-                )
-                bp_dc_meta = bp_dc.to_meta_dict()
-                gen_dispatch_for_ac = dict(bp_dc.gen_dispatch_mw_by_name)
 
     # ---------- DC model stage ----------
     results_lines: dict[str, dict[str, Any]] = {}
@@ -1480,14 +1389,11 @@ def compute_results_for_case(
                     ac_distributed_slack_used = bool(bp_ac.distributed_slack_used)
                     ac_q_limit_hit = bool(getattr(bp_ac, "q_limit_hit", False))
                     ac_q_limit_events = list(getattr(bp_ac, "q_limit_events", ()) or ())
-        except Exception:
-            logger.warning(
-                "%s: AC power flow failed to converge; "
-                "skipping AC radius computation. DC results are still returned.",
-                case_tag,
-            )
-            ac_pf_status = "failed"
-            compute_ac = False  # disable remaining AC stages
+        except Exception as exc:
+            raise RuntimeError(
+                f"{case_tag}: AC power flow base point failed; "
+                "AC radius computation requires a solved AC PF/FPF regime."
+            ) from exc
 
         # ---------- AC feasibility gate ----------
         if bool(compute_ac):

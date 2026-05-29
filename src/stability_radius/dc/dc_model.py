@@ -595,12 +595,14 @@ def _check_connected_to_slack(
     parent = np.arange(n_bus, dtype=int)
 
     def find(x: int) -> int:
+        """Execute the documented operation."""
         while parent[x] != x:
             parent[x] = parent[parent[x]]
             x = parent[x]
         return x
 
     def union(a: int, b: int) -> None:
+        """Execute the documented operation."""
         ra, rb = find(a), find(b)
         if ra != rb:
             parent[rb] = ra
@@ -735,6 +737,7 @@ def build_dc_operator(net, slack_bus: int = 0) -> DCOperator:
     undirected_edges: list[tuple[int, int]] = []
 
     def _add_branch(*, fpos: int, tpos: int, b_val: float, shift_rad: float) -> None:
+        """Internal helper for module-local processing."""
         if not np.isfinite(b_val) or abs(float(b_val)) <= 0.0:
             raise ValueError(
                 f"Invalid branch b_val={b_val!r} (must be finite, non-zero)."

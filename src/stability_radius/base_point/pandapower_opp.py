@@ -110,10 +110,9 @@ class ACFPFConfig:
     per_attempt_timeout: float = 0
     """Per-attempt timeout in seconds for each pp.runopp() call.
 
-    ``0`` means no per-attempt timeout (unlimited; backward compatible).
+    ``0`` means no per-attempt timeout.
     A positive value (e.g. 180) caps each runopp attempt so that a single
-    slow attempt cannot exhaust the entire subprocess timeout, leaving room
-    for the fallback chain (runpp → DC OPF).
+    slow attempt cannot exhaust the entire subprocess timeout.
     """
 
 

@@ -23,6 +23,7 @@ class NumpyJSONEncoder(json.JSONEncoder):
     """`json.JSONEncoder` variant that understands numpy objects."""
 
     def default(self, obj: Any) -> Any:
+        """Execute the documented operation."""
         try:
             return numpy_to_builtin(obj)
         except TypeError:

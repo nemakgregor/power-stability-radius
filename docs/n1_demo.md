@@ -26,8 +26,8 @@ run_artifacts/n1_stability_demo/<requested-name>/
 Examples:
 
 - `--output-dir n1_demo_case118` -> `run_artifacts/n1_stability_demo/n1_demo_case118/`
-- `--output-dir analysis_output/legacy_case118` -> normalized to
-  `run_artifacts/n1_stability_demo/legacy_case118/`
+- `--output-dir analysis_output/case118` -> normalized to
+  `run_artifacts/n1_stability_demo/case118/`
 - `--output-dir run_artifacts/custom_bucket/demo_a` -> preserved as-is under `run_artifacts/`
 
 Each run directory contains `debug.log`, CSV artifacts, `comparison_summary.txt`,

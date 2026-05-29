@@ -478,7 +478,7 @@ PROCEDURE compute_ac_l2_radius(net, base_pf, slack_bus, ...):
                wP <- P / s0     # d|S|/dP = P/|S|
                wQ <- Q / s0     # d|S|/dQ = Q/|S|
            ELSE:
-               wP <- wQ <- 1/sqrt(2)   # conservative fallback
+               wP <- wQ <- 1/sqrt(2)   # diagnostic subgradient
 
            # Assemble adjoint RHS b = d|S|/dx
            b_theta_i <- wP * dP/dtheta_i + wQ * dQ/dtheta_i
@@ -560,9 +560,9 @@ over PQ buses only (n_pq), because PV buses do not have Q as a free variable.
 - **Chain rule for |S|:** The gradient of `|S| = sqrt(P^2 + Q^2)` is computed
   analytically via `d|S|/dP = P/|S|`, `d|S|/dQ = Q/|S|`, avoiding numerical
   differentiation.
-- **Fallback at |S|=0:** When base apparent power is zero, the gradient is
-  undefined. The equal-weight fallback `(1/sqrt(2), 1/sqrt(2))` is retained
-  only as a diagnostic legacy radius. The strict certificate field is set to
+- **Diagnostic subgradient at |S|=0:** When base apparent power is zero, the
+  gradient is undefined. The equal-weight subgradient `(1/sqrt(2), 1/sqrt(2))`
+  is retained only as a diagnostic radius. The strict certificate field is set to
   zero and the row is marked `nondifferentiable_apparent_power`.
 
 ---
@@ -866,27 +866,20 @@ flows, providing the operating point for AC certificate construction.
 `src/stability_radius/base_point/pypsa_pf.py`, function
 `solve_ac_pf_base_point_from_pandapower` (line 547)
 
-#### 3-Attempt Retry Cascade
+#### Fail-Fast Solve Policy
 
-The AC PF solver employs a robust 3-attempt cascade to handle difficult networks:
+The AC PF solver performs exactly one `pandapower.runpp()` call using the
+configured initialization and model policy:
 
 ```
-Attempt 1 (primary):
-    init = configured (flat/dc)
+Primary solve:
+    init = configured (flat/dc/pp)
     enforce_q_lims = True
-    distributed_slack = as configured
-
-Attempt 2 (alt_init):
-    init = opposite of primary (dc/flat)
-    enforce_q_lims = True
-    (triggered only if attempt 1 fails)
-
-Attempt 3 (relaxed):
-    init = flat
-    enforce_q_lims = False
-    distributed_slack = False
-    (triggered only if attempts 1 and 2 fail)
+    distributed_slack = as configured, except for the documented large-network guard
 ```
+
+If the solve fails, the computation fails for AC outputs. The code does not
+silently switch initialization, disable Q limits, or substitute a DC base point.
 
 #### Solver Backends
 

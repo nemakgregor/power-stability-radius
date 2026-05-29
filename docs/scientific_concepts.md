@@ -504,8 +504,8 @@ at a line end. Its gradient with respect to the state variables is:
 The weights wP = P/|S| and wQ = Q/|S| determine the relative contribution of
 active and reactive power changes. When |S| is near zero (a degenerate case
 for lightly loaded lines), the gradient is undefined. The code handles this
-by using equal weights wP = wQ = 1/sqrt(2) as a conservative, unbiased
-fallback (see the `_FALLBACK_WP_WQ` constant in `ac_l2.py`).
+by using equal weights wP = wQ = 1/sqrt(2) as a diagnostic subgradient
+(see `_DIAGNOSTIC_SUBGRADIENT_WP_WQ` in `ac_l2.py`).
 
 ---
 

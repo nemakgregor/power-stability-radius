@@ -101,6 +101,7 @@ def _line_z_total_ohm(line_row: Any, *, lossless: bool) -> complex:
 
 
 def _z_base_ohm(*, vn_kv: float, sn_mva: float) -> float:
+    """Internal helper for module-local processing."""
     v = float(vn_kv)
     s = float(sn_mva)
     if not math.isfinite(v) or v <= 0.0:
@@ -602,10 +603,12 @@ class ACOperator:
 
     @property
     def n_bus(self) -> int:
+        """Execute the documented operation."""
         return int(len(self.bus_ids))
 
     @property
     def n_line(self) -> int:
+        """Execute the documented operation."""
         return int(len(self.line_ids))
 
     @property

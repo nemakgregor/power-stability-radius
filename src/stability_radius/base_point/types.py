@@ -100,9 +100,9 @@ class BasePointAC:
     # For reproducibility: DC OPF dispatch used to form this PF regime (if any).
     gen_dispatch_mw_by_name: tuple[tuple[str, float], ...] = ()
 
-    # AC PF repair metadata: which solver attempt succeeded and what was changed.
-    pf_attempt: str = "primary"  # "primary" | "alt_init" | "relaxed"
-    pf_repairs: tuple[str, ...] = ()  # list of repair actions applied
+    # AC PF metadata: primary solve plus deterministic pre-solve adjustments.
+    pf_attempt: str = "primary"
+    pf_repairs: tuple[str, ...] = ()
     distributed_slack_requested: bool = False
     distributed_slack_used: bool = False
     q_limit_hit: bool = False

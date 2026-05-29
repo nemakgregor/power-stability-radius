@@ -29,6 +29,7 @@ logger = logging.getLogger("stability_radius.verification.generate_report")
 
 
 def _load_results(path: Path) -> Dict[str, Any]:
+    """Internal helper for module-local processing."""
     obj = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(obj, dict):
         raise ValueError(f"Expected JSON object in {path}, got {type(obj)}")
@@ -36,6 +37,7 @@ def _load_results(path: Path) -> Dict[str, Any]:
 
 
 def _get_meta(results: Dict[str, Any]) -> Dict[str, Any]:
+    """Internal helper for module-local processing."""
     meta = results.get("__meta__")
     return meta if isinstance(meta, dict) else {}
 
@@ -183,6 +185,7 @@ def generate_report_text(
     ac_lossless: bool,
     ac_basepoint_s_tol_mva: float,
 ) -> str:
+    """Execute the documented operation."""
     if not cases:
         raise ValueError("report requires a non-empty cases list.")
 

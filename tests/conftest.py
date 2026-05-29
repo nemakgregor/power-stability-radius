@@ -7,7 +7,7 @@ from pathlib import Path
 #
 # IMPORTANT:
 # We do NOT add repository root to sys.path. Adding repo root silently re-enables
-# legacy import paths and hides packaging mistakes.
+# direct source imports and hides packaging mistakes.
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 

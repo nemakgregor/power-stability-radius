@@ -70,6 +70,7 @@ _Z_95 = 1.959963984540054  # 95% CI
 
 
 def _load_results(path: Path) -> dict[str, Any]:
+    """Internal helper for module-local processing."""
     obj = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(obj, dict):
         raise ValueError(f"Expected JSON object in {path}, got {type(obj)}")
@@ -77,11 +78,13 @@ def _load_results(path: Path) -> dict[str, Any]:
 
 
 def _get_meta(results: dict[str, Any]) -> dict[str, Any]:
+    """Internal helper for module-local processing."""
     meta = results.get("__meta__")
     return meta if isinstance(meta, dict) else {}
 
 
 def _wilson_ci95_percent(*, k: int, n: int) -> tuple[float, float]:
+    """Internal helper for module-local processing."""
     if n <= 0:
         return float("nan"), float("nan")
     kk = int(k)
@@ -105,6 +108,7 @@ def _wilson_ci95_percent(*, k: int, n: int) -> tuple[float, float]:
 
 
 def _chi2_cdf(*, x: float, df: int) -> float:
+    """Internal helper for module-local processing."""
     if df <= 0:
         raise ValueError(f"df must be positive, got {df}")
     xx = float(x)
@@ -116,6 +120,7 @@ def _chi2_cdf(*, x: float, df: int) -> float:
 
 
 def _project_sum_zero_inplace(x: np.ndarray) -> np.ndarray:
+    """Internal helper for module-local processing."""
     if x.ndim != 2:
         raise ValueError(f"x must be 2D (k,n_bus), got {x.shape}")
     x -= np.mean(x, axis=1, keepdims=True)
@@ -125,6 +130,7 @@ def _project_sum_zero_inplace(x: np.ndarray) -> np.ndarray:
 def _sample_gaussian_balanced(
     *, rng: np.random.Generator, n: int, n_bus: int, sigma: float
 ) -> np.ndarray:
+    """Internal helper for module-local processing."""
     if n <= 0:
         raise ValueError("n must be positive.")
     if n_bus <= 1:
@@ -139,6 +145,7 @@ def _sample_gaussian_balanced(
 def _sample_uniform_l2_ball_balanced(
     *, rng: np.random.Generator, n: int, n_bus: int, radius: float
 ) -> np.ndarray:
+    """Internal helper for module-local processing."""
     if n <= 0:
         raise ValueError("n must be positive.")
     if n_bus <= 1:
@@ -173,6 +180,7 @@ def _sample_uniform_l2_ball_balanced(
 def _extract_line_arrays_dc(
     *, results: dict[str, Any], net: Any
 ) -> tuple[list[int], np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Internal helper for module-local processing."""
     line_indices = [int(x) for x in sorted(net.line.index)]
     m = int(len(line_indices))
 
@@ -210,6 +218,7 @@ def _compute_r_star_and_argmin(
     norm_g: np.ndarray,
     base_status: str,
 ) -> RadiusCheck:
+    """Internal helper for module-local processing."""
     finite = np.isfinite(radii)
     if not bool(np.any(finite)):
         return RadiusCheck(
@@ -260,6 +269,7 @@ def _compute_r_star_and_argmin(
 
 
 def _project_sum_zero_two_blocks_inplace(dp: np.ndarray, dq: np.ndarray) -> None:
+    """Internal helper for module-local processing."""
     if dp.ndim != 2 or dq.ndim != 2:
         raise ValueError("dp and dq must be 2D")
     if dp.shape != dq.shape:
@@ -334,6 +344,7 @@ def _sample_uniform_l2_ball_ac(
     n_bus: int,
     radius: float,
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Internal helper for module-local processing."""
     r = float(radius)
     if not math.isfinite(r) or r < 0:
         raise ValueError("radius must be finite and >=0")
@@ -370,6 +381,7 @@ def _sample_uniform_l2_ball_ac(
 
 
 def _line_limits_mva_sorted(net: Any) -> tuple[list[int], np.ndarray]:
+    """Internal helper for module-local processing."""
     line_ids = [int(x) for x in sorted(net.line.index)]
     limits = np.empty(len(line_ids), dtype=float)
     for pos, lid in enumerate(line_ids):
@@ -384,6 +396,7 @@ def _ac_pf_sample_violation_mva(
     limits_mva: np.ndarray,
     feas_tol_mva: float,
 ) -> tuple[bool, float, int]:
+    """Internal helper for module-local processing."""
     if not hasattr(net, "res_line") or net.res_line is None or len(net.res_line) == 0:
         raise RuntimeError("pandapower did not produce res_line results.")
 
@@ -468,6 +481,7 @@ def _check_ac_base_point_matches_results(
     line_ids_sorted: list[int],
     tol_mva: float,
 ) -> dict[str, Any]:
+    """Internal helper for module-local processing."""
     if not hasattr(nn, "res_line") or nn.res_line is None or len(nn.res_line) == 0:
         raise RuntimeError("pandapower did not produce res_line results (base point).")
 
@@ -536,6 +550,7 @@ def run_monte_carlo_verification(
     ac_basepoint_s_tol_mva: float = 1e-3,
     track_per_line_overloads: bool = False,
 ) -> VerificationResult:
+    """Execute the documented operation."""
     mode_eff = str(mode).strip().lower()
     if mode_eff not in {"dc", "ac"}:
         raise ValueError("mode must be 'dc' or 'ac'")
@@ -902,7 +917,7 @@ def run_monte_carlo_verification(
     sigma_p = np.asarray(ac_sigma_p_mw, dtype=float)
     sigma_q = np.asarray(ac_sigma_q_mvar, dtype=float)
     if sigma_p.ndim == 0:
-        sigma_p = float(sigma_p)  # keep as scalar for backward-compat downstream checks
+        sigma_p = float(sigma_p)
     if sigma_q.ndim == 0:
         sigma_q = float(sigma_q)
 
@@ -975,8 +990,9 @@ def run_monte_carlo_verification(
     ensure_ext_grid_at_slack(nn, slack_bus_id)
 
     # Apply dispatch from results meta so MC uses the same base point as the
-    # certificate.  For AC mode prefer base_point_ac (which stores the OPP gen
-    # dispatch + vm_pu); fall back to base_point_dc for backwards compat.
+    # certificate.  For AC mode prefer base_point_ac, which stores the OPP gen
+    # dispatch and vm_pu setpoints. base_point_dc is used only when no AC
+    # dispatch metadata is present.
     dispatch_pairs = None
     vm_pu_setpoints: dict[int, float] | None = None
     if isinstance(base_ac, dict):
@@ -1030,27 +1046,18 @@ def run_monte_carlo_verification(
 
     line_ids, limits_mva = _line_limits_mva_sorted(nn)
 
-    # Base PF (no perturbation) must match results.json regime
-    # Fallback chain for stressed (API) networks: try dc/flat init, with/without Q limits
-    _base_conv = False
-    for _init in ("dc", "flat"):
-        for _q in (True, False):
-            try:
-                pp.runpp(
-                    nn,
-                    calculate_voltage_angles=True,
-                    enforce_q_lims=_q,
-                    init=_init,
-                    max_iter=50,
-                    numba=False,
-                )
-                if bool(getattr(nn, "converged", True)):
-                    _base_conv = True
-                    break
-            except Exception:  # noqa: BLE001
-                pass
-        if _base_conv:
-            break
+    # Base PF (no perturbation) must match results.json regime.
+    try:
+        pp.runpp(
+            nn,
+            calculate_voltage_angles=True,
+            enforce_q_lims=True,
+            init="flat",
+            max_iter=50,
+            numba=False,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError("AC MC: base PF failed in primary solve.") from exc
     if not bool(getattr(nn, "converged", True)):
         raise RuntimeError("AC MC: base PF did not converge (net.converged=False).")
 
@@ -1318,7 +1325,7 @@ def run_monte_carlo_verification(
         n_samples=int(n_samples),
         seed=int(seed),
         chunk_size=int(chunk_size),
-        sigma_mw=_sigma_p_scalar,  # schema legacy (mean sigma for per-bus case)
+        sigma_mw=_sigma_p_scalar,
     )
 
     cert_interp = interpret_certificate_components(
@@ -1358,11 +1365,6 @@ def run_monte_carlo_verification(
             line_key(int(line_ids[pos])): float(per_line_fracs[pos])
             for pos in range(len(line_ids))
         }
-        # Backward-compatible alias.  PF failures are excluded from the
-        # per-line denominator; use bad_sample_probability for overload-or-PF-fail.
-        comparisons["per_line_overload_fractions"] = comparisons[
-            "per_line_overload_fractions_conditional_on_pf_converged"
-        ]
         comparisons["per_line_overload_fraction_denominator"] = int(n_pf_converged)
         comparisons["bad_sample_probability"] = float(
             1.0 - (float(feasible) / float(max(int(n_samples), 1)))

@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 _EPS_NORM = 1e-12
 _EPS_S0_MVA = 1e-9
-_FALLBACK_WP_WQ = 1.0 / math.sqrt(2.0)
+_DIAGNOSTIC_SUBGRADIENT_WP_WQ = 1.0 / math.sqrt(2.0)
 
 
 def _balanced_two_block_norm_from_red(
@@ -151,7 +151,7 @@ def compute_ac_l2_radius(
         h_to = np.zeros((m, n_vars), dtype=float)
 
     # ---------- chunked adjoint solves ----------
-    fallback_used = 0
+    diagnostic_subgradient_used = 0
     nondifferentiable_end = np.zeros(n_con, dtype=bool)
 
     start = 0
@@ -221,11 +221,11 @@ def compute_ac_l2_radius(
                 wQ = float(q_end[con_idx]) / s0
             else:
                 # At |S|=0 the gradient of a norm is undefined.
-                # Use an equal P/Q diagnostic subgradient for legacy radius
-                # continuity, and mark the result as non-strict below.
-                wP = _FALLBACK_WP_WQ
-                wQ = _FALLBACK_WP_WQ
-                fallback_used += 1
+                # Use an equal P/Q diagnostic subgradient and mark the result
+                # as non-strict below.
+                wP = _DIAGNOSTIC_SUBGRADIENT_WP_WQ
+                wQ = _DIAGNOSTIC_SUBGRADIENT_WP_WQ
+                diagnostic_subgradient_used += 1
                 nondifferentiable_end[con_idx] = True
 
             b_ti = wP * dP_dti + wQ * dQ_dti
@@ -285,11 +285,11 @@ def compute_ac_l2_radius(
 
         start = end
 
-    if fallback_used > 0:
+    if diagnostic_subgradient_used > 0:
         logger.debug(
-            "AC |S| gradient fallback used: %d/%d constraint-ends with |S0|<=%.3g MVA "
+            "AC |S| diagnostic subgradient used: %d/%d constraint-ends with |S0|<=%.3g MVA "
             "(used equal P/Q weights).",
-            int(fallback_used),
+            int(diagnostic_subgradient_used),
             int(n_con),
             float(_EPS_S0_MVA),
         )

@@ -39,7 +39,7 @@ def test_estimate_line_limit_mva_from_max_i_ka_and_vn_kv():
 
 
 @pytest.mark.parametrize(
-    "rateA, expected_is_fallback",
+    "rateA, expected_is_surrogate",
     [
         (0.0, True),
         (float("nan"), True),
@@ -47,8 +47,8 @@ def test_estimate_line_limit_mva_from_max_i_ka_and_vn_kv():
         (100.0, False),
     ],
 )
-def test_estimate_line_limit_mva_rateA_unconstrained_uses_fallback(
-    rateA: float, expected_is_fallback: bool
+def test_estimate_line_limit_mva_rateA_unconstrained_uses_surrogate(
+    rateA: float, expected_is_surrogate: bool
 ) -> None:
     """
     Regression (MATPOWER/PGLib convention):
@@ -82,9 +82,9 @@ def test_estimate_line_limit_mva_rateA_unconstrained_uses_fallback(
 
     limit, is_uc = estimate_line_limit_mva_with_flag(net, net.line.loc[lid])
 
-    fallback = float(DEFAULT_OPF.unconstrained_line_nom_mw)
-    if expected_is_fallback:
-        assert float(limit) == pytest.approx(fallback)
+    surrogate = float(DEFAULT_OPF.unconstrained_line_nom_mw)
+    if expected_is_surrogate:
+        assert float(limit) == pytest.approx(surrogate)
         assert bool(is_uc) is True
     else:
         assert float(limit) == pytest.approx(100.0)

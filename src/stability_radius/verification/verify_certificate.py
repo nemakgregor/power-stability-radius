@@ -157,7 +157,7 @@ def interpret_certificate_components(
 
 def interpret_certificate(vr: VerificationResult | None) -> CertificateInterpretation:
     """
-    Convenience wrapper: interpret semantics from a full VerificationResult.
+    Interpret semantics from a full VerificationResult.
 
     Parameters
     ----------

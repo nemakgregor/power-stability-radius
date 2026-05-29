@@ -1,10 +1,8 @@
-"""Tests for the AC PF repair cascade and metadata propagation.
+"""Tests for AC PF fail-fast behavior and metadata propagation.
 
 Covers:
 - Primary solve sets pf_attempt="primary", pf_repairs=[].
-- Alt_init retry sets pf_attempt="alt_init", pf_repairs=["init_changed_to_*"].
-- Relaxed retry sets pf_attempt="relaxed", pf_repairs=[...].
-- If all three stages fail, RuntimeError is raised.
+- A runpp failure raises immediately without changing model policy.
 - Metadata propagates through BasePointAC.to_meta_dict().
 - Metadata propagates through solve_ac_pf_base_point().
 """
@@ -92,7 +90,7 @@ def _populate_fake_pp_results(nn) -> None:
     )
 
 
-# ---------- Tests for primary solve (no fallback) ----------
+# ---------- Tests for primary solve ----------
 
 
 def test_primary_solve_metadata() -> None:
@@ -113,6 +111,27 @@ def test_primary_solve_metadata() -> None:
 
     assert result.pf_attempt == "primary"
     assert result.pf_repairs is None or len(result.pf_repairs) == 0
+
+
+def test_runpp_failure_is_fail_fast_without_retry() -> None:
+    """A failed AC PF solve must not retry with altered model settings."""
+    from stability_radius.base_point.pypsa_pf import (
+        solve_ac_pf_base_point_from_pandapower,
+    )
+
+    net, slack_bus = _make_simple_net()
+
+    with patch("pandapower.runpp", side_effect=RuntimeError("boom")) as runpp:
+        with pytest.raises(RuntimeError, match="primary solve"):
+            solve_ac_pf_base_point_from_pandapower(
+                net=net,
+                slack_bus=slack_bus,
+                solver="pandapower",
+                init="flat",
+                lossless=True,
+            )
+
+    assert runpp.call_count == 1
 
 
 # ---------- Tests for BasePointAC.to_meta_dict propagation ----------
@@ -137,14 +156,14 @@ def test_base_point_ac_meta_dict_propagates_repair_fields() -> None:
         q_to_mvar=np.array([-1.9]),
         s_limit_mva=np.array([100.0]),
         status="PP_PF_OK",
-        pf_attempt="alt_init",
-        pf_repairs=("init_changed_to_dc",),
+        pf_attempt="primary",
+        pf_repairs=("distributed_slack_auto_disabled_large_network",),
     )
 
     meta = bp.to_meta_dict()
 
-    assert meta["pf_attempt"] == "alt_init"
-    assert meta["pf_repairs"] == ["init_changed_to_dc"]
+    assert meta["pf_attempt"] == "primary"
+    assert meta["pf_repairs"] == ["distributed_slack_auto_disabled_large_network"]
     assert meta["status"] == "PP_PF_OK"
     assert meta["pf_solver"] == "pandapower"
 
@@ -201,48 +220,6 @@ def test_solve_ac_pf_base_point_propagates_metadata() -> None:
     assert raw_repairs == bp_repairs
 
 
-# ---------- Tests for BasePointAC.to_meta_dict roundtrip ----------
-
-
-def test_meta_dict_roundtrip_relaxed_repairs() -> None:
-    """Verify that relaxed stage repair metadata survives to_meta_dict."""
-    from stability_radius.base_point.types import BasePointAC
-
-    repairs = (
-        "enforce_q_lims_disabled",
-        "distributed_slack_disabled",
-        "init_flat",
-    )
-
-    bp = BasePointAC(
-        pf_solver="pandapower",
-        pf_init="dc",
-        lossless=False,
-        slack_bus=0,
-        bus_ids=(0, 1, 2),
-        vm_pu=np.array([1.0, 0.98, 0.97]),
-        va_rad=np.array([0.0, -0.02, -0.03]),
-        line_ids=(0, 1),
-        p_from_mw=np.array([10.0, 5.0]),
-        q_from_mvar=np.array([2.0, 1.0]),
-        p_to_mw=np.array([-9.8, -4.9]),
-        q_to_mvar=np.array([-1.8, -0.9]),
-        s_limit_mva=np.array([100.0, 50.0]),
-        status="PP_PF_OK",
-        pf_attempt="relaxed",
-        pf_repairs=repairs,
-    )
-
-    meta = bp.to_meta_dict()
-
-    assert meta["pf_attempt"] == "relaxed"
-    assert meta["pf_repairs"] == list(repairs)
-    assert len(meta["pf_repairs"]) == 3
-    assert "enforce_q_lims_disabled" in meta["pf_repairs"]
-    assert "distributed_slack_disabled" in meta["pf_repairs"]
-    assert "init_flat" in meta["pf_repairs"]
-
-
 # ---------- Test for PyPSAAPFResult fields ----------
 
 
@@ -266,8 +243,8 @@ def test_pypsa_apf_result_default_fields() -> None:
     assert result.pf_repairs is None
 
 
-def test_pypsa_apf_result_custom_fields() -> None:
-    """PyPSAAPFResult with explicit pf_attempt and pf_repairs."""
+def test_pypsa_apf_result_explicit_repair_metadata() -> None:
+    """PyPSAAPFResult can record non-solver repair metadata."""
     from stability_radius.base_point.pypsa_pf import PyPSAAPFResult
 
     result = PyPSAAPFResult(
@@ -280,13 +257,12 @@ def test_pypsa_apf_result_custom_fields() -> None:
         line_p1_mw=np.array([-4.9]),
         line_q1_mvar=np.array([-0.9]),
         status="PP_PF_OK",
-        pf_attempt="relaxed",
-        pf_repairs=["enforce_q_lims_disabled", "init_flat"],
+        pf_attempt="primary",
+        pf_repairs=["distributed_slack_auto_disabled_large_network"],
     )
 
-    assert result.pf_attempt == "relaxed"
-    assert len(result.pf_repairs) == 2
-    assert "enforce_q_lims_disabled" in result.pf_repairs
+    assert result.pf_attempt == "primary"
+    assert result.pf_repairs == ["distributed_slack_auto_disabled_large_network"]
 
 
 def test_distributed_slack_metadata_reports_requested_and_used() -> None:

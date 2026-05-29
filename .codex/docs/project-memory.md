@@ -79,7 +79,7 @@ Detailed entry-point inventory is in `docs/entry_points.md`.
   `invalid_active_set_changed_q_limit` rather than treated as strict fixed
   PV/PQ certificates.
 - Binding AC apparent-power constraints with `|S0|` near zero are marked
-  `nondifferentiable_apparent_power`; legacy radii remain diagnostic, but
+  `nondifferentiable_apparent_power`; signed radii remain diagnostic, but
   nonnegative certificate radius is zero.
 - Results schema is currently `__meta__.schema_version = 3`.
 - H-vectors are not JSON-serializable; CLI extracts `_h_vectors` and saves `h_vectors.npz`.
@@ -88,9 +88,15 @@ Detailed entry-point inventory is in `docs/entry_points.md`.
 - AC apparent-power overload probability is one-sided:
   `P(|S0| + X > c) = Q((c - |S0|) / sigma_flow)`. The two-sided signed
   Gaussian probability remains a DC/signed-flow convention.
-- Schema v3 keeps legacy signed `radius_*` fields for compatibility, but new
-  consumers should use `constraint_status_*`, nonnegative
+- Schema v3 keeps signed diagnostic `radius_*` fields, but consumers should use
+  `constraint_status_*`, nonnegative
   `certificate_radius_*`, and diagnostic `signed_distance_*` fields.
+- Solver paths should fail fast instead of switching model policy: AC PF uses one
+  configured `runpp()` solve, `base_dispatch=acpf/ac_fpf` does not switch to a
+  different dispatch model after failure, and DC OPF uses the configured
+  headroom exactly once.
+- Static quality tests require docstrings on all application/entry-point
+  functions and reject old compatibility/substitution terminology in code/docs.
 
 ## Current Config Defaults
 
@@ -157,7 +163,7 @@ Notable existing result summaries:
 
 - Prefer small, targeted edits that preserve existing layers.
 - Put reusable logic in `src/stability_radius`, not in entry-point scripts.
-- Entry points should stay wrappers/orchestrators; docs-as-code tests expect
+- Entry points should stay as launchers/orchestrators; docs-as-code tests expect
   their inventory to stay synchronized.
 - For numerical behavior changes, update tests and `UNITS_CONTRACT.md`.
 - For new runnable scripts, update `docs/entry_points.md`.

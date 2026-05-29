@@ -13,13 +13,13 @@ For complementary perspectives see:
 
 ## 1. Main Components
 
-The project is organized into a small set of explicit layers under `src/stability_radius/`, with thin executable wrappers under `entry_points/`.
+The project is organized into a small set of explicit layers under `src/stability_radius/`, with executable launchers under `entry_points/`.
 
-### 1.1 Entry Point Wrapper (`power_stability_radius.py`)
+### 1.1 Entry Point Launcher (`power_stability_radius.py`)
 
 **File:** `entry_points/power_stability_radius.py`
 
-Main operational script wrapper. It intentionally stays thin and delegates the actual CLI orchestration to the application layer while the library API remains available via `stability_radius.workflows.compute_results_for_case`.
+Main operational script launcher. It delegates CLI orchestration to the application layer while the library API remains available via `stability_radius.workflows.compute_results_for_case`.
 
 ```python
 # Library API:
@@ -45,7 +45,7 @@ The command-line interface is built on `argparse` in the application layer and p
 **Key design points:**
 
 - A pre-parse step (`_preparse_config_path`) extracts the `--config` path before the main argument parse, allowing YAML defaults to be injected into the argparse default values.
-- OmegaConf (`_cfg_get`) is used to read nested YAML keys with fallbacks to the programmatic defaults from `config.py`.
+- OmegaConf (`_cfg_get`) is used to read nested YAML keys with programmatic defaults from `config.py`.
 - If no subcommand is given on the command line, the CLI inspects `command:` in the YAML config to infer a default command.
 - Each subcommand handler (`run_compute`, `run_monte_carlo`, `run_report`, `run_table`) writes run artifacts (config snapshots, argv) to a timestamped run directory before executing.
 - Report case parsing is handled as application logic and resolves YAML into typed `ReportCaseSpec` values before verification code is called.
@@ -148,7 +148,7 @@ Computes the operating point around which the stability radius is certified.
 | `dc.py` | `compute_dc_base_point()` -- assembles a `BasePointDC` from either case dispatch data or DC OPF results |
 | `ac.py` | `compute_ac_base_point()` -- assembles a `BasePointAC` from an AC power flow solution |
 | `pypsa_opf.py` | DC OPF via PyPSA + HiGHS: converts pandapower network to PyPSA, solves LP, extracts flows/injections |
-| `pypsa_pf.py` | AC PF via `pandapower.runpp()` with a 3-attempt retry cascade (flat init, DC init, relaxed tolerances) |
+| `pypsa_pf.py` | AC PF via one explicit `pandapower.runpp()` solve; failures are surfaced instead of changing model policy |
 | `pandapower_opp.py` | AC Feasibility Power Flow via `pandapower.runopp()` (OPP) with quadratic feasibility cost functions |
 | `pandapower_tools.py` | Shared utilities: lossless network policy enforcement, slack bus resolution, generator dispatch application |
 
@@ -636,9 +636,9 @@ The project follows a layered architecture with explicit dependency direction:
 ```
 
 Each layer depends only on layers below it. In particular:
-- Interface wrappers only import the application layer.
+- Interface launchers only import the application layer.
 - Application code can depend on domain types, algorithms, and infrastructure helpers.
-- Algorithm modules do not import CLI code or entry-point wrappers.
+- Algorithm modules do not import CLI code or entry-point launchers.
 - Domain types stay free of file-system, CLI, and logging concerns.
 
 ### 6.2 Mathematical vs Operational Code
@@ -687,7 +687,7 @@ All network data is converted to pandapower's internal format (`pandapowerNet`) 
 
 The MATPOWER import path is deterministic: the repository parses the `.m` file
 into a PPC structure and then calls pandapower's `from_ppc()` converter. There
-is no optional runtime fallback chain here.
+is no secondary runtime parser path here.
 
 ### 7.2 Sparse LU Factorization for O(n) Solves
 
