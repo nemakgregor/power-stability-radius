@@ -18,7 +18,6 @@ Therefore we:
 """
 
 import copy
-import json
 import logging
 import math
 from pathlib import Path
@@ -36,7 +35,11 @@ from stability_radius.base_point.pandapower_tools import (
 from stability_radius.config import DEFAULT_MC
 from stability_radius.dc.dc_model import build_dc_operator
 from stability_radius.parsers.matpower import load_network
-from stability_radius.radii.common import estimate_line_limit_mva, line_key
+from stability_radius.radii.common import line_key, sorted_line_limits_mva
+from stability_radius.utils.json_utils import load_json_object, result_meta
+from stability_radius.verification.sampling import (
+    condition_diagonal_gaussian_balance_inplace,
+)
 
 from .types import (
     BASE_INFEASIBLE,
@@ -67,20 +70,6 @@ from .verify_certificate import interpret_certificate_components
 logger = logging.getLogger("stability_radius.verification.monte_carlo")
 
 _Z_95 = 1.959963984540054  # 95% CI
-
-
-def _load_results(path: Path) -> dict[str, Any]:
-    """Internal helper for module-local processing."""
-    obj = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(obj, dict):
-        raise ValueError(f"Expected JSON object in {path}, got {type(obj)}")
-    return obj
-
-
-def _get_meta(results: dict[str, Any]) -> dict[str, Any]:
-    """Internal helper for module-local processing."""
-    meta = results.get("__meta__")
-    return meta if isinstance(meta, dict) else {}
 
 
 def _wilson_ci95_percent(*, k: int, n: int) -> tuple[float, float]:
@@ -278,31 +267,6 @@ def _project_sum_zero_two_blocks_inplace(dp: np.ndarray, dq: np.ndarray) -> None
     dq -= np.mean(dq, axis=1, keepdims=True)
 
 
-def _project_gaussian_balance_weighted_inplace(
-    dp: np.ndarray,
-    dq: np.ndarray,
-    sigma_p: np.ndarray,
-    sigma_q: np.ndarray,
-) -> None:
-    """Condition diagonal Gaussian samples on zero P/Q sums."""
-    if dp.ndim != 2 or dq.ndim != 2:
-        raise ValueError("dp and dq must be 2D")
-    sigp2 = np.asarray(sigma_p, dtype=float).reshape(-1) ** 2
-    sigq2 = np.asarray(sigma_q, dtype=float).reshape(-1) ** 2
-    if sigp2.shape != (dp.shape[1],) or sigq2.shape != (dq.shape[1],):
-        raise ValueError("sigma arrays must match dp/dq bus dimension")
-
-    sum_sigp2 = float(np.sum(sigp2))
-    if sum_sigp2 > 0.0:
-        dp_sum = np.sum(dp, axis=1, keepdims=True)
-        dp -= sigp2[None, :] * dp_sum / sum_sigp2
-
-    sum_sigq2 = float(np.sum(sigq2))
-    if sum_sigq2 > 0.0:
-        dq_sum = np.sum(dq, axis=1, keepdims=True)
-        dq -= sigq2[None, :] * dq_sum / sum_sigq2
-
-
 def _sample_gaussian_ac(
     *,
     rng: np.random.Generator,
@@ -333,7 +297,7 @@ def _sample_gaussian_ac(
     z_q = rng.standard_normal(size=(int(n), int(n_bus)))
     dp = (sp[None, :] * z_p).astype(float, copy=False)
     dq = (sq[None, :] * z_q).astype(float, copy=False)
-    _project_gaussian_balance_weighted_inplace(dp, dq, sp, sq)
+    condition_diagonal_gaussian_balance_inplace(dp, dq, sp, sq)
     return dp, dq
 
 
@@ -378,15 +342,6 @@ def _sample_uniform_l2_ball_ac(
     rad = r * np.power(u, 1.0 / float(d))
 
     return zP * rad[:, None], zQ * rad[:, None]
-
-
-def _line_limits_mva_sorted(net: Any) -> tuple[list[int], np.ndarray]:
-    """Internal helper for module-local processing."""
-    line_ids = [int(x) for x in sorted(net.line.index)]
-    limits = np.empty(len(line_ids), dtype=float)
-    for pos, lid in enumerate(line_ids):
-        limits[pos] = float(estimate_line_limit_mva(net, net.line.loc[lid]))
-    return line_ids, limits
 
 
 def _ac_pf_sample_violation_mva(
@@ -576,8 +531,8 @@ def run_monte_carlo_verification(
         raise ValueError("cert_max_samples must be non-negative.")
 
     case_id = rp.stem
-    results = _load_results(rp)
-    meta = _get_meta(results)
+    results = load_json_object(rp)
+    meta = result_meta(results)
 
     if not ip.exists():
         if not bool(allow_download):
@@ -1044,7 +999,7 @@ def run_monte_carlo_verification(
         )
         sgen_idx.append(idx)
 
-    line_ids, limits_mva = _line_limits_mva_sorted(nn)
+    line_ids, limits_mva = sorted_line_limits_mva(nn)
 
     # Base PF (no perturbation) must match results.json regime.
     try:
@@ -1082,10 +1037,15 @@ def run_monte_carlo_verification(
     if d <= 0:
         raise ValueError("AC MC: invalid dimension (n_bus must be >=2).")
 
-    _sigma_p_scalar = float(np.mean(sigma_p)) if isinstance(sigma_p, np.ndarray) else float(sigma_p)
-    _sigma_q_scalar = float(np.mean(sigma_q)) if isinstance(sigma_q, np.ndarray) else float(sigma_q)
+    _sigma_p_scalar = (
+        float(np.mean(sigma_p)) if isinstance(sigma_p, np.ndarray) else float(sigma_p)
+    )
+    _sigma_q_scalar = (
+        float(np.mean(sigma_q)) if isinstance(sigma_q, np.ndarray) else float(sigma_q)
+    )
     _sigma_uniform = (
-        isinstance(sigma_p, float) and isinstance(sigma_q, float)
+        isinstance(sigma_p, float)
+        and isinstance(sigma_q, float)
         and abs(sigma_p - sigma_q) <= 1e-15
     )
     if (

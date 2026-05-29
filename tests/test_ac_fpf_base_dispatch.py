@@ -211,7 +211,7 @@ def test_ac_fpf_voltage_bounds_respected() -> None:
 
 def test_ac_fpf_cost_function_setup() -> None:
     """Quadratic cost coefficients should match (P - P0)^2 expansion."""
-    from stability_radius.base_point.pandapower_opp import _determine_pg0
+    from stability_radius.base_point.pandapower_opp import determine_pg0
 
     import pandas as pd
 
@@ -219,11 +219,11 @@ def test_ac_fpf_cost_function_setup() -> None:
     row = pd.Series({"p_mw": 5.0, "min_p_mw": 0.0, "max_p_mw": 10.0})
 
     # pg0_source="case" should use p_mw
-    pg0_case = _determine_pg0(row, pg0_source="case")
+    pg0_case = determine_pg0(row, pg0_source="case")
     assert abs(pg0_case - 5.0) < 1e-10
 
     # pg0_source="midpoint" should use (min + max) / 2
-    pg0_mid = _determine_pg0(row, pg0_source="midpoint")
+    pg0_mid = determine_pg0(row, pg0_source="midpoint")
     assert abs(pg0_mid - 5.0) < 1e-10  # (0 + 10) / 2 = 5
 
     # For (P - P0)^2 = P^2 - 2*P0*P + P0^2:
@@ -266,20 +266,20 @@ def test_ac_fpf_lossless_mode() -> None:
 
 
 def test_ac_fpf_line_limit_setup_uses_deterministic_surrogates() -> None:
-    from stability_radius.base_point.pandapower_opp import _set_line_thermal_limits
+    from stability_radius.base_point.pandapower_opp import set_line_thermal_limits
 
     net, _ = _make_3bus_net()
     net.line.loc[:, "max_loading_percent"] = np.nan
     net.line.loc[:, "max_i_ka"] = 0.0
 
-    _set_line_thermal_limits(net)
+    set_line_thermal_limits(net)
 
     assert np.allclose(net.line["max_loading_percent"].to_numpy(dtype=float), 100.0)
     assert np.allclose(net.line["max_i_ka"].to_numpy(dtype=float), 100.0)
 
 
 def test_ac_fpf_generator_defaults_are_deterministic_when_bounds_are_missing() -> None:
-    from stability_radius.base_point.pandapower_opp import _setup_gen_for_opp
+    from stability_radius.base_point.pandapower_opp import setup_gen_for_opp
 
     net, _ = _make_3bus_net()
     gid = int(sorted(net.gen.index)[0])
@@ -287,7 +287,7 @@ def test_ac_fpf_generator_defaults_are_deterministic_when_bounds_are_missing() -
     net.gen.at[gid, "min_q_mvar"] = float("nan")
     net.gen.at[gid, "max_q_mvar"] = float("nan")
 
-    pg0_map = _setup_gen_for_opp(net, pg0_source="case")
+    pg0_map = setup_gen_for_opp(net, pg0_source="case")
 
     assert net.gen.at[gid, "max_p_mw"] == pytest.approx(100.0)
     assert net.gen.at[gid, "min_q_mvar"] == pytest.approx(-999.0)

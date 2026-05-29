@@ -116,7 +116,7 @@ class ACFPFConfig:
     """
 
 
-def _determine_pg0(
+def determine_pg0(
     row: Any,
     *,
     pg0_source: str,
@@ -138,7 +138,7 @@ def _determine_pg0(
     return p
 
 
-def _setup_gen_for_opp(
+def setup_gen_for_opp(
     nn: Any,
     *,
     pg0_source: str,
@@ -181,7 +181,7 @@ def _setup_gen_for_opp(
             nn.gen.at[gid, "min_q_mvar"] = q_min
             nn.gen.at[gid, "max_q_mvar"] = q_max
 
-            pg0 = _determine_pg0(row, pg0_source=pg0_source)
+            pg0 = determine_pg0(row, pg0_source=pg0_source)
             name = f"gen_{gid}"
             pg0_map[name] = pg0
 
@@ -224,7 +224,7 @@ def _setup_gen_for_opp(
             nn.sgen.at[sid, "min_q_mvar"] = q_min
             nn.sgen.at[sid, "max_q_mvar"] = q_max
 
-            pg0 = _determine_pg0(row, pg0_source=pg0_source)
+            pg0 = determine_pg0(row, pg0_source=pg0_source)
             name = f"sgen_{sid}"
             pg0_map[name] = pg0
 
@@ -277,14 +277,14 @@ def _setup_gen_for_opp(
     return pg0_map
 
 
-def _set_voltage_limits(nn: Any, *, vm_min_pu: float, vm_max_pu: float) -> None:
+def set_voltage_limits(nn: Any, *, vm_min_pu: float, vm_max_pu: float) -> None:
     """Set bus voltage limits for OPF."""
     if hasattr(nn, "bus") and nn.bus is not None and len(nn.bus):
         nn.bus["min_vm_pu"] = vm_min_pu
         nn.bus["max_vm_pu"] = vm_max_pu
 
 
-def _set_line_thermal_limits(nn: Any) -> None:
+def set_line_thermal_limits(nn: Any) -> None:
     """Ensure line thermal limits are set for OPF.
 
     pandapower.runopp() enforces ``max_loading_percent`` on lines.
@@ -319,7 +319,7 @@ def _set_line_thermal_limits(nn: Any) -> None:
             )
 
 
-def _clear_existing_costs(nn: Any) -> None:
+def clear_existing_costs(nn: Any) -> None:
     """Remove any existing cost functions from the network."""
     if hasattr(nn, "poly_cost") and nn.poly_cost is not None and len(nn.poly_cost):
         nn.poly_cost.drop(nn.poly_cost.index, inplace=True)
@@ -395,9 +395,9 @@ def solve_ac_fpf(
     )
 
     # ---- Setup constraints ----
-    _clear_existing_costs(nn)
-    _set_voltage_limits(nn, vm_min_pu=cfg.vm_min_pu, vm_max_pu=cfg.vm_max_pu)
-    _set_line_thermal_limits(nn)
+    clear_existing_costs(nn)
+    set_voltage_limits(nn, vm_min_pu=cfg.vm_min_pu, vm_max_pu=cfg.vm_max_pu)
+    set_line_thermal_limits(nn)
 
     # Tighten line loading to compensate for PIPS solver tolerance.
     # Without this, the solver may overshoot the true limit by ~0.5-1%.
@@ -408,7 +408,7 @@ def solve_ac_fpf(
             nn.trafo["max_loading_percent"] = cfg.max_loading_percent
 
     # ---- Setup generators with costs ----
-    pg0_map = _setup_gen_for_opp(nn, pg0_source=pg0_source)
+    pg0_map = setup_gen_for_opp(nn, pg0_source=pg0_source)
     logger.info(
         "AC FPF: configured %d generators/ext_grid with quadratic feasibility costs",
         len(pg0_map),
@@ -465,9 +465,7 @@ def solve_ac_fpf(
         float(cfg.per_attempt_timeout) if cfg.per_attempt_timeout > 0 else 0.0
     )
     for attempt_idx, attempt in enumerate(attempts_config[:max_attempts], 1):
-        _set_voltage_limits(
-            nn, vm_min_pu=attempt["vm_min"], vm_max_pu=attempt["vm_max"]
-        )
+        set_voltage_limits(nn, vm_min_pu=attempt["vm_min"], vm_max_pu=attempt["vm_max"])
         current_kwargs = {**runopp_kwargs, "init": attempt["init"]}
 
         try:

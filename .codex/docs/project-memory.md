@@ -97,6 +97,12 @@ Detailed entry-point inventory is in `docs/entry_points.md`.
   headroom exactly once.
 - Static quality tests require docstrings on all application/entry-point
   functions and reject old compatibility/substitution terminology in code/docs.
+- Entry-point scripts must not import private `stability_radius.*` symbols; shared
+  behavior belongs in public library functions.
+- Static quality tests reject repeated non-trivial function bodies across
+  `src/stability_radius` and `entry_points`.
+- Post-processing plot modules force Matplotlib's `Agg` backend so tests and CLI
+  runs do not depend on a local GUI/Tk installation.
 
 ## Current Config Defaults
 
@@ -133,8 +139,6 @@ Known drift to watch:
 - `ac.lossless=false` is intentionally unsupported in certificate mode. If
   lossy AC support is needed, implement the full pi/shunt Jacobian and update
   the fail-fast tests and docs together.
-- `experiments/README.md` has old structure text and mojibake in box-drawing
-  comments. Prefer `docs/entry_points.md` for the current runnable surface.
 
 ## Data And Artifacts
 

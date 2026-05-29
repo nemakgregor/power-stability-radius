@@ -626,6 +626,20 @@ class ACOperator:
         """Alias for red_pos_of_bus_pos (theta variable index for each bus)."""
         return self.red_pos_of_bus_pos
 
+    def _solve_factorized_jacobian(self, rhs: np.ndarray, *, trans: str) -> np.ndarray:
+        """Validate a right-hand side and solve the factorized AC Jacobian."""
+        r = np.asarray(rhs, dtype=float)
+        n = self.n_vars
+        if r.ndim == 1:
+            if r.shape != (n,):
+                raise ValueError(f"rhs must have shape ({n},), got {r.shape}")
+            return np.asarray(self.J_lu.solve(r, trans=trans), dtype=float)
+        if r.ndim == 2:
+            if r.shape[0] != n:
+                raise ValueError(f"rhs must have shape ({n}, k), got {r.shape}")
+            return np.asarray(self.J_lu.solve(r, trans=trans), dtype=float)
+        raise ValueError("rhs must be 1D or 2D")
+
     def solve_J(self, rhs: np.ndarray) -> np.ndarray:
         """
         Solve J * x = rhs.
@@ -640,17 +654,7 @@ class ACOperator:
         np.ndarray
             Solution with same shape as rhs.
         """
-        r = np.asarray(rhs, dtype=float)
-        n = self.n_vars
-        if r.ndim == 1:
-            if r.shape != (n,):
-                raise ValueError(f"rhs must have shape ({n},), got {r.shape}")
-            return np.asarray(self.J_lu.solve(r, trans="N"), dtype=float)
-        if r.ndim == 2:
-            if r.shape[0] != n:
-                raise ValueError(f"rhs must have shape ({n}, k), got {r.shape}")
-            return np.asarray(self.J_lu.solve(r, trans="N"), dtype=float)
-        raise ValueError("rhs must be 1D or 2D")
+        return self._solve_factorized_jacobian(rhs, trans="N")
 
     def solve_J_transpose(self, rhs: np.ndarray) -> np.ndarray:
         """
@@ -659,17 +663,7 @@ class ACOperator:
         This is the core operation for adjoint sensitivities:
             y = J^{-T} rhs
         """
-        r = np.asarray(rhs, dtype=float)
-        n = self.n_vars
-        if r.ndim == 1:
-            if r.shape != (n,):
-                raise ValueError(f"rhs must have shape ({n},), got {r.shape}")
-            return np.asarray(self.J_lu.solve(r, trans="T"), dtype=float)
-        if r.ndim == 2:
-            if r.shape[0] != n:
-                raise ValueError(f"rhs must have shape ({n}, k), got {r.shape}")
-            return np.asarray(self.J_lu.solve(r, trans="T"), dtype=float)
-        raise ValueError("rhs must be 1D or 2D")
+        return self._solve_factorized_jacobian(rhs, trans="T")
 
 
 def build_ac_operator(

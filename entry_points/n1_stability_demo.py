@@ -290,6 +290,7 @@ def _add_matpower_costs(nn, input_path: str) -> int:
     """
     import re
     import pandapower as pp
+    from stability_radius.base_point.pandapower_opp import clear_existing_costs
 
     with open(input_path, encoding="utf-8", errors="replace") as _f:
         txt = _f.read()
@@ -325,7 +326,7 @@ def _add_matpower_costs(nn, input_path: str) -> int:
             c2, c1, c0 = 0.0, 0.0, 0.0
         bus_costs.setdefault(bus, []).append((float(c2), float(c1), float(c0)))
 
-    _clear_existing_costs(nn)
+    clear_existing_costs(nn)
 
     elements_by_bus: dict[int, list[tuple[str, int]]] = {}
     for element_type, idx, bus in _iter_dispatchable_elements(nn):
@@ -371,14 +372,6 @@ def _set_default_voltage_bounds(nn) -> None:
     nn.bus["max_vm_pu"] = nn.bus.get("max_vm_pu", 1.1).fillna(1.1).clip(upper=1.15)
 
 
-def _clear_existing_costs(nn) -> None:
-    """Internal helper for module-local processing."""
-    if hasattr(nn, "poly_cost") and nn.poly_cost is not None and len(nn.poly_cost):
-        nn.poly_cost.drop(nn.poly_cost.index, inplace=True)
-    if hasattr(nn, "pwl_cost") and nn.pwl_cost is not None and len(nn.pwl_cost):
-        nn.pwl_cost.drop(nn.pwl_cost.index, inplace=True)
-
-
 def _iter_dispatchable_elements(nn):
     """Internal helper for module-local processing."""
     for table_name, element_type in (
@@ -399,14 +392,15 @@ def _iter_dispatchable_elements(nn):
 def _prepare_cost_opf_network(nn) -> None:
     """Internal helper for module-local processing."""
     from stability_radius.base_point.pandapower_opp import (
-        _set_line_thermal_limits,
-        _setup_gen_for_opp,
+        clear_existing_costs,
+        set_line_thermal_limits,
+        setup_gen_for_opp,
     )
 
-    _clear_existing_costs(nn)
-    _set_line_thermal_limits(nn)
-    _setup_gen_for_opp(nn, pg0_source="case")
-    _clear_existing_costs(nn)
+    clear_existing_costs(nn)
+    set_line_thermal_limits(nn)
+    setup_gen_for_opp(nn, pg0_source="case")
+    clear_existing_costs(nn)
 
 
 def _apply_loading_limits(

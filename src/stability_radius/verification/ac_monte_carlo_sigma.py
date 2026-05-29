@@ -40,7 +40,11 @@ import numpy as np
 from stability_radius.base_point.pandapower_tools import (
     apply_lossless_policy_to_pandapower_net,
 )
-from stability_radius.radii.common import estimate_line_limit_mva, line_key
+from stability_radius.radii.common import line_key, sorted_line_limits_mva
+from stability_radius.verification.sampling import (
+    sample_balanced_gaussian_sigma,
+    sigma_inverse_norm,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -82,93 +86,6 @@ class ACSigmaMCResult:
     pf_failure_probability: float = 0.0
     bad_sample_probability: float = 0.0
     soundness_inside_sigma_ball: float = float("nan")
-
-
-def _project_balance_sigma_weighted_inplace(
-    dp: np.ndarray,
-    dq: np.ndarray,
-    sigma_p: np.ndarray,
-    sigma_q: np.ndarray,
-) -> None:
-    """Project ΔP and ΔQ onto 1ᵀΔP = 0, 1ᵀΔQ = 0 using the σ²-weighted
-    conditional projection.
-
-    For ΔP ~ N(0, diag(σ²_P)), the correct conditional distribution given
-    1ᵀΔP = 0 has covariance  Σ − Σ·1·(1ᵀΣ·1)⁻¹·1ᵀ·Σ, which is achieved by::
-
-        ΔP_i  ←  ΔP_i − σ²_{P,i} · sum(ΔP) / sum(σ²_P)
-
-    This preserves the correct anisotropic covariance structure and is
-    consistent with the σ²-weighted h-projection used in ``compute_ac_sigma_radius``.
-    """
-    sigp2 = sigma_p * sigma_p  # (n_bus,)
-    sigq2 = sigma_q * sigma_q
-
-    sum_sigp2 = float(np.sum(sigp2))
-    sum_sigq2 = float(np.sum(sigq2))
-
-    if sum_sigp2 > 0.0:
-        dp_sum = np.sum(dp, axis=1, keepdims=True)  # (n_samples, 1)
-        dp -= sigp2[None, :] * dp_sum / sum_sigp2
-
-    if sum_sigq2 > 0.0:
-        dq_sum = np.sum(dq, axis=1, keepdims=True)
-        dq -= sigq2[None, :] * dq_sum / sum_sigq2
-
-
-def _sample_gaussian_sigma(
-    *,
-    rng: np.random.Generator,
-    n: int,
-    sigma_p: np.ndarray,
-    sigma_q: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Draw *n* balanced Gaussian samples from N(0, Σ) | 1ᵀΔP=0, 1ᵀΔQ=0.
-
-    z ~ N(0, I), then scale element-wise and apply the σ²-weighted
-    conditional projection to enforce balance.
-    """
-    n_bus = int(sigma_p.shape[0])
-    z = rng.standard_normal(size=(int(n), 2 * n_bus)).astype(float, copy=False)
-
-    dp = sigma_p[None, :] * z[:, :n_bus]
-    dq = sigma_q[None, :] * z[:, n_bus:]
-
-    _project_balance_sigma_weighted_inplace(dp, dq, sigma_p, sigma_q)
-    return dp, dq
-
-
-def _sigma_inv_norm(
-    dp: np.ndarray,
-    dq: np.ndarray,
-    inv_sigma_p: np.ndarray,
-    inv_sigma_q: np.ndarray,
-) -> np.ndarray:
-    """Compute ‖Σ^{-1/2} Δu‖₂ for each sample row.
-
-    Parameters
-    ----------
-    dp, dq : (n, n_bus) arrays
-    inv_sigma_p, inv_sigma_q : (n_bus,) arrays  (1 / σ)
-
-    Returns
-    -------
-    (n,) array of weighted norms.
-    """
-    scaled_p = dp * inv_sigma_p[None, :]
-    scaled_q = dq * inv_sigma_q[None, :]
-    return np.sqrt(
-        np.sum(scaled_p * scaled_p, axis=1) + np.sum(scaled_q * scaled_q, axis=1)
-    )
-
-
-def _line_limits_mva_sorted(net: Any) -> tuple[list[int], np.ndarray]:
-    """Sorted line indices and corresponding MVA thermal limits."""
-    line_ids = [int(x) for x in sorted(net.line.index)]
-    limits = np.empty(len(line_ids), dtype=float)
-    for pos, lid in enumerate(line_ids):
-        limits[pos] = float(estimate_line_limit_mva(net, net.line.loc[lid]))
-    return line_ids, limits
 
 
 def _check_sample_violations(
@@ -296,7 +213,7 @@ def run_ac_monte_carlo_sigma(
         )
         sgen_idx.append(idx)
 
-    line_ids, limits_mva = _line_limits_mva_sorted(nn)
+    line_ids, limits_mva = sorted_line_limits_mva(nn)
     m_line = len(line_ids)
 
     # Base PF (no perturbation)
@@ -310,12 +227,12 @@ def run_ac_monte_carlo_sigma(
 
     # Generate all samples upfront
     rng = np.random.default_rng(int(seed))
-    dp_all, dq_all = _sample_gaussian_sigma(
+    dp_all, dq_all = sample_balanced_gaussian_sigma(
         rng=rng, n=n_samples, sigma_p=sig_p, sigma_q=sig_q
     )
 
     # Compute sigma-weighted norms for sigma-ball membership
-    sigma_norms = _sigma_inv_norm(dp_all, dq_all, inv_sig_p, inv_sig_q)
+    sigma_norms = sigma_inverse_norm(dp_all, dq_all, inv_sig_p, inv_sig_q)
     inside_ball = sigma_norms <= float(r_sigma)
 
     # Per-sample AC PF

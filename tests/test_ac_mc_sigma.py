@@ -82,7 +82,7 @@ def _compute_ac_radius_and_sigma(net, slack_bus: int, sigma_val: float):
     )
     from stability_radius.radii.ac_l2 import compute_ac_l2_radius
     from stability_radius.radii.ac_sigma_radius import compute_ac_sigma_radius
-    from stability_radius.workflows import _expand_h_reduced_to_full
+    from stability_radius.workflows import expand_h_reduced_to_full
 
     # Solve AC PF base point
     base_pf = solve_ac_pf_base_point_from_pandapower(
@@ -113,13 +113,13 @@ def _compute_ac_radius_and_sigma(net, slack_bus: int, sigma_val: float):
     n_bus = len(bus_ids)
     slack_pos = bus_ids.index(int(slack_bus))
 
-    h_from_full = _expand_h_reduced_to_full(
+    h_from_full = expand_h_reduced_to_full(
         h_from,
         n_bus=n_bus,
         slack_pos=slack_pos,
         pq_mask=h_vecs_raw.get("pq_mask"),
     )
-    h_to_full = _expand_h_reduced_to_full(
+    h_to_full = expand_h_reduced_to_full(
         h_to,
         n_bus=n_bus,
         slack_pos=slack_pos,

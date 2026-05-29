@@ -121,7 +121,10 @@ The AC model classifies buses as:
 - **PV**: Generator buses with voltage control (V fixed, P specified, Q free)
 - **PQ**: Load buses (both P and Q are specified)
 
-**Limitation**: This classification is determined from `net.gen` and `net.ext_grid` at model build time. Generators that hit reactive power limits (switching from PV to PQ) are not modeled — the Jacobian is fixed at the base point.
+**Limitation**: This classification is determined from `net.gen` and `net.ext_grid`
+at model build time. Q-limit events are diagnosed from pandapower metadata; when
+they occur, the fixed PV/PQ Jacobian is marked invalid for strict AC
+certification rather than silently treated as the solved active set.
 
 ---
 
@@ -200,13 +203,19 @@ For AC mode with 10000 samples on a 2000-bus network, this can take minutes to h
 
 **Source**: All radius modules use `eps_norm` thresholds (typically 1e-12)
 
-When ||g_l|| ≈ 0 (a line has near-zero sensitivity to all bus injections), the radius becomes numerically infinite. The code handles this by returning `float("inf")` when margin ≥ 0.
+When `||g_l||` is near zero, a line has near-zero sensitivity to all modeled bus
+injections. If the signed margin is nonnegative, the certificate status is
+`ok_infinite`; if the signed margin is negative, the status is
+`base_infeasible` and the nonnegative certificate radius is zero.
 
 ### 5.2 Near-Zero Apparent Power
 
 **Source**: `radii/ac_l2.py`, `_DIAGNOSTIC_SUBGRADIENT_WP_WQ = 1/sqrt(2)`
 
-When |S0| ≈ 0 at a line end, the gradient of the norm ||S|| is undefined. The code falls back to equal P/Q weights (w_P = w_Q = 1/√2), which is conservative but may not be tight.
+When `|S0|` is near zero at a line end, the gradient of `||S||` is undefined.
+The code marks the binding line as `nondifferentiable_apparent_power`. Equal
+P/Q weights are retained only for diagnostic signed-distance reporting; the
+strict certificate radius for that line is zero.
 
 ### 5.3 Voltage Angle Unit Checking
 
@@ -228,7 +237,7 @@ The code validates that voltage angles are in radians (max|va| < 10). This guard
 | HVDC links | Not supported | DC elements not parsed |
 | Storage elements | Not supported | Not included in dispatch model |
 | Switched shunts | Partially | Disabled under lossless policy |
-| Generator reactive limits | Not modeled | PV buses stay PV (no Q-limit switching) |
+| Generator reactive limits | Diagnosed | Q-limit events mark the fixed PV/PQ linearization as invalid for strict AC certification |
 | Multiple slack buses | Partial | Uses smallest in-service ext_grid bus id |
 | Contingency analysis beyond N-1 | Not implemented | Only single-line outages |
 | Time-series analysis | Not implemented | Operates on a single snapshot |

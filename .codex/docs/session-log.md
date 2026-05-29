@@ -114,3 +114,21 @@ Keep this log short. Each entry should capture durable context, not a transcript
   but the strict certificate radius is zero.
 - Verified with targeted pytest subset covering sigma/metric, N-1, MC, workflow,
   and Q-limit helper changes.
+
+## 2026-05-29 - Entry Point And Experiment Boundary Cleanup
+
+- Replaced stale `experiments/README.md` with a config-only experiment layout
+  and current runnable commands through `entry_points/` and package
+  post-processing modules.
+- Promoted shared h-vector, pandapower OPF, Gaussian sampling, JSON, and line
+  limit helpers to public library functions; entry points no longer import
+  private `stability_radius.*` symbols.
+- Centralized diagonal Gaussian balanced sampling, sorted line-limit extraction,
+  JSON result loading, and single-input plot CLI parsing.
+- Added static tests for repeated non-trivial function bodies, private library
+  imports from entry points, and the config-only `experiments/` boundary.
+- Forced Matplotlib `Agg` in post-processing plot modules and covered plot main
+  paths to avoid GUI/Tk-dependent failures.
+- Verified with `python -m ruff format --check .`, `git diff --check`, and
+  `python -m pytest --cov=stability_radius --cov-report=term-missing -q`
+  (339 passed, 71.77% coverage).

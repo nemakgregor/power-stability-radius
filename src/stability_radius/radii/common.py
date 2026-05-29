@@ -419,6 +419,15 @@ def estimate_line_limit_mva(
     return float(limit)
 
 
+def sorted_line_limits_mva(net: Any) -> tuple[list[int], np.ndarray]:
+    """Return sorted pandapower line ids and their MVA thermal limits."""
+    line_ids = [int(x) for x in sorted(net.line.index)]
+    limits = np.empty(len(line_ids), dtype=float)
+    for pos, lid in enumerate(line_ids):
+        limits[pos] = float(estimate_line_limit_mva(net, net.line.loc[lid]))
+    return line_ids, limits
+
+
 def get_line_base_quantities(
     net: Any,
     *,

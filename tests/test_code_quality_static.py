@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 from pathlib import Path
 
 
@@ -62,6 +63,88 @@ def test_all_application_functions_have_docstrings() -> None:
                 missing.append(f"{rel}:{node.lineno}:{node.name}")
 
     assert missing == []
+
+
+class _FunctionBodyNormalizer(ast.NodeTransformer):
+    """Normalize function bodies before structural repetition checks."""
+
+    def visit_arg(self, node: ast.arg) -> ast.arg:
+        """Ignore local argument names and annotations."""
+        node.arg = "_"
+        node.annotation = None
+        return node
+
+    def visit_Name(self, node: ast.Name) -> ast.Name:
+        """Ignore local variable names."""
+        node.id = "_"
+        return node
+
+    def visit_Attribute(self, node: ast.Attribute) -> ast.Attribute:
+        """Ignore attribute spelling while preserving access structure."""
+        self.generic_visit(node)
+        node.attr = "_"
+        return node
+
+    def visit_Constant(self, node: ast.Constant) -> ast.Constant:
+        """Ignore literal spelling in repeated body detection."""
+        if isinstance(node.value, str):
+            node.value = "<str>"
+        elif isinstance(node.value, (int, float, complex)):
+            node.value = 0
+        return node
+
+
+def _normalized_body_digest(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
+    """Return a stable digest for a normalized function body."""
+    normalizer = _FunctionBodyNormalizer()
+    module = ast.Module(body=node.body, type_ignores=[])
+    normalized = ast.fix_missing_locations(normalizer.visit(module))
+    dump = ast.dump(normalized, include_attributes=False)
+    return hashlib.sha256(dump.encode("utf-8")).hexdigest()
+
+
+def test_application_function_bodies_are_not_copied_between_modules() -> None:
+    """Reject repeated non-trivial function bodies across application code."""
+    seen: dict[str, str] = {}
+    repeats: list[str] = []
+    for path in _iter_python_files():
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if len(node.body) < 4:
+                continue
+            digest = _normalized_body_digest(node)
+            rel = path.relative_to(ROOT)
+            location = f"{rel}:{node.lineno}:{node.name}"
+            if digest in seen:
+                repeats.append(f"{seen[digest]} == {location}")
+            else:
+                seen[digest] = location
+
+    assert repeats == []
+
+
+def test_entry_points_do_not_import_private_library_symbols() -> None:
+    """Entry-point scripts must use the public library surface."""
+    hits: list[str] = []
+    entry_points_dir = ROOT / "entry_points"
+    for path in sorted(entry_points_dir.glob("*.py")):
+        if path.name == "__init__.py":
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom):
+                continue
+            if node.module is None or not node.module.startswith("stability_radius"):
+                continue
+            for alias in node.names:
+                if alias.name.startswith("_"):
+                    hits.append(
+                        f"{path.relative_to(ROOT)}:{node.lineno}:{node.module}.{alias.name}"
+                    )
+
+    assert hits == []
 
 
 def test_quality_policy_words_do_not_reenter_project_text() -> None:

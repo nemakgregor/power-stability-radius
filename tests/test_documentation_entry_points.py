@@ -62,6 +62,15 @@ def test_entry_points_directory_contains_only_runnable_fronts() -> None:
         assert (ROOT / "src" / "stability_radius" / "postprocess" / helper).exists()
 
 
+def test_experiments_directory_contains_configs_not_runnable_code() -> None:
+    experiments_dir = ROOT / "experiments"
+    python_files = sorted(path.name for path in experiments_dir.glob("*.py"))
+
+    assert python_files == []
+    assert (experiments_dir / "configs").is_dir()
+    assert (experiments_dir / "README.md").exists()
+
+
 def test_main_entry_point_is_a_cli_launcher() -> None:
     content = _read(ROOT / "entry_points" / "power_stability_radius.py")
     application_content = _read(

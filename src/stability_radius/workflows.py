@@ -443,7 +443,7 @@ def _check_opf_dc_consistency(
     }
 
 
-def _expand_h_reduced_to_full(
+def expand_h_reduced_to_full(
     h_reduced: np.ndarray,
     *,
     n_bus: int,
@@ -572,7 +572,7 @@ def _build_sigma_arrays(
     return sigma_p, sigma_q
 
 
-def _extract_binding_end_data(
+def extract_binding_end_data(
     *, ac_results: dict[str, dict[str, Any]], h_from: np.ndarray, h_to: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[int]]:
     """
@@ -1449,20 +1449,20 @@ def compute_results_for_case(
                 slack_pos = bus_ids_ac.index(slack_bus_id)
                 pq_mask_ac = h_vecs_raw.get("pq_mask")
 
-                h_from_full = _expand_h_reduced_to_full(
+                h_from_full = expand_h_reduced_to_full(
                     h_vecs_raw["h_from"],
                     n_bus=n_bus_ac,
                     slack_pos=slack_pos,
                     pq_mask=pq_mask_ac,
                 )
-                h_to_full = _expand_h_reduced_to_full(
+                h_to_full = expand_h_reduced_to_full(
                     h_vecs_raw["h_to"],
                     n_bus=n_bus_ac,
                     slack_pos=slack_pos,
                     pq_mask=pq_mask_ac,
                 )
 
-                h_bind, s0_mva, s_limit_mva, line_ids_ac = _extract_binding_end_data(
+                h_bind, s0_mva, s_limit_mva, line_ids_ac = extract_binding_end_data(
                     ac_results=ac, h_from=h_from_full, h_to=h_to_full
                 )
 
