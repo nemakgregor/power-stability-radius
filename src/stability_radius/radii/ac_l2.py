@@ -67,6 +67,19 @@ def compute_ac_l2_radius(
     """
     Compute a fast AC L2 "stability radius" certificate around an AC PF base point.
 
+    The certificate differentiates the apparent-power magnitude ``|S|`` at each
+    monitored line end. At ``|S0| <= 1e-9`` MVA that norm is nondifferentiable;
+    this implementation uses an equal P/Q diagnostic subgradient, records the
+    nondifferentiable end, and marks real binding constraints as non-strict
+    certificates with zero nonnegative radius. Unconstrained lines keep their
+    ``unconstrained_limit`` certificate status even if the diagnostic
+    subgradient is used.
+
+    Sensitivity norms below ``1e-12`` are treated as degenerate/infinite
+    according to ``classify_constraint_certificate``. These thresholds are
+    documented in ``docs/algorithms_and_models.md`` and are intentionally kept
+    local to the numerical kernels rather than hidden in the CLI config.
+
     Output fields (key additions for unified tables)
     ------------------------------------------------
     In addition to detailed per-end fields, each line includes explicit unified keys:
@@ -324,7 +337,7 @@ def compute_ac_l2_radius(
             )
         )
         linearization_status = "nonlinear_unvalidated"
-        if bool(nondiff_bind):
+        if bool(nondiff_bind) and not bool(is_unconstrained[pos]):
             status_bind = ConstraintStatus.NONDIFFERENTIABLE_APPARENT_POWER.value
             cert_radius_bind = 0.0
             linearization_status = (

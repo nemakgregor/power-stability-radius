@@ -81,6 +81,9 @@ Detailed entry-point inventory is in `docs/entry_points.md`.
 - Binding AC apparent-power constraints with `|S0|` near zero are marked
   `nondifferentiable_apparent_power`; signed radii remain diagnostic, but
   nonnegative certificate radius is zero.
+- Unconstrained AC lines keep `constraint_status_ac_l2 = unconstrained_limit`
+  and infinite certificate radius even if a zero-flow end uses the diagnostic
+  apparent-power subgradient.
 - Results schema is currently `__meta__.schema_version = 3`.
 - H-vectors are not JSON-serializable; CLI extracts `_h_vectors` and saves `h_vectors.npz`.
 - Verification should remain independent where possible: load saved results and re-derive from raw input.
@@ -133,6 +136,8 @@ poetry run ruff format --check .
   `docs/testing_and_ci.md`: operational references.
 - `docs/scientific_concepts.md`, `docs/mathematical_foundations.md`,
   `docs/algorithms_and_models.md`: research/math references.
+- Public release metadata lives in `LICENSE`, `CITATION.cff`, and
+  `pyproject.toml`; current package metadata declares MIT.
 
 Known drift to watch:
 

@@ -46,6 +46,20 @@ For an algorithm or research review:
 3. [experiments_and_evaluation.md](experiments_and_evaluation.md)
 4. [limitations_and_assumptions.md](limitations_and_assumptions.md)
 
+## Pipeline Overview
+
+The runtime pipeline is:
+
+1. Load a MATPOWER, PGLib, pandapower, or UnitCommitment.jl-derived input.
+2. Build a deterministic base operating point from the case, DC OPF, AC PF, or
+   AC FPF according to `compute.base_dispatch`.
+3. Compute DC and/or AC certificate rows with stable sorted bus and line
+   coordinates.
+4. Optionally add sigma, metric, N-1, Monte Carlo, or nonlinear AC replay
+   checks.
+5. Write `results.json`, optional CSV/NPZ artifacts, and verification reports
+   under the configured artifact directory.
+
 ## Quick Commands
 
 ```bash

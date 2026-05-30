@@ -2,6 +2,20 @@
 
 Keep this log short. Each entry should capture durable context, not a transcript.
 
+## 2026-05-30 - Public Release Metadata And AC Unconstrained Edge Case
+
+- Verified the pasted audit against current code: AC nondifferentiable status
+  propagation, Q-limit diagnostics, thresholds documentation, logging setup,
+  entry-point inventory, and generated-artifact ignore rules already had current
+  coverage or docs.
+- Added MIT `LICENSE`, `CITATION.cff`, pyproject license/readme metadata, and a
+  small release-metadata test.
+- Fixed AC L2 status aggregation so a zero-flow unconstrained line can record
+  the diagnostic apparent-power subgradient without becoming a zero-radius
+  limiting certificate; added regression coverage.
+- Added a concise docs-index pipeline overview and README reproducibility,
+  license, and citation pointers.
+
 ## 2026-05-29 - Quality Gates And Fail-Fast Cleanup
 
 - Removed unused `src/stability_radius/opf` duplicate OPF/PF package.

@@ -139,3 +139,60 @@ def test_ac_l2_radius_near_zero_flow_keeps_nonzero_sensitivity() -> None:
     assert row["nondifferentiable_apparent_power"] is True
     assert row["constraint_status_ac_l2"] == "nondifferentiable_apparent_power"
     assert float(row["certificate_radius_ac_l2"]) == 0.0
+
+
+def test_ac_l2_unconstrained_zero_flow_keeps_unconstrained_status() -> None:
+    """
+    Unconstrained lines can still use the |S| diagnostic subgradient at zero flow.
+
+    The diagnostic must not turn a non-binding surrogate limit into the global
+    certificate bottleneck: the status and nonnegative certificate radius remain
+    unconstrained.
+    """
+    from stability_radius.base_point.pypsa_pf import (
+        solve_ac_pf_base_point_from_pandapower,
+    )
+    from stability_radius.radii.ac_l2 import compute_ac_l2_radius
+
+    net = pp.create_empty_network(sn_mva=100.0)
+    b0 = int(pp.create_bus(net, vn_kv=110.0))
+    b1 = int(pp.create_bus(net, vn_kv=110.0))
+
+    pp.create_ext_grid(net, b0, vm_pu=1.0)
+    pp.create_load(net, b1, p_mw=1.0e-6, q_mvar=0.0)
+
+    common = dict(
+        length_km=1.0,
+        r_ohm_per_km=0.01,
+        c_nf_per_km=0.0,
+        max_i_ka=1.0,
+        max_loading_percent=100.0,
+    )
+
+    pp.create_line_from_parameters(
+        net, from_bus=b0, to_bus=b1, x_ohm_per_km=0.10, **common
+    )
+    pp.create_line_from_parameters(
+        net, from_bus=b0, to_bus=b1, x_ohm_per_km=1.0e8, **common
+    )
+
+    line_ids = [int(x) for x in sorted(net.line.index)]
+    lid_slow = int(line_ids[1])
+    net.line.loc[line_ids[0], "rateA"] = 100.0
+    net.line.loc[lid_slow, "rateA"] = 0.0
+
+    base_pf = solve_ac_pf_base_point_from_pandapower(
+        net=net,
+        slack_bus=b0,
+        solver="pandapower",
+        init="flat",
+        lossless=True,
+    )
+
+    res = compute_ac_l2_radius(net, base_pf=base_pf, slack_bus=b0, chunk_size=32)
+    row = res[f"line_{lid_slow}"]
+
+    assert row["is_unconstrained"] is True
+    assert row["nondifferentiable_apparent_power"] is True
+    assert row["constraint_status_ac_l2"] == "unconstrained_limit"
+    assert math.isinf(float(row["certificate_radius_ac_l2"]))

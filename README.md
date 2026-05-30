@@ -49,3 +49,14 @@ poetry run ruff format --check .
 ```
 
 Artifacts are written under `run_artifacts/` by default. The exact subdirectory pattern depends on the entry point: the main CLI creates per-run folders such as `run_artifacts/compute/<timestamp>/`, while standalone scripts usually write into `run_artifacts/<module>/` unless an explicit output directory is requested.
+
+## Environment And Reproducibility
+
+The package targets Python 3.10 or newer and uses Poetry for dependency
+resolution. `poetry.lock` pins the Python dependencies used for local runs and
+CI. The solver-sensitive defaults are documented in
+[docs/configuration.md](docs/configuration.md), including random seeds, HiGHS
+settings, OPF headroom, and Monte Carlo sampling controls.
+
+The project is distributed under the MIT License; see [LICENSE](LICENSE).
+Academic citation metadata is provided in [CITATION.cff](CITATION.cff).

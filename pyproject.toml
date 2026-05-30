@@ -3,6 +3,8 @@ name = "stability-radius"
 version = "0.1.0"
 description = "Stability radii for power systems"
 authors = ["Ygor"]
+license = "MIT"
+readme = "README.md"
 packages = [{ include = "stability_radius", from = "src" }]
 
 [tool.poetry.dependencies]
