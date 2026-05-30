@@ -5,7 +5,7 @@ Shared helpers for working with pandapower networks in a deterministic way.
 
 Design principles
 -----------------
-- Deterministic behavior: no implicit fallbacks, stable ordering.
+- Deterministic behavior: explicit policies and stable ordering.
 - No heavy dependencies at import time: functions operate on an already created `net`.
 - Explicit error messages: if a requirement is not met, we raise immediately.
 
@@ -77,6 +77,59 @@ def apply_lossless_policy_to_pandapower_net(net: Any) -> Any:
                 )
 
     return nn
+
+
+def detect_q_limit_events(net: Any, *, tol_mvar: float = 1e-6) -> list[dict[str, Any]]:
+    """Return generator-like elements whose solved Q output is at a Q limit.
+
+    The reduced AC certificate assumes a fixed PV/PQ active set.  A solved
+    generator at its reactive limit is a useful diagnostic that pandapower may
+    have changed the effective active set under ``enforce_q_lims=True``.
+    """
+    events: list[dict[str, Any]] = []
+
+    specs = (
+        ("gen", "res_gen", "q_mvar", "min_q_mvar", "max_q_mvar"),
+        ("ext_grid", "res_ext_grid", "q_mvar", "min_q_mvar", "max_q_mvar"),
+    )
+    for table_name, result_name, q_col, qmin_col, qmax_col in specs:
+        table = getattr(net, table_name, None)
+        result = getattr(net, result_name, None)
+        if table is None or result is None or len(table) == 0 or len(result) == 0:
+            continue
+        for idx in table.index:
+            if idx not in result.index:
+                continue
+            row = table.loc[idx]
+            if not bool(row.get("in_service", True)):
+                continue
+            if q_col not in result.columns:
+                continue
+            q = float(result.loc[idx, q_col])
+            qmin = float(row.get(qmin_col, np.nan))
+            qmax = float(row.get(qmax_col, np.nan))
+            if not np.isfinite(q):
+                continue
+
+            at_min = bool(np.isfinite(qmin) and q <= qmin + float(tol_mvar))
+            at_max = bool(np.isfinite(qmax) and q >= qmax - float(tol_mvar))
+            if not at_min and not at_max:
+                continue
+
+            events.append(
+                {
+                    "element": str(table_name),
+                    "element_index": int(idx),
+                    "bus": int(row.get("bus", -1)),
+                    "q_mvar": float(q),
+                    "q_min_mvar": float(qmin) if np.isfinite(qmin) else None,
+                    "q_max_mvar": float(qmax) if np.isfinite(qmax) else None,
+                    "at_min": bool(at_min),
+                    "at_max": bool(at_max),
+                }
+            )
+
+    return events
 
 
 def resolve_slack_bus_id(net: Any, slack_bus: int) -> int:

@@ -42,11 +42,13 @@ _DEFAULT_CONFIG = (
 
 
 def _load_config(path: Path) -> dict:
+    """Internal helper for module-local processing."""
     with path.open(encoding="utf-8") as fh:
         return yaml.safe_load(fh)
 
 
 def run(config_path: Path, *, repeats: int = 3) -> None:
+    """Run the configured workflow."""
     cfg = _load_config(config_path)
     cases = cfg["cases"]
     compute_cfg = cfg.get("compute", {})
@@ -165,6 +167,7 @@ def run(config_path: Path, *, repeats: int = 3) -> None:
 
 
 def main() -> None:
+    """Run the command-line entry point."""
     parser = argparse.ArgumentParser(
         description="Experiment 4: wall-clock time vs network size.",
     )

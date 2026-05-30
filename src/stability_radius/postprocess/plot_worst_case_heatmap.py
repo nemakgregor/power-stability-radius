@@ -2,19 +2,19 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import logging
 from pathlib import Path
 from typing import Sequence
 
+import matplotlib
+
+matplotlib.use("Agg")
+
 import matplotlib.pyplot as plt
 import numpy as np
-from stability_radius.utils import (
-    ARTIFACTS_ROOT_NAME,
-    create_module_output_dir,
-    setup_output_dir_logging,
-)
+from stability_radius.postprocess.cli import run_single_input_plot_cli
+from stability_radius.utils import ARTIFACTS_ROOT_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -22,11 +22,13 @@ _DEFAULT_INPUT_DIR = Path(ARTIFACTS_ROOT_NAME) / "run_worst_case_verify"
 
 
 def _load_json(path: Path) -> list | dict:
+    """Internal helper for module-local processing."""
     with path.open(encoding="utf-8") as fh:
         return json.load(fh)
 
 
 def plot(input_dir: Path, output_dir: Path) -> None:
+    """Execute the documented operation."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
     all_records: list[dict] = []
@@ -131,33 +133,16 @@ def plot(input_dir: Path, output_dir: Path) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
-    )
-    parser = argparse.ArgumentParser(
+    """Run the command-line entry point."""
+    return run_single_input_plot_cli(
+        argv=argv,
         description="Plot worst-case verification heatmap.",
-    )
-    parser.add_argument(
-        "--input-dir",
-        type=Path,
-        default=_DEFAULT_INPUT_DIR,
-        help="Directory with *_worst_case.json files.",
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=Path,
-        default=Path(""),
-        help="Directory where plots are saved.",
-    )
-    args = parser.parse_args(list(argv) if argv is not None else None)
-    output_dir = create_module_output_dir(
+        input_flag="--input-dir",
+        input_default=_DEFAULT_INPUT_DIR,
+        input_help="Directory with *_worst_case.json files.",
         module_name="plot_worst_case_heatmap",
-        requested_output_dir=args.output_dir,
+        plot_func=plot,
     )
-    setup_output_dir_logging(output_dir)
-    plot(args.input_dir, output_dir)
-    return 0
 
 
 if __name__ == "__main__":

@@ -27,7 +27,7 @@ class TestLineSortKey:
         keys = ["line_10", "line_2", "line_1"]
         assert sorted(keys, key=_line_sort_key) == ["line_1", "line_2", "line_10"]
 
-    def test_fallback_for_non_numeric(self):
+    def test_non_numeric_key_sorts_last(self):
         key = "trafo_abc"
         result = _line_sort_key(key)
         assert result[0] == 10**18
@@ -82,7 +82,7 @@ class TestInferDefaultFlatColumns:
         cols = infer_default_flat_columns(results)
         assert cols == tuple(DEFAULT_DC_COLUMNS) + tuple(DEFAULT_AC_COLUMNS)
 
-    def test_neither_dc_nor_ac_uses_dc_fallback(self):
+    def test_neither_dc_nor_ac_uses_dc_defaults(self):
         results = {"line_0": {"some_field": 42}}
         cols = infer_default_flat_columns(results)
         assert cols == tuple(DEFAULT_DC_COLUMNS)

@@ -43,7 +43,6 @@ The package is split by responsibility:
 - `metrics/`: baseline and practical metric computations
 - `parsers/`: MATPOWER and UnitCommitment.jl parsers
 - `postprocess/`: reusable table formatting, result aggregation, and plotting helpers
-- `opf/`: OPF and PF helper wrappers shared across workflows
 - `utils/`: logging, artifact-directory helpers, download helpers, JSON utilities
 - `pp_helpers.py`: small pandapower table helpers used across modules
 

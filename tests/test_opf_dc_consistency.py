@@ -2,47 +2,13 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from tests.network_factories import make_triangle_net
 
 pp = pytest.importorskip("pandapower")
 pytest.importorskip("scipy")
 pytest.importorskip("pypsa")
 pytest.importorskip("pandas")
 pytest.importorskip("highspy")
-
-
-def _make_triangle_net():
-    """
-    Small meshed (non-radial) network where line flows depend on branch reactances.
-    """
-    net = pp.create_empty_network(sn_mva=100.0)
-
-    b0 = pp.create_bus(net, vn_kv=110.0)
-    b1 = pp.create_bus(net, vn_kv=110.0)
-    b2 = pp.create_bus(net, vn_kv=110.0)
-
-    pp.create_ext_grid(net, b0, vm_pu=1.0)
-    pp.create_load(net, b1, p_mw=10.0, q_mvar=0.0)
-    pp.create_load(net, b2, p_mw=5.0, q_mvar=0.0)
-
-    common = dict(
-        length_km=1.0,
-        r_ohm_per_km=0.01,
-        c_nf_per_km=0.0,
-        max_i_ka=1.0,
-        max_loading_percent=100.0,
-    )
-
-    pp.create_line_from_parameters(
-        net, from_bus=b0, to_bus=b1, x_ohm_per_km=0.10, **common
-    )
-    pp.create_line_from_parameters(
-        net, from_bus=b1, to_bus=b2, x_ohm_per_km=0.15, **common
-    )
-    pp.create_line_from_parameters(
-        net, from_bus=b0, to_bus=b2, x_ohm_per_km=0.20, **common
-    )
-
-    return net, b0
 
 
 def _make_triangle_net_with_tapped_trafo():
@@ -163,13 +129,12 @@ def _make_multivoltage_cycle_net():
     return net, b0
 
 
-def test_pypsa_opf_flows_match_dc_operator_reconstruction() -> None:
+def _assert_pypsa_opf_flows_match_dc_operator(net, slack_bus) -> None:
+    """Assert PyPSA OPF flows match DCOperator flow reconstruction."""
     from stability_radius.dc.dc_model import build_dc_operator
     from stability_radius.base_point.pypsa_opf import (
         solve_dc_opf_base_flows_from_pandapower,
     )
-
-    net, slack_bus = _make_triangle_net()
 
     line_indices = [int(x) for x in sorted(net.line.index)]
     line_limits = np.full(len(line_indices), 1.0e6, dtype=float)
@@ -193,67 +158,21 @@ def test_pypsa_opf_flows_match_dc_operator_reconstruction() -> None:
 
     assert f_opf.shape == f_dc.shape
     assert float(np.max(np.abs(f_opf - f_dc))) < 1e-3
+
+
+def test_pypsa_opf_flows_match_dc_operator_reconstruction() -> None:
+    net, slack_bus = make_triangle_net(pp)
+
+    _assert_pypsa_opf_flows_match_dc_operator(net, slack_bus)
 
 
 def test_pypsa_opf_flows_match_dc_operator_reconstruction_with_tapped_trafo() -> None:
-    from stability_radius.dc.dc_model import build_dc_operator
-    from stability_radius.base_point.pypsa_opf import (
-        solve_dc_opf_base_flows_from_pandapower,
-    )
-
     net, slack_bus = _make_triangle_net_with_tapped_trafo()
 
-    line_indices = [int(x) for x in sorted(net.line.index)]
-    line_limits = np.full(len(line_indices), 1.0e6, dtype=float)
-
-    opf_res = solve_dc_opf_base_flows_from_pandapower(
-        net=net,
-        line_indices=line_indices,
-        line_limits_mw=line_limits,
-    )
-
-    inj_sum = float(np.sum(opf_res.bus_injections_mw))
-    assert abs(inj_sum) < 1e-6
-
-    dc_op = build_dc_operator(net, slack_bus=int(slack_bus))
-
-    f_opf = np.asarray(opf_res.line_flows_mw, dtype=float).reshape(-1)
-    f_dc = np.asarray(
-        dc_op.flows_from_bus_injections_mw(opf_res.bus_injections_mw),
-        dtype=float,
-    ).reshape(-1)
-
-    assert f_opf.shape == f_dc.shape
-    assert float(np.max(np.abs(f_opf - f_dc))) < 1e-3
+    _assert_pypsa_opf_flows_match_dc_operator(net, slack_bus)
 
 
 def test_pypsa_opf_flows_match_dc_operator_reconstruction_multivoltage() -> None:
-    from stability_radius.dc.dc_model import build_dc_operator
-    from stability_radius.base_point.pypsa_opf import (
-        solve_dc_opf_base_flows_from_pandapower,
-    )
-
     net, slack_bus = _make_multivoltage_cycle_net()
 
-    line_indices = [int(x) for x in sorted(net.line.index)]
-    line_limits = np.full(len(line_indices), 1.0e6, dtype=float)
-
-    opf_res = solve_dc_opf_base_flows_from_pandapower(
-        net=net,
-        line_indices=line_indices,
-        line_limits_mw=line_limits,
-    )
-
-    inj_sum = float(np.sum(opf_res.bus_injections_mw))
-    assert abs(inj_sum) < 1e-6
-
-    dc_op = build_dc_operator(net, slack_bus=int(slack_bus))
-
-    f_opf = np.asarray(opf_res.line_flows_mw, dtype=float).reshape(-1)
-    f_dc = np.asarray(
-        dc_op.flows_from_bus_injections_mw(opf_res.bus_injections_mw),
-        dtype=float,
-    ).reshape(-1)
-
-    assert f_opf.shape == f_dc.shape
-    assert float(np.max(np.abs(f_opf - f_dc))) < 1e-3
+    _assert_pypsa_opf_flows_match_dc_operator(net, slack_bus)

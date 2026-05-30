@@ -58,3 +58,23 @@ def test_lodf_parallel_lines_and_effective_nminus1_radius():
     assert set(argmin.tolist()) <= {0, 1}
     assert argmin[0] != 0
     assert argmin[1] != 1
+
+
+def test_effective_nminus1_preserves_negative_post_contingency_margin():
+    from stability_radius.radii.nminus1 import effective_nminus1_l2_radii
+
+    lodf = np.array([[-1.0, 1.0], [1.0, -1.0]])
+    base_flows = np.array([0.6, 0.6], dtype=float)
+    limits = np.array([0.9, 0.9], dtype=float)
+    G = np.array([[0.25, -0.25], [0.25, -0.25]], dtype=float)
+
+    best_r, argmin = effective_nminus1_l2_radii(
+        base_flows=base_flows,
+        limits=limits,
+        G=G,
+        lodf=lodf,
+        update_sensitivities=False,
+    )
+
+    assert np.all(best_r < 0.0)
+    assert set(argmin.tolist()) <= {0, 1}

@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 
 
 def _setup_logging(verbose: bool, *, log_file: Path | None = None) -> None:
+    """Internal helper for module-local processing."""
     level = logging.DEBUG if verbose else logging.INFO
     fmt = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
     handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
@@ -65,6 +66,7 @@ def _setup_logging(verbose: bool, *, log_file: Path | None = None) -> None:
 
 
 def _resolve_output_dir(requested_output_dir: str | None) -> Path:
+    """Internal helper for module-local processing."""
     from stability_radius.utils import create_module_output_dir
 
     return create_module_output_dir(
@@ -79,10 +81,12 @@ def _lid_int(key: str) -> int:
 
 
 def _lid_str(lid_int: int) -> str:
+    """Internal helper for module-local processing."""
     return f"line_{lid_int}"
 
 
 def _line_loading_limit_pct(net, line_id: int) -> float:
+    """Internal helper for module-local processing."""
     if (
         not hasattr(net, "line")
         or net.line is None
@@ -286,11 +290,13 @@ def _add_matpower_costs(nn, input_path: str) -> int:
     """
     import re
     import pandapower as pp
+    from stability_radius.base_point.pandapower_opp import clear_existing_costs
 
     with open(input_path, encoding="utf-8", errors="replace") as _f:
         txt = _f.read()
 
     def _parse(name):
+        """Internal helper for module-local processing."""
         m = re.search(rf"mpc\.{name}\s*=\s*\[(.*?)\];", txt, re.DOTALL)
         if not m:
             return []
@@ -320,7 +326,7 @@ def _add_matpower_costs(nn, input_path: str) -> int:
             c2, c1, c0 = 0.0, 0.0, 0.0
         bus_costs.setdefault(bus, []).append((float(c2), float(c1), float(c0)))
 
-    _clear_existing_costs(nn)
+    clear_existing_costs(nn)
 
     elements_by_bus: dict[int, list[tuple[str, int]]] = {}
     for element_type, idx, bus in _iter_dispatchable_elements(nn):
@@ -334,7 +340,7 @@ def _add_matpower_costs(nn, input_path: str) -> int:
         if len(costs) != len(elements):
             agg = np.sum(np.asarray(costs, dtype=float), axis=0) / float(len(elements))
             logger.warning(
-                "[costs] Bus %d has %d MATPOWER cost rows but %d pandapower elements; using equal-share fallback.",
+                "[costs] Bus %d has %d MATPOWER cost rows but %d pandapower elements; using equal-share assignment.",
                 int(bus),
                 len(costs),
                 len(elements),
@@ -366,14 +372,8 @@ def _set_default_voltage_bounds(nn) -> None:
     nn.bus["max_vm_pu"] = nn.bus.get("max_vm_pu", 1.1).fillna(1.1).clip(upper=1.15)
 
 
-def _clear_existing_costs(nn) -> None:
-    if hasattr(nn, "poly_cost") and nn.poly_cost is not None and len(nn.poly_cost):
-        nn.poly_cost.drop(nn.poly_cost.index, inplace=True)
-    if hasattr(nn, "pwl_cost") and nn.pwl_cost is not None and len(nn.pwl_cost):
-        nn.pwl_cost.drop(nn.pwl_cost.index, inplace=True)
-
-
 def _iter_dispatchable_elements(nn):
+    """Internal helper for module-local processing."""
     for table_name, element_type in (
         ("ext_grid", "ext_grid"),
         ("gen", "gen"),
@@ -390,15 +390,17 @@ def _iter_dispatchable_elements(nn):
 
 
 def _prepare_cost_opf_network(nn) -> None:
+    """Internal helper for module-local processing."""
     from stability_radius.base_point.pandapower_opp import (
-        _set_line_thermal_limits,
-        _setup_gen_for_opp,
+        clear_existing_costs,
+        set_line_thermal_limits,
+        setup_gen_for_opp,
     )
 
-    _clear_existing_costs(nn)
-    _set_line_thermal_limits(nn)
-    _setup_gen_for_opp(nn, pg0_source="case")
-    _clear_existing_costs(nn)
+    clear_existing_costs(nn)
+    set_line_thermal_limits(nn)
+    setup_gen_for_opp(nn, pg0_source="case")
+    clear_existing_costs(nn)
 
 
 def _apply_loading_limits(
@@ -407,6 +409,7 @@ def _apply_loading_limits(
     default_loading_percent: float,
     per_line_loading_limits_pct: Mapping[int, float] | None = None,
 ) -> None:
+    """Internal helper for module-local processing."""
     default_pct = float(default_loading_percent)
     if hasattr(nn, "line") and nn.line is not None and len(nn.line):
         nn.line["max_loading_percent"] = default_pct
@@ -419,6 +422,7 @@ def _apply_loading_limits(
 
 
 def _extract_opp_state(nn) -> tuple[dict[str, float], dict[int, float]]:
+    """Internal helper for module-local processing."""
     opp_dispatch: dict[str, float] = {}
     if hasattr(nn, "res_gen") and nn.res_gen is not None and len(nn.res_gen):
         for gid in sorted(int(x) for x in nn.res_gen.index):
@@ -1064,7 +1068,7 @@ def _compute_sigma_and_baselines(
     # sigma-radius: r_sigma = margin / sigma_flow
     r_sigma = np.where(sigma_flow > eps, margin / sigma_flow, float("inf"))
 
-    # Overload probability (Gaussian): P(|S| > c)
+    # Overload probability (Gaussian): P(S0 + X > c) for apparent-power limits.
     overload_probs = np.zeros(n_actual, dtype=float)
     for i in range(n_actual):
         sf = float(sigma_flow[i])
@@ -1072,13 +1076,13 @@ def _compute_sigma_and_baselines(
             overload_probs[i] = 0.0 if margin[i] > 0 else 1.0
         else:
             from stability_radius.radii.ac_sigma_radius import (
-                _overload_probability_symmetric_limit,
+                overload_probability_one_sided_limit,
             )
 
-            overload_probs[i] = _overload_probability_symmetric_limit(
-                s0_mva=float(s0_arr[i]),
-                c_mva=float(s_limit_arr[i]),
-                sigma_mva=sf,
+            overload_probs[i] = overload_probability_one_sided_limit(
+                y0=float(s0_arr[i]),
+                limit=float(s_limit_arr[i]),
+                sigma=sf,
             )
 
     # --- Baseline metrics ---
@@ -1181,6 +1185,7 @@ def _build_base_q_from_pf(net_lossless, base_pf, line_indices: list[int]):
 def _dc_n1_radii(
     net_lossless, base_pf, slack_bus: int, line_indices: list[int], label: str
 ) -> dict:
+    """Internal helper for module-local processing."""
     from stability_radius.dc.dc_model import build_dc_matrices
     from stability_radius.radii.nminus1 import compute_nminus1_l2_radius
 
@@ -1350,6 +1355,7 @@ def _update_scopf_line_limits(
     security_target_pct: float = 99.0,
     min_limit_pct: float = 40.0,
 ) -> tuple[dict[int, float], list[int]]:
+    """Internal helper for module-local processing."""
     updated = {int(lid): float(pct) for lid, pct in current_limits_pct.items()}
     changed: list[int] = []
     for lid, peak_pct in peak_loading_pct_by_line.items():
@@ -1367,6 +1373,7 @@ def _update_scopf_line_limits(
 
 
 def _total_generation_dispatch_mw(nn) -> float:
+    """Internal helper for module-local processing."""
     total = 0.0
     for table_name in ("res_gen", "res_sgen", "res_ext_grid"):
         table = getattr(nn, table_name, None)
@@ -1377,6 +1384,7 @@ def _total_generation_dispatch_mw(nn) -> float:
 
 
 def _opf_constraint_summary(nn, label: str) -> dict:
+    """Internal helper for module-local processing."""
     max_line_loading_pct = float("nan")
     min_line_loading_headroom_pct = float("nan")
     if hasattr(nn, "res_line") and nn.res_line is not None and len(nn.res_line):
@@ -1407,6 +1415,7 @@ def _opf_constraint_summary(nn, label: str) -> dict:
 
 
 def _opf_line_limit_consistency_df(nn) -> "DataFrame":
+    """Internal helper for module-local processing."""
     import pandas as pd
 
     from stability_radius.radii.common import estimate_line_limit_mva_with_flag
@@ -1487,6 +1496,7 @@ def _opf_line_limit_consistency_df(nn) -> "DataFrame":
 
 
 def _opf_line_limit_consistency_summary(nn, label: str) -> dict:
+    """Internal helper for module-local processing."""
     df = _opf_line_limit_consistency_df(nn)
     if df.empty:
         return {"label": label, "n_lines_checked": 0}
@@ -1530,6 +1540,7 @@ def _solve_scopf(
     input_path: str,
     n_iter: int,
 ):
+    """Internal helper for module-local processing."""
     current_limits_pct = {int(lid): 99.0 for lid in line_indices}
     nn_scopf = None
     base_pf_scopf = None
@@ -1601,6 +1612,7 @@ def _solve_scopf(
 
 
 def _radii_to_df(results: dict) -> "DataFrame":
+    """Internal helper for module-local processing."""
     import pandas as pd
 
     rows = []
@@ -1631,6 +1643,7 @@ def _radii_to_df(results: dict) -> "DataFrame":
 
 
 def _summary_stats(results: dict, label: str) -> dict:
+    """Internal helper for module-local processing."""
     constrained = {
         k: v for k, v in results.items() if not v.get("is_unconstrained", False)
     }
@@ -1657,6 +1670,7 @@ def _summary_stats(results: dict, label: str) -> dict:
 
 
 def _n1_summary(records: list[dict], label: str) -> dict:
+    """Internal helper for module-local processing."""
     total = len(records)
     if total == 0:
         return {"label": label, "n_contingencies": 0}
@@ -1678,6 +1692,7 @@ def _n1_summary(records: list[dict], label: str) -> dict:
 
 
 def _dc_n1_summary(n1_results: dict, label: str) -> dict:
+    """Internal helper for module-local processing."""
     if not n1_results:
         return {"label": label, "n_constrained": 0}
     # compute_nminus1_l2_radius uses key "radius_nminus1" (not "nminus1_l2_radius")
@@ -1697,11 +1712,13 @@ def _dc_n1_summary(n1_results: dict, label: str) -> dict:
 
 
 def _save_csv(df, path: Path, label: str) -> None:
+    """Internal helper for module-local processing."""
     df.to_csv(path)
     logger.info("Saved %s: %s (%d rows)", label, path, len(df))
 
 
 def _dc_n1_to_df(n1_results: dict) -> "DataFrame":
+    """Internal helper for module-local processing."""
     import pandas as pd
 
     rows = []
@@ -1721,6 +1738,7 @@ def _dc_n1_to_df(n1_results: dict) -> "DataFrame":
 
 
 def _save_n1_csv(records: list[dict], path: Path, label: str) -> None:
+    """Internal helper for module-local processing."""
     import pandas as pd
 
     pd.DataFrame(records).to_csv(path, index=False)
@@ -1754,7 +1772,10 @@ def _print_comparison(
     radius_gen_mw,
     output_path,
 ):
+    """Internal helper for module-local processing."""
+
     def _fmt(val, fmt=".4f"):
+        """Internal helper for module-local processing."""
         if isinstance(val, float):
             return format(val, fmt)
         return str(val)
@@ -1907,6 +1928,7 @@ def _print_comparison(
 def _plot_radius_cdf(
     cost_results: dict, radius_results: dict, output_path: Path
 ) -> None:
+    """Internal helper for module-local processing."""
     try:
         import matplotlib
 
@@ -1916,6 +1938,7 @@ def _plot_radius_cdf(
         return
 
     def _get_radii(res):
+        """Internal helper for module-local processing."""
         return sorted(
             v["radius_ac_l2"]
             for v in res.values()
@@ -1952,6 +1975,7 @@ def _plot_radius_cdf(
 def _plot_n1_overloads(
     cost_n1: list[dict], radius_n1: list[dict], output_path: Path
 ) -> None:
+    """Internal helper for module-local processing."""
     if not cost_n1 or not radius_n1:
         return
     try:
@@ -1999,6 +2023,7 @@ def _plot_n1_overloads(
 def _plot_radius_scatter(
     cost_results: dict, radius_results: dict, output_path: Path
 ) -> None:
+    """Internal helper for module-local processing."""
     try:
         import matplotlib
 
@@ -2254,6 +2279,7 @@ def _compute_ac_n1_radii(
 
 
 def _ac_n1_radius_summary(n1_radii: dict, label: str) -> dict:
+    """Internal helper for module-local processing."""
     finite = [v for v in n1_radii.values() if math.isfinite(v)]
     if not finite:
         return {"label": label, "n_lines": 0}
@@ -2273,6 +2299,7 @@ def _ac_n1_radius_summary(n1_radii: dict, label: str) -> dict:
 
 
 def _plot_ac_n1_radius_cdf(cost_n1: dict, radius_n1: dict, output_path: Path) -> None:
+    """Internal helper for module-local processing."""
     try:
         import matplotlib
 
@@ -2315,7 +2342,10 @@ def _append_metric_table(
     summaries: Mapping[str, Mapping[str, object]],
     metrics: list[tuple[str, str, str]],
 ) -> None:
+    """Internal helper for module-local processing."""
+
     def _fmt(value: object, fmt: str) -> str:
+        """Internal helper for module-local processing."""
         if value is None:
             return "N/A"
         if isinstance(value, str):
@@ -2362,6 +2392,7 @@ def _build_comparison_text(
     sigma_p_mw: float,
     sigma_q_mvar: float,
 ) -> str:
+    """Internal helper for module-local processing."""
     lines = [
         "=" * 70,
         "N-1 STABILITY DEMO - COMPARISON SUMMARY",
@@ -2555,6 +2586,7 @@ def _write_comparison(
     sigma_p_mw: float,
     sigma_q_mvar: float,
 ) -> None:
+    """Internal helper for module-local processing."""
     text = _build_comparison_text(
         regime_order=regime_order,
         dispatch_summaries=dispatch_summaries,
@@ -2579,6 +2611,7 @@ def _plot_multi_regime_radius_cdf(
     regime_results: Mapping[str, tuple[str, dict]],
     output_path: Path,
 ) -> None:
+    """Internal helper for module-local processing."""
     try:
         import matplotlib
 
@@ -2629,6 +2662,7 @@ def _plot_multi_regime_ac_n1_radius_cdf(
     regime_n1_radii: Mapping[str, tuple[str, dict[int, float]]],
     output_path: Path,
 ) -> None:
+    """Internal helper for module-local processing."""
     try:
         import matplotlib
 
@@ -2672,6 +2706,7 @@ def _plot_multi_regime_n1_overloads(
     regime_records: Mapping[str, tuple[str, list[dict]]],
     output_path: Path,
 ) -> None:
+    """Internal helper for module-local processing."""
     try:
         import matplotlib
 
@@ -2887,6 +2922,7 @@ def _plot_cost_security_tradeoff(
     ac_n1_radius_summaries: Mapping[str, Mapping[str, object]],
     output_path: Path,
 ) -> None:
+    """Internal helper for module-local processing."""
     try:
         import matplotlib
 
@@ -2943,6 +2979,7 @@ def _plot_cost_security_tradeoff(
 
 
 def _parse_args() -> argparse.Namespace:
+    """Internal helper for module-local processing."""
     parser = argparse.ArgumentParser(
         description="N-1 Stability Demo: Cost OPF vs Radius OPF vs SCOPF comparison.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -3002,6 +3039,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """Run the command-line entry point."""
     args = _parse_args()
     out_dir = _resolve_output_dir(args.output_dir)
     _setup_logging(args.verbose, log_file=out_dir / "debug.log")

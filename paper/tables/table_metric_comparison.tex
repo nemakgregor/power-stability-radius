@@ -1,0 +1,20 @@
+\begin{table}[t]
+\centering
+\caption{Preliminary metric-ranking comparison on the IEEE 118-bus AC feasible-power-flow run. Spearman correlations are computed against empirical per-line overload probability; higher precision-at-$k$ means the top-ranked lines have higher empirical overload rates.\label{tab:metric-comparison}}
+\footnotesize
+\begin{tabularx}{\textwidth}{@{}Xrrr@{}}
+\toprule
+Metric & Spearman $\rho$ & Precision@3 & Precision@5 \\
+\midrule
+AC L2 radius & 0.832 & 0.515 & 0.504 \\
+AC sigma radius & 0.832 & 0.515 & 0.504 \\
+AC metric radius & 0.832 & 0.515 & 0.504 \\
+Loading ratio & 0.699 & 0.490 & 0.487 \\
+Headroom & 0.722 & 0.495 & 0.500 \\
+Cantelli upper bound & 0.832 & 0.515 & 0.504 \\
+Performance index & 0.699 & 0.490 & 0.487 \\
+Directional sensitivity, max-gen to max-load & 0.344 & 0.168 & 0.102 \\
+Directional sensitivity, uniform stress & 0.412 & 0.495 & 0.497 \\
+\bottomrule
+\end{tabularx}
+\end{table}

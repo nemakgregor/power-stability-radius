@@ -8,7 +8,7 @@ It consumes:
 - precomputed adjoint sensitivity vectors h_l (one per line), and
 - per-bus injection standard deviations (sigma_p, sigma_q),
 - base flow magnitudes |S0| at the binding end,
-- symmetric thermal limits c (MVA).
+- apparent-power thermal limits c (MVA).
 
 Mathematical contract (as provided in the task)
 -----------------------------------------------
@@ -29,8 +29,8 @@ Then:
 Worst-case perturbation (physical units, MW/MVAr):
     Δu_l* = r_sigma_l * (Σ h_l) / sigma_flow_l
 
-Gaussian overload probability (symmetric limits):
-    P(|S| > c) = Φ(-(c - |S0|)/σ) + Φ(-(c + |S0|)/σ)
+Gaussian overload probability (one-sided apparent-power limit):
+    P(|S0| + X > c) = Q((c - |S0|)/sigma)
 
 Balanced disturbances (optional)
 --------------------------------
@@ -54,7 +54,16 @@ from typing import Any
 
 import numpy as np
 
-from stability_radius.radii.common import line_key
+from stability_radius.geometry.balanced import (
+    make_ac_block_specs,
+    project_dual_balanced_rows,
+)
+from stability_radius.radii.common import (
+    ConstraintStatus,
+    classify_constraint_certificate,
+    line_key,
+    signed_radius_from_margin_norm,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -71,35 +80,56 @@ def _qfunc(x: float) -> float:
     return 0.5 * math.erfc(float(x) / math.sqrt(2.0))
 
 
-def _overload_probability_symmetric_limit(
-    *, s0_mva: float, c_mva: float, sigma_mva: float
+def overload_probability_one_sided_limit(
+    *, y0: float, limit: float, sigma: float
 ) -> float:
     """
-    Overload probability for |S| under symmetric limit ±c with base magnitude |S0|.
+    Overload probability for a one-sided limit y0 + X <= limit.
 
-    Model:
-        S = s0 + X,  X ~ N(0, sigma^2)   (linearized magnitude model)
+    Model: Y = y0 + X, X ~ N(0, sigma^2).
+    Then: P(Y > limit) = Q((limit - y0) / sigma).
 
-    Then:
-        P(|S| > c) = Q((c - |s0|)/sigma) + Q((c + |s0|)/sigma)
-
-    Edge cases:
-    - sigma==0: return 1 if s0>c else 0 (degenerate random variable).
+    If sigma <= 0, the random variable is degenerate.
     """
-    s0 = float(abs(s0_mva))
-    c = float(c_mva)
-    s = float(sigma_mva)
+    y0_f = float(y0)
+    c = float(limit)
+    s = float(sigma)
 
     if not math.isfinite(c) or c < 0.0:
-        raise ValueError(f"c_mva must be finite and >=0, got {c_mva!r}")
+        raise ValueError(f"limit must be finite and >=0, got {limit!r}")
 
-    if not math.isfinite(s0) or s0 < 0.0:
-        raise ValueError(f"s0_mva must be finite and >=0, got {s0_mva!r}")
+    if not math.isfinite(y0_f):
+        raise ValueError(f"y0 must be finite, got {y0!r}")
 
     if s <= 0.0:
-        return 1.0 if s0 > c else 0.0
+        return 1.0 if y0_f > c else 0.0
 
-    return _qfunc((c - s0) / s) + _qfunc((c + s0) / s)
+    return _qfunc((c - y0_f) / s)
+
+
+def overload_probability_two_sided_signed(
+    *, flow0: float, limit: float, sigma: float
+) -> float:
+    """
+    Overload probability for a signed flow with symmetric limits |F| <= limit.
+
+    This is appropriate for signed flow models, not for AC apparent-power
+    magnitude constraints.
+    """
+    f0 = float(flow0)
+    c = float(limit)
+    s = float(sigma)
+
+    if not math.isfinite(c) or c < 0.0:
+        raise ValueError(f"limit must be finite and >=0, got {limit!r}")
+    if not math.isfinite(f0):
+        raise ValueError(f"flow0 must be finite, got {flow0!r}")
+
+    if s <= 0.0:
+        return 1.0 if abs(f0) > c else 0.0
+
+    f_abs = abs(f0)
+    return _qfunc((c - f_abs) / s) + _qfunc((c + f_abs) / s)
 
 
 def _validate_inputs(
@@ -110,11 +140,15 @@ def _validate_inputs(
     sigma_p_mw: np.ndarray,
     sigma_q_mvar: np.ndarray,
     line_ids: Sequence[int] | None,
+    pq_mask: np.ndarray | None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, tuple[int, ...]]:
+    """Internal helper for module-local processing."""
     H = np.asarray(h_vectors, dtype=float)
     if H.ndim != 2:
         raise ValueError(f"h_vectors must be 2D, got shape={H.shape}")
     n_lines, d = int(H.shape[0]), int(H.shape[1])
+    if np.any(~np.isfinite(H)):
+        raise ValueError("h_vectors must be finite.")
 
     sig_p = np.asarray(sigma_p_mw, dtype=float).reshape(-1)
     sig_q = np.asarray(sigma_q_mvar, dtype=float).reshape(-1)
@@ -153,6 +187,11 @@ def _validate_inputs(
                 f"line_ids length must match n_lines={n_lines}, got {len(ids)}"
             )
 
+    if pq_mask is not None:
+        pq = np.asarray(pq_mask, dtype=bool).reshape(-1)
+        if pq.shape != (n_bus,):
+            raise ValueError(f"pq_mask must have shape ({n_bus},), got {pq.shape}")
+
     return H, s_lim, s0, sig_p, sig_q, ids
 
 
@@ -165,6 +204,7 @@ def compute_ac_sigma_radius(
     sigma_q_mvar: np.ndarray,
     line_ids: Sequence[int] | None = None,
     balance: bool = True,
+    pq_mask: np.ndarray | None = None,
     eps_sigma_flow: float = _EPS_SIGMA_FLOW,
 ) -> dict[str, dict[str, Any]]:
     """
@@ -184,7 +224,12 @@ def compute_ac_sigma_radius(
     line_ids:
         Optional line indices used to form stable keys `line_<id>`. If None, uses 0..n_lines-1.
     balance:
-        If True, projects each h-vector P/Q block onto sum-zero subspace by mean-subtraction.
+        If True, projects each h-vector P/Q block onto sum-zero subspace by
+        sigma^2-weighted mean-subtraction.
+    pq_mask:
+        Optional full-bus boolean mask for PQ buses.  When provided, the Q block
+        is restricted to these coordinates; PV and slack reactive injections are
+        not treated as independent perturbation coordinates.
     eps_sigma_flow:
         Numerical threshold for treating sigma_flow as zero (degenerate sensitivity).
 
@@ -193,6 +238,9 @@ def compute_ac_sigma_radius(
     dict
         Mapping "line_<id>" -> dict with keys (per task contract):
           - sigma_flow_mva (float)
+          - certificate_radius_ac_sigma (float)
+          - signed_distance_ac_sigma (float)
+          - constraint_status_ac_sigma (str)
           - radius_ac_sigma (float)          # dimensionless (in σ units)
           - overload_probability_ac (float)
           - worst_case_dp_mw (np.ndarray, (n_bus,))
@@ -206,6 +254,7 @@ def compute_ac_sigma_radius(
         sigma_p_mw=sigma_p_mw,
         sigma_q_mvar=sigma_q_mvar,
         line_ids=line_ids,
+        pq_mask=pq_mask,
     )
 
     eps = float(eps_sigma_flow)
@@ -214,6 +263,14 @@ def compute_ac_sigma_radius(
 
     n_lines = int(H.shape[0])
     n_bus = int(sig_p.size)
+    q_bus_indices: np.ndarray | None = None
+    if pq_mask is not None:
+        pq = np.asarray(pq_mask, dtype=bool).reshape(-1)
+        q_bus_indices = np.where(pq)[0]
+        inactive_q = np.where(~pq)[0]
+        if inactive_q.size:
+            H = H.copy()
+            H[:, n_bus + inactive_q] = 0.0
 
     # Split P/Q blocks.
     hP = np.asarray(H[:, 0:n_bus], dtype=float, order="C")
@@ -229,16 +286,18 @@ def compute_ac_sigma_radius(
         #
         # This is the Lagrangian solution for max h^T Δu s.t. ||Σ^{-1/2} Δu|| ≤ r
         # and 1^T ΔP = 0, 1^T ΔQ = 0.
-        sigp2 = (sig_p * sig_p)[None, :]  # (1, n_bus)
-        sigq2 = (sig_q * sig_q)[None, :]
-        sum_sigp2 = float(np.sum(sigp2))
-        sum_sigq2 = float(np.sum(sigq2))
-        if sum_sigp2 > 0:
-            mu_p = np.sum(sigp2 * hP, axis=1, keepdims=True) / sum_sigp2
-            hP = hP - mu_p
-        if sum_sigq2 > 0:
-            mu_q = np.sum(sigq2 * hQ, axis=1, keepdims=True) / sum_sigq2
-            hQ = hQ - mu_q
+        H_proj = project_dual_balanced_rows(
+            H,
+            make_ac_block_specs(
+                n_bus,
+                balance=True,
+                p_weights=sig_p * sig_p,
+                q_weights=sig_q * sig_q,
+                q_bus_indices=q_bus_indices,
+            ),
+        )
+        hP = H_proj[:, 0:n_bus]
+        hQ = H_proj[:, n_bus : 2 * n_bus]
         logger.debug("Applied sigma²-weighted balanced projection to h-vectors.")
 
     # sigma_flow_l = || [sigma_p*hP, sigma_q*hQ] ||_2
@@ -249,49 +308,68 @@ def compute_ac_sigma_radius(
     )
 
     margin = c - s0
-    valid = sigma_flow > eps
+    valid = np.isfinite(sigma_flow) & (sigma_flow > eps)
 
     radius = np.empty(n_lines, dtype=float)
-    radius.fill(float("nan"))
-    radius[valid] = margin[valid] / sigma_flow[valid]
+    for i in range(n_lines):
+        radius[i] = signed_radius_from_margin_norm(
+            margin=float(margin[i]), dual_norm=float(sigma_flow[i]), eps=eps
+        )
 
-    # Degenerate sigma_flow==0:
-    # - if margin>=0 => "infinite sigmas" (flow does not respond to random injections)
-    # - if margin<0  => base already infeasible (radius is -inf in this normalization)
-    radius[~valid] = np.where(margin[~valid] >= 0.0, float("inf"), float("-inf"))
+    status: list[str] = []
+    certificate_radius = np.empty(n_lines, dtype=float)
+    signed_distance = np.empty(n_lines, dtype=float)
+    for i in range(n_lines):
+        st, cert_r, signed_d = classify_constraint_certificate(
+            margin=float(margin[i]),
+            dual_norm=float(sigma_flow[i]),
+            eps=eps,
+        )
+        status.append(st)
+        certificate_radius[i] = float(cert_r)
+        signed_distance[i] = float(signed_d)
 
-    # Worst-case perturbations (MW/MVAr). For sigma_flow<=eps, we return zeros (well-defined).
+    ok_finite = np.asarray(
+        [st == ConstraintStatus.OK_FINITE.value for st in status], dtype=bool
+    )
+
+    # Worst-case perturbations (MW/MVAr). For non-ok rows, zeros avoid exporting
+    # a boundary direction that is not a valid robustness certificate.
     dp = np.zeros((n_lines, n_bus), dtype=float)
     dq = np.zeros((n_lines, n_bus), dtype=float)
 
-    if bool(np.any(valid)):
+    if bool(np.any(ok_finite)):
         # Vectorized formula:
         #   dp = r * (sigma_p^2 * hP) / sigma_flow
         #   dq = r * (sigma_q^2 * hQ) / sigma_flow
         sigp2 = (sig_p * sig_p)[None, :]
         sigq2 = (sig_q * sig_q)[None, :]
-        denom = sigma_flow[valid, None]
-        dp[valid, :] = (radius[valid, None] * (sigp2 * hP[valid, :])) / denom
-        dq[valid, :] = (radius[valid, None] * (sigq2 * hQ[valid, :])) / denom
+        denom = sigma_flow[ok_finite, None]
+        dp[ok_finite, :] = (
+            radius[ok_finite, None] * (sigp2 * hP[ok_finite, :])
+        ) / denom
+        dq[ok_finite, :] = (
+            radius[ok_finite, None] * (sigq2 * hQ[ok_finite, :])
+        ) / denom
 
     # Predicted worst-case |S| (linearized): s0 + h·Δu*
-    # For valid lines with finite sigma_flow, this equals c (up to numerical noise).
+    # For ok finite lines, this equals c (up to numerical noise).
     s_pred = np.asarray(s0, dtype=float).copy()
-    if bool(np.any(valid)):
+    if bool(np.any(ok_finite)):
         # Use explicit dot product to reflect the linear model definition.
-        s_pred[valid] = (
-            s0[valid]
-            + np.sum(hP[valid, :] * dp[valid, :], axis=1)
-            + np.sum(hQ[valid, :] * dq[valid, :], axis=1)
+        s_pred[ok_finite] = (
+            s0[ok_finite]
+            + np.sum(hP[ok_finite, :] * dp[ok_finite, :], axis=1)
+            + np.sum(hQ[ok_finite, :] * dq[ok_finite, :], axis=1)
         )
 
     # Overload probabilities
     prob = np.empty(n_lines, dtype=float)
     for i in range(n_lines):
-        prob[i] = _overload_probability_symmetric_limit(
-            s0_mva=float(s0[i]),
-            c_mva=float(c[i]),
-            sigma_mva=float(sigma_flow[i]),
+        prob[i] = overload_probability_one_sided_limit(
+            y0=float(s0[i]),
+            limit=float(c[i]),
+            sigma=float(sigma_flow[i]),
         )
 
     results: dict[str, dict[str, Any]] = {}
@@ -300,6 +378,9 @@ def compute_ac_sigma_radius(
         results[k] = {
             "sigma_flow_mva": float(sigma_flow[pos]),
             "radius_ac_sigma": float(radius[pos]),
+            "certificate_radius_ac_sigma": float(certificate_radius[pos]),
+            "signed_distance_ac_sigma": float(signed_distance[pos]),
+            "constraint_status_ac_sigma": str(status[pos]),
             "overload_probability_ac": float(prob[pos]),
             "worst_case_dp_mw": np.asarray(dp[pos, :], dtype=float),
             "worst_case_dq_mvar": np.asarray(dq[pos, :], dtype=float),

@@ -1,0 +1,19 @@
+\begin{table}[t]
+\centering
+\caption{Preliminary cost-security tradeoff on the IEEE 118-bus N-1 demo. Radius-aware OPF improves robustness metrics at a 5.282\% generation-cost increase relative to cost OPF.\label{tab:dispatch-tradeoff}}
+\footnotesize
+\begin{tabularx}{\textwidth}{@{}Xrrr@{}}
+\toprule
+Metric & Cost OPF & Radius OPF & SCOPF \\
+\midrule
+Generation cost (\$/h) & 11098.31 & 11684.49 & 11098.31 \\
+Cost increase vs. cost OPF (\%) & 0.000 & 5.282 & 0.000 \\
+Minimum AC L2 radius (MW) & 0.8455 & 8.4564 & 0.8455 \\
+Median AC L2 radius (MW) & 174.6185 & 177.5916 & 174.6185 \\
+Minimum sigma radius & 0.1701 & 1.6926 & 0.1701 \\
+Maximum overload probability & 0.432473 & 0.045267 & 0.432473 \\
+Lines with $P(\mathrm{overload})>5\%$ & 7 & 0 & 7 \\
+AC N-1 pass rate (\%) & 2.29 & 85.71 & 2.29 \\
+\bottomrule
+\end{tabularx}
+\end{table}

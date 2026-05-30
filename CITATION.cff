@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use this software in academic work, please cite it using this metadata."
+title: "Power Stability Radius"
+type: software
+authors:
+  - name: "Ygor"
+version: "0.1.0"
+date-released: "2026-05-30"
+license: "MIT"
+abstract: "A Python toolkit for computing DC and AC robustness certificates for power-system operating points against line thermal-limit violations."

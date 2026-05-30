@@ -478,7 +478,7 @@ PROCEDURE compute_ac_l2_radius(net, base_pf, slack_bus, ...):
                wP <- P / s0     # d|S|/dP = P/|S|
                wQ <- Q / s0     # d|S|/dQ = Q/|S|
            ELSE:
-               wP <- wQ <- 1/sqrt(2)   # conservative fallback
+               wP <- wQ <- 1/sqrt(2)   # diagnostic subgradient
 
            # Assemble adjoint RHS b = d|S|/dx
            b_theta_i <- wP * dP/dtheta_i + wQ * dQ/dtheta_i
@@ -560,9 +560,10 @@ over PQ buses only (n_pq), because PV buses do not have Q as a free variable.
 - **Chain rule for |S|:** The gradient of `|S| = sqrt(P^2 + Q^2)` is computed
   analytically via `d|S|/dP = P/|S|`, `d|S|/dQ = Q/|S|`, avoiding numerical
   differentiation.
-- **Fallback at |S|=0:** When base apparent power is zero, the gradient is
-  undefined. The equal-weight fallback `(1/sqrt(2), 1/sqrt(2))` provides a
-  conservative, unbiased certificate direction.
+- **Diagnostic subgradient at |S|=0:** When base apparent power is zero, the
+  gradient is undefined. The equal-weight subgradient `(1/sqrt(2), 1/sqrt(2))`
+  is retained only as a diagnostic radius. The strict certificate field is set to
+  zero and the row is marked `nondifferentiable_apparent_power`.
 
 ---
 
@@ -587,6 +588,7 @@ uncertainty modeling where different buses have different injection variability.
 | `s0_mva`         | `ndarray (m,)`     | Base apparent power per line (MVA) |
 | `sigma_p_mw`     | `ndarray (n,)`     | Per-bus active power std dev (MW) |
 | `sigma_q_mvar`   | `ndarray (n,)`     | Per-bus reactive power std dev (MVAr) |
+| `pq_mask`        | `ndarray (n,)` or `None` | Optional mask of buses with independent Q coordinates in the reduced AC model |
 | `line_ids`       | `Sequence[int]` or `None` | Line indices for keys |
 | `balance`        | `bool` (default True) | Apply balanced projection |
 | `eps_sigma_flow`  | `float` (default 1e-15) | Zero-sensitivity threshold |
@@ -595,7 +597,7 @@ uncertainty modeling where different buses have different injection variability.
 
 | Type                              | Description |
 |-----------------------------------|-------------|
-| `dict[str, dict[str, Any]]`      | Per-line: `sigma_flow_mva`, `radius_ac_sigma`, `overload_probability_ac`, `worst_case_dp_mw`, `worst_case_dq_mvar`, `worst_case_s_predicted_mva` |
+| `dict[str, dict[str, Any]]`      | Per-line: `sigma_flow_mva`, `radius_ac_sigma`, `constraint_status_ac_sigma`, `certificate_radius_ac_sigma`, `signed_distance_ac_sigma`, `overload_probability_ac`, `worst_case_dp_mw`, `worst_case_dq_mvar`, `worst_case_s_predicted_mva` |
 
 ### Algorithm
 
@@ -612,8 +614,10 @@ PROCEDURE compute_ac_sigma_radius(h_vectors, sigma_p, sigma_q, ...):
            # Requires sum(sigma_p^2 * hP) = 0
            mu_p <- sum(sigma_p^2 * hP, axis=1) / sum(sigma_p^2)
            hP <- hP - mu_p
-           mu_q <- sum(sigma_q^2 * hQ, axis=1) / sum(sigma_q^2)
-           hQ <- hQ - mu_q
+           # Q is projected only over PQ-bus coordinates when pq_mask is set
+           hQ[inactive_Q] <- 0
+           mu_q <- sum(sigma_q_PQ^2 * hQ_PQ, axis=1) / sum(sigma_q_PQ^2)
+           hQ_PQ <- hQ_PQ - mu_q
 
     3. COMPUTE SIGMA-WEIGHTED FLOW SENSITIVITY
        scaledP <- hP * sigma_p          # element-wise (broadcasting)
@@ -636,7 +640,7 @@ PROCEDURE compute_ac_sigma_radius(h_vectors, sigma_p, sigma_q, ...):
 
     7. COMPUTE OVERLOAD PROBABILITIES (Gaussian Q-function)
        FOR each line l:
-           P(|S| > c) = Q((c - s0) / sigma_flow) + Q((c + s0) / sigma_flow)
+           P(s0 + X > c) = Q((c - s0) / sigma_flow)
            where Q(x) = 0.5 * erfc(x / sqrt(2))
 
     8. RETURN results dict
@@ -649,7 +653,7 @@ Given diagonal covariance `Sigma = diag(sigma_p^2, sigma_q^2)`:
 - **Flow standard deviation:** `sigma_flow = ||Sigma^{1/2} * h||_2`
 - **Sigma-radius:** `r_sigma = (c - |S0|) / sigma_flow` (dimensionless, in sigma units)
 - **Worst-case perturbation:** `delta_u* = r_sigma * Sigma * h / sigma_flow`
-- **Overload probability:** Based on linearized Gaussian model for |S|
+- **Overload probability:** One-sided Gaussian tail for the apparent-power limit
 
 ### Balanced Projection (sigma^2-weighted)
 
@@ -661,6 +665,11 @@ ellipsoid is anisotropic. The constraint `sum(dp) = 0` with
 ```
 hP_adj = hP - sum(sigma_P^2 * hP) / sum(sigma_P^2)
 ```
+
+For Q coordinates, this projection is applied only to the PQ-bus block of
+the reduced AC model. PV and slack Q entries are zero in the full 2n h-vector
+representation and remain excluded from the sigma denominator and worst-case
+direction.
 
 ### Computational Complexity
 
@@ -698,6 +707,7 @@ unified framework for custom disturbance metrics.
 | `s_limit_mva` | `ndarray (m,)`    | Thermal limits (MVA) |
 | `s0_mva`      | `ndarray (m,)`    | Base apparent power (MVA) |
 | `M`           | `ndarray (2n,)` or `(2n, 2n)` | SPD weight matrix (diagonal or dense) |
+| `pq_mask`     | `ndarray (n,)` or `None` | Optional mask that excludes PV/slack Q coordinates from the active metric space |
 | `line_ids`    | `Sequence[int]` or `None` | Line indices |
 | `balance`     | `bool` (default True) | Balanced projection |
 | `eps_denom`   | `float` (default 1e-12) | Zero threshold |
@@ -715,28 +725,30 @@ PROCEDURE compute_ac_metric_radius(h_vectors, s_limit, s0, M, ...):
     1. VALIDATE INPUTS
        H <- (m x 2n), M <- (2n,) or (2n x 2n)
 
-    2. OPTIONAL BALANCED PROJECTION
-       IF balance:
-           hP <- H[:, :n] - mean(H[:, :n], axis=1)
-           hQ <- H[:, n:] - mean(H[:, n:], axis=1)
-           H_proj <- [hP | hQ]
+    2. OPTIONAL ACTIVE-COORDINATE REDUCTION
+       IF pq_mask is provided:
+           H <- [P_all | Q_PQ]
+           M <- active-coordinate submatrix/vector
 
-    3. COMPUTE METRIC DENOMINATOR
+    3. OPTIONAL BALANCED METRIC PROJECTION
+       IF balance:
+           C <- block balance matrix
+           Use h^T[M^-1 - M^-1 C^T(C M^-1 C^T)^+ C M^-1]h
+           For diagonal M, this is implemented as M^-1-weighted mean removal.
+
+    4. COMPUTE METRIC DENOMINATOR
        IF M is diagonal (1-D):
            # O(n) per line
            denom[l] <- sqrt(sum(H_proj[l]^2 / M))
        ELSE (dense):
-           # Cholesky: L L^T = M
-           L <- cholesky(M)
-           Z <- L^{-1} H_proj^T      # solve L*Z = H^T
-           denom[l] <- ||Z[:, l]||_2
+           solve M X = H^T and apply the constrained correction
 
-    4. COMPUTE RADII
+    5. COMPUTE RADII
        margin <- c - s0
        radius[valid] <- margin / denom
        radius[degenerate] <- +inf / -inf
 
-    5. RETURN results dict
+    6. RETURN results dict
 ```
 
 ### Mathematical Definition
@@ -766,6 +778,11 @@ r_l^M = (c_l - |S_l^0|) / sqrt(h_l^T * M^{-1} * h_l)
 
 The project supports multiple strategies for computing the operating point
 (base point) around which stability radii are linearized.
+
+Pandapower PF/FPF base-point metadata records generator reactive-limit events
+(`q_limit_hit`, `q_limit_events`). If a Q-limit event is detected, AC per-line
+outputs are marked with `linearization_status = invalid_active_set_changed_q_limit`,
+because the reduced Jacobian assumes a fixed PV/PQ active set.
 
 ### 7.1 Case Dispatch
 
@@ -849,27 +866,20 @@ flows, providing the operating point for AC certificate construction.
 `src/stability_radius/base_point/pypsa_pf.py`, function
 `solve_ac_pf_base_point_from_pandapower` (line 547)
 
-#### 3-Attempt Retry Cascade
+#### Fail-Fast Solve Policy
 
-The AC PF solver employs a robust 3-attempt cascade to handle difficult networks:
+The AC PF solver performs exactly one `pandapower.runpp()` call using the
+configured initialization and model policy:
 
 ```
-Attempt 1 (primary):
-    init = configured (flat/dc)
+Primary solve:
+    init = configured (flat/dc/pp)
     enforce_q_lims = True
-    distributed_slack = as configured
-
-Attempt 2 (alt_init):
-    init = opposite of primary (dc/flat)
-    enforce_q_lims = True
-    (triggered only if attempt 1 fails)
-
-Attempt 3 (relaxed):
-    init = flat
-    enforce_q_lims = False
-    distributed_slack = False
-    (triggered only if attempts 1 and 2 fail)
+    distributed_slack = as configured, except for the documented large-network guard
 ```
+
+If the solve fails, the computation fails for AC outputs. The code does not
+silently switch initialization, disable Q limits, or substitute a DC base point.
 
 #### Solver Backends
 
@@ -1040,7 +1050,8 @@ PROCEDURE verify_worst_case(net, line_id, h_vec, radius, s0, ...):
     1. CONSTRUCT WORST-CASE PERTURBATION
        IF delta_u not provided:
            h <- h_vec (copy)
-           IF balance: project P/Q blocks (mean subtraction)
+           IF balance: project P and active Q blocks consistently with the
+           certificate geometry
            direction <- h / ||h||_2
            delta_u <- direction * radius * scale
 

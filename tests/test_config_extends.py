@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from tests.config_assertions import assert_float_default_matches
 
 
 def test_load_project_config_supports_extends(tmp_path: Path) -> None:
@@ -67,15 +68,10 @@ def test_full_yaml_chain_opf_unconstrained_line_nom_matches_python_default() -> 
     """
     pytest.importorskip("omegaconf")
 
-    from stability_radius.config import DEFAULT_OPF, load_project_config
+    from stability_radius.config import DEFAULT_OPF
 
-    repo_root = Path(__file__).resolve().parents[1]
-    cfg_path = repo_root / "conf" / "config.yaml"
-
-    cfg = load_project_config(cfg_path, allow_missing=False)
-    assert cfg is not None
-
-    yaml_val = float(cfg["opf"]["unconstrained_line_nom_mw"])
-    py_val = float(DEFAULT_OPF.unconstrained_line_nom_mw)
-
-    assert yaml_val == pytest.approx(py_val)
+    assert_float_default_matches(
+        section="opf",
+        key="unconstrained_line_nom_mw",
+        expected=DEFAULT_OPF.unconstrained_line_nom_mw,
+    )

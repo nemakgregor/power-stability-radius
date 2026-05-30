@@ -43,7 +43,7 @@ def test_setup_logging_expands_tilde_runs_dir(
 def test_cli_resolve_path_expands_tilde(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from entry_points.power_stability_radius import _resolve_path
+    from stability_radius.application.cli import _resolve_path
 
     home = tmp_path / "home"
     _set_home(monkeypatch, home)

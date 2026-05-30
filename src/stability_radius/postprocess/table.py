@@ -19,6 +19,8 @@ DEFAULT_DC_COLUMNS: tuple[str, ...] = (
     "margin_mw",
     "norm_g",
     "radius_l2",
+    "constraint_status_l2",
+    "certificate_radius_l2",
 )
 
 DEFAULT_AC_COLUMNS: tuple[str, ...] = (
@@ -29,13 +31,15 @@ DEFAULT_AC_COLUMNS: tuple[str, ...] = (
     "||h||2",
     "binding_end",
     "radius_ac_l2",
+    "constraint_status_ac_l2",
+    "certificate_radius_ac_l2",
 )
 
 logger = logging.getLogger(__name__)
 
 
 def _line_sort_key(line_key: str) -> tuple[int, str]:
-    """Sort keys like 'line_10' numerically, with a deterministic fallback."""
+    """Sort keys like 'line_10' numerically with stable handling for other keys."""
     try:
         return (int(line_key.split("_", 1)[1]), line_key)
     except (IndexError, ValueError):
@@ -43,6 +47,7 @@ def _line_sort_key(line_key: str) -> tuple[int, str]:
 
 
 def _is_line_key(k: str) -> bool:
+    """Internal helper for module-local processing."""
     return k.startswith("line_")
 
 
@@ -61,6 +66,7 @@ def _format_float(x: Any) -> str:
 
 
 def _iter_line_keys(results: dict[str, Any], *, max_rows: int | None) -> list[str]:
+    """Internal helper for module-local processing."""
     line_keys = sorted(
         (k for k in results.keys() if _is_line_key(k)), key=_line_sort_key
     )
@@ -70,6 +76,7 @@ def _iter_line_keys(results: dict[str, Any], *, max_rows: int | None) -> list[st
 
 
 def _has_any_field(results: dict[str, Any], field: str) -> bool:
+    """Internal helper for module-local processing."""
     for k, v in results.items():
         if not _is_line_key(k) or not isinstance(v, dict):
             continue
@@ -97,7 +104,7 @@ def infer_default_flat_columns(
     - If only AC fields exist -> AC defaults.
     - If only DC fields exist -> DC defaults.
     - If both exist -> DC + AC defaults (stable concatenation).
-    - If neither exists -> DC defaults (legacy fallback).
+    - If neither exists -> DC defaults.
     """
     has_dc = _has_any_field(results, "radius_l2") or _has_any_field(results, "norm_g")
     has_ac = _has_any_field(results, "radius_ac_l2") or _has_any_field(
@@ -148,6 +155,7 @@ def format_results_table(
     align_right = [False] + [True] * len(columns)
 
     def fmt_row(values: Sequence[str]) -> str:
+        """Execute the documented operation."""
         out = []
         for i, v in enumerate(values):
             out.append(v.rjust(widths[i]) if align_right[i] else v.ljust(widths[i]))
@@ -259,6 +267,7 @@ def format_results_csv_sections(
 
 
 def _finite_radii(results: dict[str, Any], *, radius_field: str) -> list[float]:
+    """Internal helper for module-local processing."""
     vals: list[float] = []
     for k, d in results.items():
         if not _is_line_key(k) or not isinstance(d, dict):
@@ -275,6 +284,7 @@ def _finite_radii(results: dict[str, Any], *, radius_field: str) -> list[float]:
 def format_radius_summary(
     results: dict[str, Any], *, radius_field: str = "radius_l2"
 ) -> str:
+    """Execute the documented operation."""
     vals = _finite_radii(results, radius_field=radius_field)
     total = len([k for k in results.keys() if _is_line_key(k)])
     finite = len(vals)
@@ -292,6 +302,7 @@ def format_radius_summary(
 
 
 def _load_results_json(path: Path) -> dict[str, Any]:
+    """Internal helper for module-local processing."""
     obj = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(obj, dict):
         raise ValueError("results.json must contain a JSON object.")
@@ -299,6 +310,7 @@ def _load_results_json(path: Path) -> dict[str, Any]:
 
 
 def main(argv: Iterable[str] | None = None) -> int:
+    """Run the command-line entry point."""
     parser = argparse.ArgumentParser(
         description="Print/export stability radius results as a table."
     )

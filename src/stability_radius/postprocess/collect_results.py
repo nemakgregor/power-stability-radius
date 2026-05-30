@@ -33,6 +33,7 @@ _DEFAULT_CSV_PATH = Path(ARTIFACTS_ROOT_NAME) / "collect_results" / "all_results
 
 
 def _load_json(path: Path) -> dict | list:
+    """Internal helper for module-local processing."""
     with path.open(encoding="utf-8") as fh:
         return json.load(fh)
 
@@ -62,6 +63,7 @@ def _extract_radius_stats(results: dict) -> dict:
             sigma_radii.append(float(r_sig))
 
     def _stats(values: list[float]) -> dict:
+        """Internal helper for module-local processing."""
         if not values:
             return {"min": "", "median": "", "mean": "", "max": "", "count": 0}
         arr = np.array(values)
@@ -82,6 +84,7 @@ def _extract_radius_stats(results: dict) -> dict:
 
 
 def collect(output_dir: Path, csv_path: Path) -> None:
+    """Execute the documented operation."""
     rows: list[dict] = []
 
     # Scan for per-case JSON results.
@@ -143,6 +146,7 @@ def collect(output_dir: Path, csv_path: Path) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """Run the command-line entry point."""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",

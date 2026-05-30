@@ -8,7 +8,10 @@ import numpy as np
 
 from stability_radius.ac.ac_model import build_ac_operator
 from stability_radius.base_point.pypsa_pf import PyPSAAPFResult
+from stability_radius.geometry.balanced import dual_norm_l2_balanced_from_block_vectors
 from stability_radius.radii.common import (
+    ConstraintStatus,
+    classify_constraint_certificate,
     estimate_line_limit_mva_with_flag,
     line_key,
 )
@@ -17,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 _EPS_NORM = 1e-12
 _EPS_S0_MVA = 1e-9
-_FALLBACK_WP_WQ = 1.0 / math.sqrt(2.0)
+_DIAGNOSTIC_SUBGRADIENT_WP_WQ = 1.0 / math.sqrt(2.0)
 
 
 def _balanced_two_block_norm_from_red(
@@ -41,19 +44,14 @@ def _balanced_two_block_norm_from_red(
     n_pq_total : int or None
         PQ bus count for the Q-block projection.  If None, uses n_bus_total.
     """
-    ap = np.asarray(a_p_red, dtype=float).reshape(-1)
-    aq = np.asarray(a_q_red, dtype=float).reshape(-1)
-
-    t_p = float(np.dot(ap, ap))
-    s_p = float(np.sum(ap))
-    proj2_p = t_p - (s_p * s_p) / float(n_bus_total)
-
-    n_q = int(n_pq_total) if n_pq_total is not None else int(n_bus_total)
-    t_q = float(np.dot(aq, aq))
-    s_q = float(np.sum(aq))
-    proj2_q = t_q - (s_q * s_q) / float(n_q) if n_q > 0 else t_q
-
-    return math.sqrt(max(proj2_p, 0.0) + max(proj2_q, 0.0))
+    return dual_norm_l2_balanced_from_block_vectors(
+        (a_p_red, a_q_red),
+        total_sizes=(
+            int(n_bus_total),
+            int(n_pq_total) if n_pq_total is not None else int(n_bus_total),
+        ),
+        balance=True,
+    )
 
 
 def compute_ac_l2_radius(
@@ -68,6 +66,19 @@ def compute_ac_l2_radius(
 ) -> Dict[str, Dict[str, Any]]:
     """
     Compute a fast AC L2 "stability radius" certificate around an AC PF base point.
+
+    The certificate differentiates the apparent-power magnitude ``|S|`` at each
+    monitored line end. At ``|S0| <= 1e-9`` MVA that norm is nondifferentiable;
+    this implementation uses an equal P/Q diagnostic subgradient, records the
+    nondifferentiable end, and marks real binding constraints as non-strict
+    certificates with zero nonnegative radius. Unconstrained lines keep their
+    ``unconstrained_limit`` certificate status even if the diagnostic
+    subgradient is used.
+
+    Sensitivity norms below ``1e-12`` are treated as degenerate/infinite
+    according to ``classify_constraint_certificate``. These thresholds are
+    documented in ``docs/algorithms_and_models.md`` and are intentionally kept
+    local to the numerical kernels rather than hidden in the CLI config.
 
     Output fields (key additions for unified tables)
     ------------------------------------------------
@@ -153,7 +164,8 @@ def compute_ac_l2_radius(
         h_to = np.zeros((m, n_vars), dtype=float)
 
     # ---------- chunked adjoint solves ----------
-    fallback_used = 0
+    diagnostic_subgradient_used = 0
+    nondifferentiable_end = np.zeros(n_con, dtype=bool)
 
     start = 0
     while start < n_con:
@@ -222,11 +234,12 @@ def compute_ac_l2_radius(
                 wQ = float(q_end[con_idx]) / s0
             else:
                 # At |S|=0 the gradient of a norm is undefined.
-                # For a conservative, unbiased certificate we use an equal P/Q direction:
-                # (wP, wQ) = (1/sqrt(2), 1/sqrt(2)), instead of a one-sided (1,0) fallback.
-                wP = _FALLBACK_WP_WQ
-                wQ = _FALLBACK_WP_WQ
-                fallback_used += 1
+                # Use an equal P/Q diagnostic subgradient and mark the result
+                # as non-strict below.
+                wP = _DIAGNOSTIC_SUBGRADIENT_WP_WQ
+                wQ = _DIAGNOSTIC_SUBGRADIENT_WP_WQ
+                diagnostic_subgradient_used += 1
+                nondifferentiable_end[con_idx] = True
 
             b_ti = wP * dP_dti + wQ * dQ_dti
             b_tk = wP * dP_dtk + wQ * dQ_dtk
@@ -285,11 +298,11 @@ def compute_ac_l2_radius(
 
         start = end
 
-    if fallback_used > 0:
+    if diagnostic_subgradient_used > 0:
         logger.debug(
-            "AC |S| gradient fallback used: %d/%d constraint-ends with |S0|<=%.3g MVA "
+            "AC |S| diagnostic subgradient used: %d/%d constraint-ends with |S0|<=%.3g MVA "
             "(used equal P/Q weights).",
-            int(fallback_used),
+            int(diagnostic_subgradient_used),
             int(n_con),
             float(_EPS_S0_MVA),
         )
@@ -312,6 +325,24 @@ def compute_ac_l2_radius(
             if binding_end == "from"
             else float(norms[2 * pos + 1])
         )
+        nondiff_from = bool(nondifferentiable_end[2 * pos])
+        nondiff_to = bool(nondifferentiable_end[2 * pos + 1])
+        nondiff_bind = nondiff_from if binding_end == "from" else nondiff_to
+        status_bind, cert_radius_bind, signed_distance_bind = (
+            classify_constraint_certificate(
+                margin=float(margin_bind),
+                dual_norm=float(norm_bind),
+                eps=_EPS_NORM,
+                is_unconstrained=bool(is_unconstrained[pos]),
+            )
+        )
+        linearization_status = "nonlinear_unvalidated"
+        if bool(nondiff_bind) and not bool(is_unconstrained[pos]):
+            status_bind = ConstraintStatus.NONDIFFERENTIABLE_APPARENT_POWER.value
+            cert_radius_bind = 0.0
+            linearization_status = (
+                ConstraintStatus.NONDIFFERENTIABLE_APPARENT_POWER.value
+            )
 
         k = line_key(int(lid))
         results[k] = {
@@ -323,12 +354,14 @@ def compute_ac_l2_radius(
             "ac_s0_from_mva": float(s0_from[pos]),
             "ac_margin_from_mva": float(margin_from[pos]),
             "ac_norm_a_from": float(norms[2 * pos]),
+            "ac_nondifferentiable_from": bool(nondiff_from),
             "radius_ac_l2_from": float(r_from),
             "ac_p0_to_mw": float(p1[pos]),
             "ac_q0_to_mvar": float(q1[pos]),
             "ac_s0_to_mva": float(s0_to[pos]),
             "ac_margin_to_mva": float(margin_to[pos]),
             "ac_norm_a_to": float(norms[2 * pos + 1]),
+            "ac_nondifferentiable_to": bool(nondiff_to),
             "radius_ac_l2_to": float(r_to),
             # per-line aggregate
             "radius_ac_l2": float(r_line),
@@ -337,6 +370,12 @@ def compute_ac_l2_radius(
             "binding_end": str(binding_end),
             "margin_ac_mva": float(margin_bind),
             "||h||2": float(norm_bind),
+            "radius_ac_l2_linear": float(r_line),
+            "certificate_radius_ac_l2": float(cert_radius_bind),
+            "signed_distance_ac_l2": float(signed_distance_bind),
+            "constraint_status_ac_l2": str(status_bind),
+            "nondifferentiable_apparent_power": bool(nondiff_bind),
+            "linearization_status": str(linearization_status),
         }
 
         if math.isfinite(r_line):

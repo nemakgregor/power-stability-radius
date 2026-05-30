@@ -10,7 +10,6 @@ Strictness / determinism
 - If a required file/field is missing: raise an explicit error.
 """
 
-import json
 import logging
 import math
 from pathlib import Path
@@ -19,6 +18,7 @@ from typing import Any, Dict, List, Sequence
 from stability_radius.domain import ReportCaseSpec
 from stability_radius.parsers.matpower import load_network
 from stability_radius.utils import log_stage
+from stability_radius.utils.json_utils import load_json_object, result_meta
 
 from .monte_carlo import run_monte_carlo_verification
 from .status import summarize_status
@@ -26,18 +26,6 @@ from .types import VerificationResult
 from .verify_certificate import interpret_certificate
 
 logger = logging.getLogger("stability_radius.verification.generate_report")
-
-
-def _load_results(path: Path) -> Dict[str, Any]:
-    obj = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(obj, dict):
-        raise ValueError(f"Expected JSON object in {path}, got {type(obj)}")
-    return obj
-
-
-def _get_meta(results: Dict[str, Any]) -> Dict[str, Any]:
-    meta = results.get("__meta__")
-    return meta if isinstance(meta, dict) else {}
 
 
 def _fmt_num(x: Any) -> str:
@@ -183,6 +171,7 @@ def generate_report_text(
     ac_lossless: bool,
     ac_basepoint_s_tol_mva: float,
 ) -> str:
+    """Execute the documented operation."""
     if not cases:
         raise ValueError("report requires a non-empty cases list.")
 
@@ -217,8 +206,8 @@ def generate_report_text(
             raise FileNotFoundError(f"Missing input case file for case={case_id}: {ip}")
 
         with log_stage(logger, f"{case_id}: load results"):
-            results = _load_results(rp)
-            meta = _get_meta(results)
+            results = load_json_object(rp)
+            meta = result_meta(results)
 
         with log_stage(logger, f"{case_id}: load network"):
             net = load_network(ip)

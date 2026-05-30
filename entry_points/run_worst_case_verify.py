@@ -47,7 +47,7 @@ from stability_radius.utils import (
     setup_output_dir_logging,
 )
 from stability_radius.verification.verify_worst_case import verify_worst_case
-from stability_radius.workflows import _expand_h_reduced_to_full
+from stability_radius.workflows import expand_h_reduced_to_full
 
 logger = logging.getLogger(__name__)
 
@@ -113,13 +113,13 @@ def _recompute_h_vectors(
     slack_bus_id = resolve_slack_bus_id(net, slack_bus)
     slack_pos = bus_ids.index(slack_bus_id)
 
-    h_from = _expand_h_reduced_to_full(
+    h_from = expand_h_reduced_to_full(
         h_vecs_raw["h_from"],
         n_bus=n_bus,
         slack_pos=slack_pos,
         pq_mask=h_vecs_raw.get("pq_mask"),
     )
-    h_to = _expand_h_reduced_to_full(
+    h_to = expand_h_reduced_to_full(
         h_vecs_raw["h_to"],
         n_bus=n_bus,
         slack_pos=slack_pos,
@@ -775,6 +775,7 @@ def run(
 
 
 def main() -> None:
+    """Run the command-line entry point."""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",

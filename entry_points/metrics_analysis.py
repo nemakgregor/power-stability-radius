@@ -1089,6 +1089,7 @@ def generate_danger_decomposition_plot(
 
     def _draw_panel(ax, x_arr, xlabel, title):
         # Non-overloaded lines: gray dots
+        """Internal helper for module-local processing."""
         if safe_mask.any():
             ax.scatter(
                 x_arr[safe_mask],
@@ -1594,6 +1595,7 @@ def _make_two_bus_direction(
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Execute the documented operation."""
     parser = argparse.ArgumentParser(
         prog="python entry_points/metrics_analysis.py",
         description="Comparative evaluation of stability radii vs baseline metrics",
@@ -1671,6 +1673,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run the command-line entry point."""
     args = parse_args(argv)
 
     output_dir = create_module_output_dir(
@@ -1837,7 +1840,9 @@ def main(argv: list[str] | None = None) -> int:
         allow_download=True,
     )
 
-    mc_fracs: dict[str, float] = vr.comparisons.get("per_line_overload_fractions", {})
+    mc_fracs: dict[str, float] = vr.comparisons.get(
+        "per_line_overload_fractions_conditional_on_pf_converged", {}
+    )
     pf_failures = vr.comparisons.get("pf_failures_gaussian", 0)
     logger.info(
         "  -> MC done: %d samples, %d PF failures, %d lines tracked",

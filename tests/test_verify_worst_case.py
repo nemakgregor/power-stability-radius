@@ -101,15 +101,15 @@ def _compute_ac_radius_with_h(net, slack_bus: int):
     n_bus = len(bus_ids)
     slack_pos = bus_ids.index(int(slack_bus))
 
-    from stability_radius.workflows import _expand_h_reduced_to_full
+    from stability_radius.workflows import expand_h_reduced_to_full
 
-    h_from_full = _expand_h_reduced_to_full(
+    h_from_full = expand_h_reduced_to_full(
         h_from,
         n_bus=n_bus,
         slack_pos=slack_pos,
         pq_mask=h_vecs_raw.get("pq_mask"),
     )
-    h_to_full = _expand_h_reduced_to_full(
+    h_to_full = expand_h_reduced_to_full(
         h_to,
         n_bus=n_bus,
         slack_pos=slack_pos,

@@ -34,7 +34,15 @@ from typing import Any
 
 import numpy as np
 
-from stability_radius.radii.common import line_key
+from stability_radius.geometry.balanced import (
+    BlockSpec,
+    project_dual_balanced_rows,
+)
+from stability_radius.radii.common import (
+    classify_constraint_certificate,
+    line_key,
+    signed_radius_from_margin_norm,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -48,12 +56,17 @@ def _validate_inputs(
     s0_mva: np.ndarray,
     M: np.ndarray,
     line_ids: Sequence[int] | None,
+    pq_mask: np.ndarray | None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, tuple[int, ...]]:
     """Validate and normalise inputs, return (H, s_lim, s0, M, ids)."""
     H = np.asarray(h_vectors, dtype=float)
     if H.ndim != 2:
         raise ValueError(f"h_vectors must be 2D, got shape={H.shape}")
     n_lines, d = int(H.shape[0]), int(H.shape[1])
+    if np.any(~np.isfinite(H)):
+        raise ValueError("h_vectors must be finite.")
+    if d % 2 != 0:
+        raise ValueError(f"h_vectors second dimension must be even [P; Q], got {d}.")
 
     s_lim = np.asarray(s_limit_mva, dtype=float).reshape(-1)
     s0 = np.asarray(s0_mva, dtype=float).reshape(-1)
@@ -76,6 +89,10 @@ def _validate_inputs(
     elif M_arr.ndim == 2:
         if M_arr.shape != (d, d):
             raise ValueError(f"Dense M must have shape ({d},{d}), got {M_arr.shape}")
+        if np.any(~np.isfinite(M_arr)):
+            raise ValueError("Dense M entries must be finite.")
+        if not np.allclose(M_arr, M_arr.T, rtol=1e-10, atol=1e-12):
+            raise ValueError("Dense M must be symmetric.")
     else:
         raise ValueError(
             f"M must be 1D (diagonal) or 2D (dense), got ndim={M_arr.ndim}"
@@ -90,7 +107,60 @@ def _validate_inputs(
                 f"line_ids length must match n_lines={n_lines}, got {len(ids)}"
             )
 
+    if pq_mask is not None:
+        n_bus = d // 2
+        pq = np.asarray(pq_mask, dtype=bool).reshape(-1)
+        if d != 2 * n_bus or pq.shape != (n_bus,):
+            raise ValueError(f"pq_mask must have shape ({n_bus},), got {pq.shape}")
+
     return H, s_lim, s0, M_arr, ids
+
+
+def _metric_active_coordinates(*, n_bus: int, pq_mask: np.ndarray | None) -> np.ndarray:
+    """Return active metric coordinates, optionally excluding PV/slack Q entries."""
+    n = int(n_bus)
+    if pq_mask is None:
+        return np.arange(2 * n, dtype=int)
+    pq = np.asarray(pq_mask, dtype=bool).reshape(-1)
+    q_idx = np.where(pq)[0]
+    return np.concatenate([np.arange(n, dtype=int), n + q_idx])
+
+
+def _metric_balance_blocks(
+    *, n_bus: int, n_q_active: int, balance: bool
+) -> tuple[BlockSpec, BlockSpec]:
+    """Block specs in reduced active coordinates [P_all; Q_active]."""
+    n = int(n_bus)
+    nq = int(n_q_active)
+    return (
+        BlockSpec(
+            name="P",
+            indices=np.arange(0, n, dtype=int),
+            balance=bool(balance),
+        ),
+        BlockSpec(
+            name="Q",
+            indices=np.arange(n, n + nq, dtype=int),
+            balance=bool(balance),
+        ),
+    )
+
+
+def _constraint_matrix_from_blocks(
+    *, d: int, blocks: tuple[BlockSpec, ...]
+) -> np.ndarray:
+    """Internal helper for module-local processing."""
+    rows: list[np.ndarray] = []
+    for block in blocks:
+        idx = np.asarray(block.indices, dtype=int).reshape(-1)
+        if idx.size == 0 or not bool(block.balance):
+            continue
+        row = np.zeros(int(d), dtype=float)
+        row[idx] = 1.0
+        rows.append(row)
+    if not rows:
+        return np.zeros((0, int(d)), dtype=float)
+    return np.vstack(rows)
 
 
 def compute_ac_metric_radius(
@@ -101,6 +171,7 @@ def compute_ac_metric_radius(
     M: np.ndarray,
     line_ids: Sequence[int] | None = None,
     balance: bool = True,
+    pq_mask: np.ndarray | None = None,
     eps_denom: float = _EPS_DENOM,
 ) -> dict[str, dict[str, Any]]:
     """
@@ -124,9 +195,12 @@ def compute_ac_metric_radius(
         Optional line indices for stable keys ``line_<id>``.
         If None, uses ``0..n_lines-1``.
     balance :
-        If True, projects each h-vector's P/Q blocks onto the
-        sum-zero subspace via mean-subtraction before computing
-        the metric norm.
+        If True, computes the constrained metric dual norm on the balanced
+        subspace using the M^{-1}-weighted projection.
+    pq_mask:
+        Optional full-bus boolean mask for PQ buses.  When provided, the metric
+        is restricted to active coordinates `[P_all; Q_PQ]`; PV and slack Q
+        coordinates are excluded from the independent perturbation space.
     eps_denom :
         Numerical threshold below which the denominator is treated
         as zero (degenerate sensitivity).
@@ -145,6 +219,7 @@ def compute_ac_metric_radius(
         s0_mva=s0_mva,
         M=M,
         line_ids=line_ids,
+        pq_mask=pq_mask,
     )
 
     eps = float(eps_denom)
@@ -152,58 +227,97 @@ def compute_ac_metric_radius(
         raise ValueError("eps_denom must be finite and >0.")
 
     n_lines = int(H.shape[0])
-    d = int(H.shape[1])
-    n_bus = d // 2
-
-    # Optional balance projection (mean-subtract P/Q blocks independently).
-    if bool(balance):
-        hP = H[:, :n_bus].copy()
-        hQ = H[:, n_bus:].copy()
-        hP -= np.mean(hP, axis=1, keepdims=True)
-        hQ -= np.mean(hQ, axis=1, keepdims=True)
-        H_proj = np.hstack([hP, hQ])
-        logger.debug("Applied balanced projection to h-vectors (P/Q blocks).")
+    d_full = int(H.shape[1])
+    n_bus = d_full // 2
+    active = _metric_active_coordinates(n_bus=n_bus, pq_mask=pq_mask)
+    H_work = H[:, active]
+    if M_arr.ndim == 1:
+        M_work = M_arr[active]
     else:
-        H_proj = H
+        M_work = M_arr[np.ix_(active, active)]
+    d = int(H_work.shape[1])
+    n_q_active = int(d - n_bus)
+    blocks = _metric_balance_blocks(
+        n_bus=n_bus, n_q_active=n_q_active, balance=bool(balance)
+    )
 
     # Compute denominator: sqrt(h^T M^{-1} h) for each line.
     denom = np.empty(n_lines, dtype=float)
 
-    is_diagonal = M_arr.ndim == 1
+    is_diagonal = M_work.ndim == 1
 
     if is_diagonal:
-        # Diagonal case: h^T M^{-1} h = sum(h_i^2 / m_i)
-        M_inv = 1.0 / M_arr  # shape (d,)
+        # Diagonal case: balanced projection uses M^{-1} weights.  This makes
+        # M=diag(1/sigma^2) exactly match AC sigma-radius.
+        M_inv = 1.0 / M_work  # shape (d,)
+        if bool(balance):
+            H_proj = project_dual_balanced_rows(
+                H_work,
+                (
+                    BlockSpec(
+                        name="P",
+                        indices=np.arange(0, n_bus, dtype=int),
+                        balance=True,
+                        weights=M_inv[:n_bus],
+                    ),
+                    BlockSpec(
+                        name="Q",
+                        indices=np.arange(n_bus, d, dtype=int),
+                        balance=True,
+                        weights=M_inv[n_bus:],
+                    ),
+                ),
+            )
+        else:
+            H_proj = H_work
         denom = np.sqrt(np.sum(H_proj * H_proj * M_inv[None, :], axis=1))
     else:
-        # Dense case: Cholesky factorisation L L^T = M, then ||L^{-1} h||_2.
+        # Dense case: use the exact constrained dual norm
+        # h^T[M^{-1} - M^{-1}C^T(CM^{-1}C^T)^+CM^{-1}]h.
         try:
-            L = np.linalg.cholesky(M_arr)
+            np.linalg.cholesky(M_work)
         except np.linalg.LinAlgError as e:
             raise ValueError(
                 "M must be symmetric positive definite (Cholesky failed)."
             ) from e
 
-        # Solve L z = h^T for each line (each row of H_proj).
-        # scipy.linalg.solve_triangular would be faster, but numpy suffices
-        # and avoids the extra dependency at the radii level.
-        Z = np.linalg.solve(L, H_proj.T)  # shape (d, n_lines)
-        denom = np.sqrt(np.sum(Z * Z, axis=0))  # shape (n_lines,)
+        M_inv_Ht = np.linalg.solve(M_work, H_work.T)  # shape (d, n_lines)
+        quad = np.sum(H_work.T * M_inv_Ht, axis=0)
+        if bool(balance):
+            C = _constraint_matrix_from_blocks(d=d, blocks=blocks)
+            if C.shape[0] > 0:
+                M_inv_Ct = np.linalg.solve(M_work, C.T)
+                A = C @ M_inv_Ct
+                rhs = C @ M_inv_Ht
+                A_pinv = np.linalg.pinv(A)
+                corr = np.sum(rhs * (A_pinv @ rhs), axis=0)
+                quad = quad - corr
+        denom = np.sqrt(np.maximum(quad, 0.0))
 
     margin = c - s0
 
     radius = np.empty(n_lines, dtype=float)
-    valid = denom > eps
-    radius[valid] = margin[valid] / denom[valid]
-    radius[~valid] = np.where(margin[~valid] >= 0.0, float("inf"), float("-inf"))
+    valid = np.isfinite(denom) & (denom > eps)
+    for i in range(n_lines):
+        radius[i] = signed_radius_from_margin_norm(
+            margin=float(margin[i]), dual_norm=float(denom[i]), eps=eps
+        )
 
     results: dict[str, dict[str, Any]] = {}
     for pos, lid in enumerate(ids):
+        status, cert_radius, signed_distance = classify_constraint_certificate(
+            margin=float(margin[pos]),
+            dual_norm=float(denom[pos]),
+            eps=eps,
+        )
         k = line_key(int(lid))
         results[k] = {
             "metric_denom": float(denom[pos]),
             "margin_mva": float(margin[pos]),
             "radius_ac_metric": float(radius[pos]),
+            "certificate_radius_ac_metric": float(cert_radius),
+            "signed_distance_ac_metric": float(signed_distance),
+            "constraint_status_ac_metric": str(status),
         }
 
     # Logging summary.

@@ -13,13 +13,13 @@ For complementary perspectives see:
 
 ## 1. Main Components
 
-The project is organized into a small set of explicit layers under `src/stability_radius/`, with thin executable wrappers under `entry_points/`.
+The project is organized into a small set of explicit layers under `src/stability_radius/`, with executable launchers under `entry_points/`.
 
-### 1.1 Entry Point Wrapper (`power_stability_radius.py`)
+### 1.1 Entry Point Launcher (`power_stability_radius.py`)
 
 **File:** `entry_points/power_stability_radius.py`
 
-Main operational script wrapper. It intentionally stays thin and delegates the actual CLI orchestration to the application layer while the library API remains available via `stability_radius.workflows.compute_results_for_case`.
+Main operational script launcher. It delegates CLI orchestration to the application layer while the library API remains available via `stability_radius.workflows.compute_results_for_case`.
 
 ```python
 # Library API:
@@ -45,7 +45,7 @@ The command-line interface is built on `argparse` in the application layer and p
 **Key design points:**
 
 - A pre-parse step (`_preparse_config_path`) extracts the `--config` path before the main argument parse, allowing YAML defaults to be injected into the argparse default values.
-- OmegaConf (`_cfg_get`) is used to read nested YAML keys with fallbacks to the programmatic defaults from `config.py`.
+- OmegaConf (`_cfg_get`) is used to read nested YAML keys with programmatic defaults from `config.py`.
 - If no subcommand is given on the command line, the CLI inspects `command:` in the YAML config to infer a default command.
 - Each subcommand handler (`run_compute`, `run_monte_carlo`, `run_report`, `run_table`) writes run artifacts (config snapshots, argv) to a timestamped run directory before executing.
 - Report case parsing is handled as application logic and resolves YAML into typed `ReportCaseSpec` values before verification code is called.
@@ -148,13 +148,13 @@ Computes the operating point around which the stability radius is certified.
 | `dc.py` | `compute_dc_base_point()` -- assembles a `BasePointDC` from either case dispatch data or DC OPF results |
 | `ac.py` | `compute_ac_base_point()` -- assembles a `BasePointAC` from an AC power flow solution |
 | `pypsa_opf.py` | DC OPF via PyPSA + HiGHS: converts pandapower network to PyPSA, solves LP, extracts flows/injections |
-| `pypsa_pf.py` | AC PF via `pandapower.runpp()` with a 3-attempt retry cascade (flat init, DC init, relaxed tolerances) |
+| `pypsa_pf.py` | AC PF via one explicit `pandapower.runpp()` solve; failures are surfaced instead of changing model policy |
 | `pandapower_opp.py` | AC Feasibility Power Flow via `pandapower.runopp()` (OPP) with quadratic feasibility cost functions |
 | `pandapower_tools.py` | Shared utilities: lossless network policy enforcement, slack bus resolution, generator dispatch application |
 
 **BasePointDC fields:** `bus_ids`, `bus_injections_mw`, `line_ids`, `line_flows_mw`, `line_limits_mw`, `gen_dispatch_mw_by_name`, `status`, `objective`.
 
-**BasePointAC fields:** `bus_ids`, `vm_pu`, `va_rad`, `line_ids`, `p_from_mw`, `q_from_mvar`, `p_to_mw`, `q_to_mvar`, `s_limit_mva`, `pf_solver`, `pf_init`, `lossless`, `pf_attempt`, `pf_repairs`, `distributed_slack_requested`, `distributed_slack_used`.
+**BasePointAC fields:** `bus_ids`, `vm_pu`, `va_rad`, `line_ids`, `p_from_mw`, `q_from_mvar`, `p_to_mw`, `q_to_mvar`, `s_limit_mva`, `pf_solver`, `pf_init`, `lossless`, `pf_attempt`, `pf_repairs`, `distributed_slack_requested`, `distributed_slack_used`, `q_limit_hit`, `q_limit_events`.
 
 ### 1.8 DC Model (`dc/dc_model.py`)
 
@@ -192,7 +192,7 @@ Implements the `ACOperator` frozen dataclass, which encapsulates the linearized 
 
 **Ybus and Jacobian construction:**
 
-- Builds sparse admittance matrix `Ybus` from line/transformer impedances (with optional lossless policy: `r = 0`).
+- Builds a sparse series-only admittance matrix `Ybus` from line/transformer impedances. The supported certificate path uses the lossless policy (`r = 0`, shunts/charging disabled); `ac.lossless=false` is fail-fast until a full pi/shunt Jacobian is implemented.
 - Constructs the reduced AC power flow Jacobian of the form:
 
   ```
@@ -224,9 +224,9 @@ The core mathematical engine. Each module implements one radius variant.
 | `l2.py` | `compute_l2_radius()` | DC L2 radius: wraps `DCOperator` + `core_l2` to produce per-line `r_i = (c_i - \|f0_i\|) / \|g_i\|_2` |
 | `ac_l2.py` | `compute_ac_l2_radius()` | AC L2 radius: uses `ACOperator` adjoint solves, processes lines in chunks for memory efficiency. Returns per-line radii and h-vectors |
 | `probabilistic.py` | `sigma_radius()`, `overload_probability_symmetric_limit()` | DC sigma-radius and Gaussian overload probability via the Q-function |
-| `ac_sigma_radius.py` | `compute_ac_sigma_radius()` | AC sigma-radius with precomputed h-vectors and sigma-squared-weighted balanced projection |
+| `ac_sigma_radius.py` | `compute_ac_sigma_radius()` | AC sigma-radius with precomputed h-vectors, sigma-squared-weighted balanced projection, and PQ-only Q block handling |
 | `metric.py` | `compute_metric_radius()` | DC metric radius with symmetric positive-definite (SPD) weight matrix via Cholesky factorization |
-| `ac_metric_radius.py` | `compute_ac_metric_radius()` | AC metric radius using precomputed h-vectors and a weight matrix |
+| `ac_metric_radius.py` | `compute_ac_metric_radius()` | AC metric radius using precomputed h-vectors, a weight matrix, and the constrained metric dual projection |
 | `nminus1.py` | `compute_nminus1_l2_radius()` | N-1 contingency radius with optional sensitivity updates via Woodbury/LODF approximation |
 | `ac_feasibility.py` | `check_ac_base_point_feasibility()` | AC feasibility check: validates whether the base operating point satisfies all thermal limits |
 | `common.py` | `LineBaseQuantities`, `estimate_line_limit_mva()`, `line_key()` | Shared dataclass and utilities for per-line base quantities, thermal limit extraction, and result key formatting |
@@ -636,9 +636,9 @@ The project follows a layered architecture with explicit dependency direction:
 ```
 
 Each layer depends only on layers below it. In particular:
-- Interface wrappers only import the application layer.
+- Interface launchers only import the application layer.
 - Application code can depend on domain types, algorithms, and infrastructure helpers.
-- Algorithm modules do not import CLI code or entry-point wrappers.
+- Algorithm modules do not import CLI code or entry-point launchers.
 - Domain types stay free of file-system, CLI, and logging concerns.
 
 ### 6.2 Mathematical vs Operational Code
@@ -687,7 +687,7 @@ All network data is converted to pandapower's internal format (`pandapowerNet`) 
 
 The MATPOWER import path is deterministic: the repository parses the `.m` file
 into a PPC structure and then calls pandapower's `from_ppc()` converter. There
-is no optional runtime fallback chain here.
+is no secondary runtime parser path here.
 
 ### 7.2 Sparse LU Factorization for O(n) Solves
 

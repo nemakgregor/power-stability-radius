@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from tests.network_factories import make_two_bus_opf_net
 
 pp = pytest.importorskip("pandapower")
 pytest.importorskip("scipy")
@@ -20,45 +21,8 @@ pytest.importorskip("highspy")
 
 
 def _make_net_requiring_absorption():
-    """Network where generator min-output forces ext_grid to absorb power.
-
-    Setup:
-    - 2 buses, 1 line
-    - Load at bus 1: 5 MW
-    - Generator at bus 1: min_p=10 MW, max_p=20 MW (MUST produce >=10 MW)
-    - Total generation >= 10 MW but demand = 5 MW
-    - Ext_grid at bus 0 must absorb the excess ~5 MW.
-    """
-    net = pp.create_empty_network(sn_mva=100.0)
-
-    b0 = pp.create_bus(net, vn_kv=110.0)
-    b1 = pp.create_bus(net, vn_kv=110.0)
-
-    pp.create_ext_grid(net, b0, vm_pu=1.0)
-    pp.create_load(net, b1, p_mw=5.0, q_mvar=0.0)
-
-    pp.create_gen(
-        net,
-        b1,
-        p_mw=10.0,
-        min_p_mw=10.0,
-        max_p_mw=20.0,
-        controllable=True,
-    )
-
-    pp.create_line_from_parameters(
-        net,
-        from_bus=b0,
-        to_bus=b1,
-        length_km=1.0,
-        r_ohm_per_km=0.01,
-        x_ohm_per_km=0.10,
-        c_nf_per_km=0.0,
-        max_i_ka=10.0,
-        max_loading_percent=100.0,
-    )
-
-    return net, b0
+    """Build a network where generator min-output forces ext-grid absorption."""
+    return make_two_bus_opf_net(pp, load_p_mw=5.0, gen_min_p_mw=10.0)
 
 
 def _make_net_no_absorption():
@@ -67,36 +31,7 @@ def _make_net_no_absorption():
     Load = 15 MW, gen max = 20 MW, gen min = 0 MW.
     OPF can satisfy load without ext_grid absorption.
     """
-    net = pp.create_empty_network(sn_mva=100.0)
-
-    b0 = pp.create_bus(net, vn_kv=110.0)
-    b1 = pp.create_bus(net, vn_kv=110.0)
-
-    pp.create_ext_grid(net, b0, vm_pu=1.0)
-    pp.create_load(net, b1, p_mw=15.0, q_mvar=0.0)
-
-    pp.create_gen(
-        net,
-        b1,
-        p_mw=10.0,
-        min_p_mw=0.0,
-        max_p_mw=20.0,
-        controllable=True,
-    )
-
-    pp.create_line_from_parameters(
-        net,
-        from_bus=b0,
-        to_bus=b1,
-        length_km=1.0,
-        r_ohm_per_km=0.01,
-        x_ohm_per_km=0.10,
-        c_nf_per_km=0.0,
-        max_i_ka=10.0,
-        max_loading_percent=100.0,
-    )
-
-    return net, b0
+    return make_two_bus_opf_net(pp, load_p_mw=15.0, gen_min_p_mw=0.0)
 
 
 def test_ext_grid_absorption_used_when_gen_min_exceeds_demand() -> None:

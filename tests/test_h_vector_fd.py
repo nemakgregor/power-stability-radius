@@ -91,7 +91,7 @@ def test_h_vector_predicts_delta_s_via_finite_difference() -> None:
         solve_ac_pf_base_point_from_pandapower,
     )
     from stability_radius.radii.ac_l2 import compute_ac_l2_radius
-    from stability_radius.workflows import _expand_h_reduced_to_full
+    from stability_radius.workflows import expand_h_reduced_to_full
 
     net, slack_bus = _make_3bus_meshed_net()
 
@@ -123,13 +123,13 @@ def test_h_vector_predicts_delta_s_via_finite_difference() -> None:
 
     # Expand to full dimension
     slack_pos = bus_ids.index(slack_bus)
-    h_from_full = _expand_h_reduced_to_full(
+    h_from_full = expand_h_reduced_to_full(
         h_from_raw,
         n_bus=n_bus,
         slack_pos=slack_pos,
         pq_mask=h_vecs_raw.get("pq_mask"),
     )
-    h_to_full = _expand_h_reduced_to_full(
+    h_to_full = expand_h_reduced_to_full(
         h_to_raw,
         n_bus=n_bus,
         slack_pos=slack_pos,
@@ -250,7 +250,7 @@ def test_h_vector_with_q_perturbation() -> None:
         solve_ac_pf_base_point_from_pandapower,
     )
     from stability_radius.radii.ac_l2 import compute_ac_l2_radius
-    from stability_radius.workflows import _expand_h_reduced_to_full
+    from stability_radius.workflows import expand_h_reduced_to_full
 
     net, slack_bus = _make_3bus_meshed_net()
     _run_pp_pf(net, init="flat")
@@ -273,13 +273,13 @@ def test_h_vector_with_q_perturbation() -> None:
 
     h_vecs_raw = ac_results.pop("_h_vectors")
     slack_pos = bus_ids.index(slack_bus)
-    h_from_full = _expand_h_reduced_to_full(
+    h_from_full = expand_h_reduced_to_full(
         h_vecs_raw["h_from"],
         n_bus=n_bus,
         slack_pos=slack_pos,
         pq_mask=h_vecs_raw.get("pq_mask"),
     )
-    h_to_full = _expand_h_reduced_to_full(
+    h_to_full = expand_h_reduced_to_full(
         h_vecs_raw["h_to"],
         n_bus=n_bus,
         slack_pos=slack_pos,
@@ -417,7 +417,7 @@ def test_h_vector_fd_with_shunts_and_charging() -> None:
         solve_ac_pf_base_point_from_pandapower,
     )
     from stability_radius.radii.ac_l2 import compute_ac_l2_radius
-    from stability_radius.workflows import _expand_h_reduced_to_full
+    from stability_radius.workflows import expand_h_reduced_to_full
 
     net_raw, slack_bus = _make_5bus_with_shunts_and_charging()
 
@@ -450,13 +450,13 @@ def test_h_vector_fd_with_shunts_and_charging() -> None:
 
     h_vecs_raw = ac_results.pop("_h_vectors")
     slack_pos = bus_ids.index(slack_bus)
-    h_from_full = _expand_h_reduced_to_full(
+    h_from_full = expand_h_reduced_to_full(
         h_vecs_raw["h_from"],
         n_bus=n_bus,
         slack_pos=slack_pos,
         pq_mask=h_vecs_raw.get("pq_mask"),
     )
-    h_to_full = _expand_h_reduced_to_full(
+    h_to_full = expand_h_reduced_to_full(
         h_vecs_raw["h_to"],
         n_bus=n_bus,
         slack_pos=slack_pos,
@@ -602,7 +602,7 @@ def test_h_vector_fd_with_pv_buses() -> None:
         solve_ac_pf_base_point_from_pandapower,
     )
     from stability_radius.radii.ac_l2 import compute_ac_l2_radius
-    from stability_radius.workflows import _expand_h_reduced_to_full
+    from stability_radius.workflows import expand_h_reduced_to_full
 
     net, slack_bus = _make_4bus_with_pv()
 
@@ -627,13 +627,13 @@ def test_h_vector_fd_with_pv_buses() -> None:
 
     h_vecs_raw = ac_results.pop("_h_vectors")
     slack_pos = bus_ids.index(slack_bus)
-    h_from_full = _expand_h_reduced_to_full(
+    h_from_full = expand_h_reduced_to_full(
         h_vecs_raw["h_from"],
         n_bus=n_bus,
         slack_pos=slack_pos,
         pq_mask=h_vecs_raw.get("pq_mask"),
     )
-    h_to_full = _expand_h_reduced_to_full(
+    h_to_full = expand_h_reduced_to_full(
         h_vecs_raw["h_to"],
         n_bus=n_bus,
         slack_pos=slack_pos,

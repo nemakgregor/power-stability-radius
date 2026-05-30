@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Sequence
 
 import numpy as np
@@ -12,6 +13,82 @@ from stability_radius.config import DEFAULT_OPF, OPFConfig
 logger = logging.getLogger(__name__)
 
 _RATING_ZERO_EPS = 1e-12
+
+
+class ConstraintStatus(str, Enum):
+    """Per-constraint certificate status used in result rows."""
+
+    OK_FINITE = "ok_finite"
+    OK_INFINITE = "ok_infinite"
+    BASE_INFEASIBLE = "base_infeasible"
+    DEGENERATE_SENSITIVITY = "degenerate_sensitivity"
+    UNCONSTRAINED_LIMIT = "unconstrained_limit"
+    PF_FAILED = "pf_failed"
+    JACOBIAN_SINGULAR = "jacobian_singular"
+    NONLINEAR_UNVALIDATED = "nonlinear_unvalidated"
+    NONLINEAR_OPTIMISTIC = "nonlinear_optimistic"
+    POST_CONTINGENCY_INFEASIBLE = "post_contingency_infeasible"
+    NONDIFFERENTIABLE_APPARENT_POWER = "nondifferentiable_apparent_power"
+
+
+def classify_constraint_certificate(
+    *,
+    margin: float,
+    dual_norm: float,
+    eps: float,
+    is_unconstrained: bool = False,
+) -> tuple[str, float, float]:
+    """
+    Classify one affine thermal constraint and return nonnegative radius fields.
+
+    Returns
+    -------
+    (status, certificate_radius, signed_distance)
+        ``certificate_radius`` is never negative. ``signed_distance`` preserves
+        the signed margin/dual-norm distance for diagnostics and sorting.
+    """
+    margin_f = float(margin)
+    norm_f = float(dual_norm)
+    eps_f = float(eps)
+
+    if bool(is_unconstrained):
+        return (
+            ConstraintStatus.UNCONSTRAINED_LIMIT.value,
+            float("inf"),
+            float("inf"),
+        )
+
+    if not math.isfinite(margin_f) or not math.isfinite(norm_f) or norm_f < 0.0:
+        return (
+            ConstraintStatus.DEGENERATE_SENSITIVITY.value,
+            float("nan"),
+            float("nan"),
+        )
+
+    if margin_f < 0.0:
+        signed = margin_f / norm_f if norm_f > eps_f else float("-inf")
+        return ConstraintStatus.BASE_INFEASIBLE.value, 0.0, float(signed)
+
+    if norm_f <= eps_f:
+        return ConstraintStatus.OK_INFINITE.value, float("inf"), float("inf")
+
+    radius = margin_f / norm_f
+    return ConstraintStatus.OK_FINITE.value, float(max(radius, 0.0)), float(radius)
+
+
+def signed_radius_from_margin_norm(
+    *, margin: float, dual_norm: float, eps: float
+) -> float:
+    """Return the signed diagnostic radius using the same finite checks as certificates."""
+    margin_f = float(margin)
+    norm_f = float(dual_norm)
+    eps_f = float(eps)
+
+    if not math.isfinite(margin_f) or not math.isfinite(norm_f) or norm_f < 0.0:
+        return float("nan")
+    if norm_f > eps_f:
+        return float(margin_f / norm_f)
+    return float("inf") if margin_f >= 0.0 else float("-inf")
 
 
 @dataclass(frozen=True)
@@ -170,14 +247,16 @@ def assert_line_limit_sources_present(net: object) -> None:
     raise ValueError(
         "Missing line thermal rating sources after loading the network. "
         "Expected either MATPOWER ratings on net.line "
-        "(rateA/rate_a_mva/sn_mva/max_mva) or a fallback based on "
+        "(rateA/rate_a_mva/sn_mva/max_mva) or a current-based rating from "
         "(net.line.max_i_ka + net.bus.vn_kv). "
         f"Available net.line columns={line_cols!r}, net.bus columns={bus_cols!r}. "
         "This indicates a parser/converter issue; fix stability_radius.parsers.matpower."
     )
 
 
-def _resolve_unconstrained_fallback_mva(fallback_mva: float | None) -> float:
+def _resolve_unconstrained_surrogate_mva(
+    unconstrained_surrogate_mva: float | None,
+) -> float:
     """
     Return a deterministic, *finite* surrogate limit used for unconstrained lines.
 
@@ -190,13 +269,13 @@ def _resolve_unconstrained_fallback_mva(fallback_mva: float | None) -> float:
     """
     v = (
         float(DEFAULT_OPF.unconstrained_line_nom_mw)
-        if fallback_mva is None
-        else float(fallback_mva)
+        if unconstrained_surrogate_mva is None
+        else float(unconstrained_surrogate_mva)
     )
     if (not math.isfinite(v)) or v <= 0.0:
         raise ValueError(
-            "fallback_mva must be finite and >0. "
-            f"Got fallback_mva={fallback_mva!r} -> resolved={v!r}"
+            "unconstrained_surrogate_mva must be finite and >0. "
+            f"Got unconstrained_surrogate_mva={unconstrained_surrogate_mva!r} -> resolved={v!r}"
         )
     return float(v)
 
@@ -205,7 +284,7 @@ def estimate_line_limit_mva_with_flag(
     net: Any,
     line_row: Any,
     *,
-    fallback_mva: float | None = None,
+    unconstrained_surrogate_mva: float | None = None,
 ) -> tuple[float, bool]:
     """
     Extract a line thermal limit in MVA and return (limit_mva, is_unconstrained).
@@ -228,14 +307,14 @@ def estimate_line_limit_mva_with_flag(
         pandapower net.
     line_row:
         A net.line row (pandas Series-like).
-    fallback_mva:
+    unconstrained_surrogate_mva:
         Optional finite surrogate (default: DEFAULT_OPF.unconstrained_line_nom_mw).
 
     Returns
     -------
     (limit_mva, is_unconstrained)
     """
-    fallback = _resolve_unconstrained_fallback_mva(fallback_mva)
+    surrogate = _resolve_unconstrained_surrogate_mva(unconstrained_surrogate_mva)
 
     try:
         max_loading_percent = float(line_row.get("max_loading_percent", 100.0))
@@ -245,16 +324,17 @@ def estimate_line_limit_mva_with_flag(
         max_loading_percent = 100.0
     mult = float(max_loading_percent) / 100.0
 
-    def _fallback(reason: str) -> tuple[float, bool]:
+    def _unconstrained_surrogate(reason: str) -> tuple[float, bool]:
         # DEBUG only: can be many lines in large cases.
+        """Internal helper for module-local processing."""
         logger.debug(
-            "Line %s: unconstrained (%s) -> using fallback limit=%.6g MVA (mult=%.6g)",
+            "Line %s: unconstrained (%s) -> using surrogate limit=%.6g MVA (mult=%.6g)",
             _line_row_id(line_row),
             reason,
-            float(fallback) * float(mult),
+            float(surrogate) * float(mult),
             float(mult),
         )
-        return float(fallback) * float(mult), True
+        return float(surrogate) * float(mult), True
 
     # Prefer explicit columns (MATPOWER/PGLib convention).
     for k in ("rateA", "rate_a_mva", "sn_mva", "max_mva"):
@@ -280,7 +360,7 @@ def estimate_line_limit_mva_with_flag(
 
         # Unconstrained semantics: v in {0, NaN, +inf}.
         if (not math.isfinite(v)) or abs(v) <= _RATING_ZERO_EPS:
-            return _fallback(f"{k}={v!r}")
+            return _unconstrained_surrogate(f"{k}={v!r}")
 
         return float(v) * float(mult), False
 
@@ -303,7 +383,7 @@ def estimate_line_limit_mva_with_flag(
             )
 
         if (not math.isfinite(i_ka)) or abs(i_ka) <= _RATING_ZERO_EPS:
-            return _fallback(f"max_i_ka={i_ka!r}")
+            return _unconstrained_surrogate(f"max_i_ka={i_ka!r}")
 
         fb = int(line_row.get("from_bus", -1))
         vn_kv = _bus_vn_kv(net, fb)
@@ -337,7 +417,7 @@ def estimate_line_limit_mva(
     net: Any,
     line_row: Any,
     *,
-    fallback_mva: float | None = None,
+    unconstrained_surrogate_mva: float | None = None,
 ) -> float:
     """
     Extract a line thermal limit in MVA using explicit case / converted data.
@@ -347,9 +427,20 @@ def estimate_line_limit_mva(
     estimate_line_limit_mva_with_flag : returns (limit_mva, is_unconstrained).
     """
     limit, _is_unconstrained = estimate_line_limit_mva_with_flag(
-        net, line_row, fallback_mva=fallback_mva
+        net,
+        line_row,
+        unconstrained_surrogate_mva=unconstrained_surrogate_mva,
     )
     return float(limit)
+
+
+def sorted_line_limits_mva(net: Any) -> tuple[list[int], np.ndarray]:
+    """Return sorted pandapower line ids and their MVA thermal limits."""
+    line_ids = [int(x) for x in sorted(net.line.index)]
+    limits = np.empty(len(line_ids), dtype=float)
+    for pos, lid in enumerate(line_ids):
+        limits[pos] = float(estimate_line_limit_mva(net, net.line.loc[lid]))
+    return line_ids, limits
 
 
 def get_line_base_quantities(
@@ -387,7 +478,7 @@ def get_line_base_quantities(
         else [int(x) for x in line_indices]
     )
 
-    fallback_mva = float(
+    unconstrained_surrogate_mva = float(
         getattr(cfg, "unconstrained_line_nom_mw", DEFAULT_OPF.unconstrained_line_nom_mw)
     )
     limits_mva = np.empty(len(idx), dtype=float)
@@ -395,7 +486,9 @@ def get_line_base_quantities(
 
     for pos, (_, line_row) in enumerate(net.line.loc[idx].iterrows()):
         s_limit_mva, is_uc = estimate_line_limit_mva_with_flag(
-            net, line_row, fallback_mva=fallback_mva
+            net,
+            line_row,
+            unconstrained_surrogate_mva=unconstrained_surrogate_mva,
         )
         limits_mva[pos] = float(s_limit_mva) * float(limit_factor)
         is_unconstrained[pos] = bool(is_uc)

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from stability_radius.config import LoggingConfig
 from pathlib import Path
+
+import pytest
+from stability_radius.config import LoggingConfig
 
 
 def test_setup_logging_creates_run_dir(tmp_path, monkeypatch):
@@ -25,8 +27,18 @@ def test_setup_logging_creates_run_dir(tmp_path, monkeypatch):
     assert (Path(run_dir) / "debug.log").exists()
 
 
-def test_create_module_output_dir_normalizes_external_output_under_runs(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize(
+    ("requested_output_dir", "expected_parts"),
+    [
+        ("analysis_output/case118_api", ("metrics_analysis", "case118_api")),
+        (
+            "run_artifacts/custom_bucket/report_outputs",
+            ("custom_bucket", "report_outputs"),
+        ),
+    ],
+)
+def test_create_module_output_dir_resolves_under_runs(
+    tmp_path, monkeypatch, requested_output_dir, expected_parts
 ):
     from stability_radius.utils import create_module_output_dir
 
@@ -34,26 +46,7 @@ def test_create_module_output_dir_normalizes_external_output_under_runs(
 
     out_dir = create_module_output_dir(
         module_name="metrics_analysis",
-        requested_output_dir="analysis_output/case118_api",
+        requested_output_dir=requested_output_dir,
     )
 
-    assert (
-        out_dir
-        == (tmp_path / "run_artifacts" / "metrics_analysis" / "case118_api").resolve()
-    )
-
-
-def test_create_module_output_dir_preserves_explicit_runs_path(tmp_path, monkeypatch):
-    from stability_radius.utils import create_module_output_dir
-
-    monkeypatch.chdir(tmp_path)
-
-    out_dir = create_module_output_dir(
-        module_name="metrics_analysis",
-        requested_output_dir="run_artifacts/custom_bucket/report_outputs",
-    )
-
-    assert (
-        out_dir
-        == (tmp_path / "run_artifacts" / "custom_bucket" / "report_outputs").resolve()
-    )
+    assert out_dir == (tmp_path / "run_artifacts" / Path(*expected_parts)).resolve()

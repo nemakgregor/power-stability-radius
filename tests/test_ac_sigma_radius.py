@@ -5,7 +5,11 @@ import math
 import numpy as np
 import pytest
 
-from stability_radius.radii.ac_sigma_radius import compute_ac_sigma_radius
+from stability_radius.radii.ac_sigma_radius import (
+    compute_ac_sigma_radius,
+    overload_probability_one_sided_limit,
+    overload_probability_two_sided_signed,
+)
 
 
 def test_ac_sigma_radius_matches_margin_over_sigma_flow_synthetic_3bus() -> None:
@@ -87,3 +91,85 @@ def test_ac_sigma_radius_matches_margin_over_sigma_flow_synthetic_3bus() -> None
 
     prob = float(row["overload_probability_ac"])
     assert 0.0 <= prob <= 1.0
+    assert row["constraint_status_ac_sigma"] == "ok_finite"
+    assert float(row["certificate_radius_ac_sigma"]) == pytest.approx(
+        expected_r, rel=0.0, abs=1e-12
+    )
+
+
+def test_ac_overload_probability_is_one_sided_for_apparent_power() -> None:
+    y0 = 90.0
+    limit = 100.0
+    sigma = 50.0
+
+    one_sided = overload_probability_one_sided_limit(y0=y0, limit=limit, sigma=sigma)
+    two_sided = overload_probability_two_sided_signed(
+        flow0=y0, limit=limit, sigma=sigma
+    )
+
+    expected = 0.5 * math.erfc(((limit - y0) / sigma) / math.sqrt(2.0))
+    assert one_sided == pytest.approx(expected, rel=0.0, abs=1e-15)
+    assert two_sided > one_sided
+
+
+def test_ac_sigma_negative_margin_exports_nonnegative_certificate_radius() -> None:
+    h = np.array([[1.0, -1.0, 0.5, -0.5]], dtype=float)
+    sigma = np.array([1.0, 1.0], dtype=float)
+
+    res = compute_ac_sigma_radius(
+        h_vectors=h,
+        s_limit_mva=np.array([80.0]),
+        s0_mva=np.array([90.0]),
+        sigma_p_mw=sigma,
+        sigma_q_mvar=sigma,
+        balance=True,
+    )
+
+    row = res["line_0"]
+    assert float(row["radius_ac_sigma"]) < 0.0  # signed diagnostic field
+    assert row["constraint_status_ac_sigma"] == "base_infeasible"
+    assert float(row["certificate_radius_ac_sigma"]) == 0.0
+    assert float(row["signed_distance_ac_sigma"]) < 0.0
+    assert np.allclose(np.asarray(row["worst_case_dp_mw"], dtype=float), 0.0)
+    assert np.allclose(np.asarray(row["worst_case_dq_mvar"], dtype=float), 0.0)
+    assert float(row["worst_case_s_predicted_mva"]) == pytest.approx(90.0)
+
+
+def test_ac_sigma_rejects_nonfinite_h_vectors() -> None:
+    h = np.array([[1.0, float("nan"), 0.5, -0.5]], dtype=float)
+    sigma = np.array([1.0, 1.0], dtype=float)
+
+    with pytest.raises(ValueError, match="h_vectors must be finite"):
+        compute_ac_sigma_radius(
+            h_vectors=h,
+            s_limit_mva=np.array([100.0]),
+            s0_mva=np.array([90.0]),
+            sigma_p_mw=sigma,
+            sigma_q_mvar=sigma,
+            balance=True,
+        )
+
+
+def test_ac_sigma_pq_mask_excludes_pv_and_slack_q_coordinates() -> None:
+    hP = np.zeros(4, dtype=float)
+    hQ = np.array([1000.0, 1.0, -1.0, 1000.0], dtype=float)
+    h = np.concatenate([hP, hQ])[None, :]
+    sigma = np.ones(4, dtype=float)
+    pq_mask = np.array([False, True, True, False])
+
+    res = compute_ac_sigma_radius(
+        h_vectors=h,
+        s_limit_mva=np.array([100.0]),
+        s0_mva=np.array([90.0]),
+        sigma_p_mw=sigma,
+        sigma_q_mvar=sigma,
+        balance=True,
+        pq_mask=pq_mask,
+    )
+
+    row = res["line_0"]
+    assert float(row["sigma_flow_mva"]) == pytest.approx(math.sqrt(2.0))
+    dq = np.asarray(row["worst_case_dq_mvar"], dtype=float)
+    assert dq[0] == pytest.approx(0.0)
+    assert dq[3] == pytest.approx(0.0)
+    assert float(np.sum(dq[pq_mask])) == pytest.approx(0.0, abs=1e-12)

@@ -35,6 +35,7 @@ def _resolve_slack_bus_id(*, bus_ids: list[int], slack_bus: int) -> int:
 
 
 def _is_in_service(row: Any) -> bool:
+    """Internal helper for module-local processing."""
     return bool(row.get("in_service", True))
 
 

@@ -107,3 +107,57 @@ def test_compute_l2_radius_validates_limit_factor():
 
     with pytest.raises(ValueError):
         compute_l2_radius(net, H, limit_factor=0.0)
+
+
+def test_compute_l2_zero_norm_negative_margin_is_base_infeasible():
+    from stability_radius.radii.common import LineBaseQuantities
+    from stability_radius.radii.l2 import compute_l2_radius
+
+    net, _ = _make_small_net()
+    H = np.zeros((len(net.line), len(net.bus)))
+    line_id = int(sorted(net.line.index)[0])
+    base = LineBaseQuantities(
+        line_indices=[line_id],
+        flow0_mw=np.array([105.0]),
+        p0_abs_mw=np.array([105.0]),
+        limit_mva_assumed_mw=np.array([100.0]),
+        margin_mw=np.array([-5.0]),
+        is_unconstrained=np.array([False]),
+        opf_status="test",
+        opf_objective=0.0,
+    )
+
+    res = compute_l2_radius(net, H, limit_factor=1.0, base=base)
+    row = res[f"line_{line_id}"]
+
+    assert row["radius_l2"] == float("-inf")
+    assert row["constraint_status_l2"] == "base_infeasible"
+    assert row["certificate_radius_l2"] == 0.0
+    assert row["signed_distance_l2"] == float("-inf")
+
+
+def test_compute_l2_nonfinite_norm_keeps_raw_radius_nan():
+    from stability_radius.radii.common import LineBaseQuantities
+    from stability_radius.radii.l2 import compute_l2_radius
+
+    net, _ = _make_small_net()
+    H = np.array([[float("nan"), 0.0]])
+    line_id = int(sorted(net.line.index)[0])
+    base = LineBaseQuantities(
+        line_indices=[line_id],
+        flow0_mw=np.array([10.0]),
+        p0_abs_mw=np.array([10.0]),
+        limit_mva_assumed_mw=np.array([100.0]),
+        margin_mw=np.array([90.0]),
+        is_unconstrained=np.array([False]),
+        opf_status="test",
+        opf_objective=0.0,
+    )
+
+    res = compute_l2_radius(net, H, limit_factor=1.0, base=base)
+    row = res[f"line_{line_id}"]
+
+    assert math.isnan(float(row["radius_l2"]))
+    assert row["constraint_status_l2"] == "degenerate_sensitivity"
+    assert math.isnan(float(row["certificate_radius_l2"]))
+    assert math.isnan(float(row["signed_distance_l2"]))

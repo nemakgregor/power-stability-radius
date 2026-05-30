@@ -92,6 +92,10 @@ Both the "from" and "to" ends of each line are evaluated; the binding end
 
 With `balance=True` (default), the h-vector is projected onto the
 kernel of the all-ones vector (enforcing `sum(dP) = 0` and `sum(dQ) = 0`).
+If the binding base apparent power is near zero, the gradient of `|S|` is
+nondifferentiable; `radius_ac_l2` is then retained as a signed diagnostic
+distance, but `certificate_radius_ac_l2` is zero and the status is
+`nondifferentiable_apparent_power`.
 
 **Interpretation:** The smallest L2-norm perturbation `(dP, dQ)` that
 causes line *l* to reach its thermal limit has norm exactly `r_l`.
@@ -117,6 +121,11 @@ sigma_flow_l = || diag(sigma) * h_l ||_2
                    + sum_j (sigma_Q_j * h_l^Q_j)^2 )
 ```
 
+When AC balancing is enabled, the P block is projected with sigma-squared
+weights. The Q block is projected only over PQ-bus coordinates; PV and slack
+Q entries are excluded because they are not independent coordinates in the
+reduced AC Jacobian.
+
 **Interpretation:** The number of standard deviations of flow
 fluctuation that fit within the thermal margin.  `r_sigma = 2` means
 the margin is 2 sigma wide.
@@ -134,6 +143,9 @@ r_l^M = margin_l / sqrt( h_l^T  M^{-1}  h_l )
 ```
 
 where `M` is a user-supplied symmetric positive-definite weight matrix.
+With balanced constraints, the denominator uses the constrained dual matrix
+`M^{-1} - M^{-1}C^T(CM^{-1}C^T)^+CM^{-1}`. For diagonal `M`, this is
+equivalent to `M^{-1}`-weighted mean removal on each active balance block.
 Special cases:
 
 - `M = I` reduces to the L2 radius.
@@ -154,19 +166,19 @@ which are already computed by the sigma-radius module.
 
 ### 3.1 Analytic Overload Probability (`overload_probability_ac`)
 
-**Source:** `radii.ac_sigma_radius:_overload_probability_symmetric_limit`
+**Source:** `radii.ac_sigma_radius:overload_probability_one_sided_limit`
 
 **Formula (Gaussian Q-function):**
 
 ```
-P(|S_l| > c_l) = Q( (c_l - |S_0_l|) / sigma_flow_l )
-               + Q( (c_l + |S_0_l|) / sigma_flow_l )
+P(|S_0_l| + X_l > c_l) = Q( (c_l - |S_0_l|) / sigma_flow_l )
 ```
 
 where `Q(x) = 0.5 * erfc(x / sqrt(2))`.
 
-The first term dominates; the second term accounts for the (rare)
-possibility of flow reversal past `-c_l`.
+This is one-sided because AC apparent power has the magnitude constraint
+`|S| <= c`; the signed two-sided tail is only appropriate for signed flow
+models such as DC `|F| <= c`.
 
 **Relationship to sigma-radius:** The argument of the dominant Q-term
 is exactly `r_sigma_l`.  Therefore `overload_probability_ac` is a

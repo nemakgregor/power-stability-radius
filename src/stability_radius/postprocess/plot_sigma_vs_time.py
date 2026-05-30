@@ -18,6 +18,10 @@ import logging
 from pathlib import Path
 from typing import Sequence
 
+import matplotlib
+
+matplotlib.use("Agg")
+
 import matplotlib.pyplot as plt
 import numpy as np
 from stability_radius.utils import (
@@ -35,6 +39,7 @@ _DEFAULT_SCALABILITY = (
 
 
 def _load_json(path: Path) -> dict | list:
+    """Internal helper for module-local processing."""
     with path.open(encoding="utf-8") as fh:
         return json.load(fh)
 
@@ -44,6 +49,7 @@ def plot(
     scalability_path: Path | None,
     output_dir: Path,
 ) -> None:
+    """Execute the documented operation."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Load sigma-radius results.
@@ -134,6 +140,7 @@ def plot(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """Run the command-line entry point."""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",

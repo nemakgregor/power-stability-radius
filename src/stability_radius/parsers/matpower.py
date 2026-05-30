@@ -136,8 +136,9 @@ def _attach_matpower_rateA_to_net_lines(*, ppc: dict[str, Any], net: Any) -> Non
     We treat PPC branches with TAP == 0 (or NaN) as "lines" (no transformer).
     These are mapped in-order to net.line entries (also in-order by index).
 
-    If counts mismatch, we log a warning and do NOT attach values (fallback remains max_i_ka-based
-    if available, otherwise radii pipeline will fail with an explicit error).
+    If counts mismatch, we log a warning and do NOT attach values. Downstream
+    limit extraction may still use current-based ratings when present;
+    otherwise the radii pipeline fails with an explicit error.
     """
     if not hasattr(net, "line") or net.line is None or len(net.line) == 0:
         return
@@ -181,7 +182,7 @@ def load_network(file_path: str | Path, f_hz: float = 50.0):
     --------------------
     - Uses the internal deterministic `.m` parser from this repository.
     - Converts PPC -> pandapower via pandapower's pypower converter.
-    - No optional fallbacks.
+    - No alternate parser path.
 
     Post-processing (important)
     ---------------------------

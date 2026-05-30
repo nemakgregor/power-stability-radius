@@ -22,8 +22,8 @@ Robustness knobs (explicit, deterministic)
 - solver: "pypsa" | "pandapower"
 - init:   "flat" | "dc" | "pp"
 
-Correctness policy (no solver fallback)
----------------------------------------
+Correctness policy (no solver substitution)
+-------------------------------------------
 init="pp" means: run pandapower.runpp first and use it as an explicit initial guess
 (for PyPSA PF).
 
@@ -52,6 +52,7 @@ import numpy as np
 from stability_radius.base_point.pandapower_tools import (
     apply_gen_dispatch_to_pandapower_net,
     apply_lossless_policy_to_pandapower_net,
+    detect_q_limit_events,
     ensure_ext_grid_at_slack,
     resolve_slack_bus_id,
 )
@@ -92,12 +93,14 @@ class PyPSAAPFResult:
     line_q1_mvar: np.ndarray  # (m_line,)
 
     status: str
-    pf_attempt: str = "primary"  # "primary" | "alt_init" | "relaxed"
+    pf_attempt: str = "primary"
     pf_repairs: list[str] | None = None  # list of repair actions applied
     distributed_slack_requested: bool = False
     distributed_slack_used: bool = False
     bus_p_mw: np.ndarray | None = None  # (n_bus,) net P injection per bus from AC PF
     bus_q_mvar: np.ndarray | None = None  # (n_bus,) net Q injection per bus from AC PF
+    q_limit_hit: bool = False
+    q_limit_events: tuple[dict[str, Any], ...] = ()
     opp_gen_dispatch: dict[str, float] | None = None  # gen_id -> P_mw from OPP
     opp_vm_pu: dict[int, float] | None = None  # bus_id -> Vm from OPP
 
@@ -325,8 +328,8 @@ def _solve_ac_pf_with_pandapower(
 
     max_iter = 300
 
-    # Track which solver attempt succeeded for repair metadata.
-    pf_attempt: str = "primary"  # "primary" | "alt_init" | "relaxed"
+    # Track the primary solve for reproducibility metadata.
+    pf_attempt: str = "primary"
     pf_repairs: list[str] = []
     distributed_slack_requested = bool(distributed_slack)
 
@@ -364,7 +367,7 @@ def _solve_ac_pf_with_pandapower(
 
     try:
         logger.info(
-            "pp.runpp attempt 1/3 (primary): init='%s' max_iter=%d distributed_slack=%s",
+            "pp.runpp primary solve: init='%s' max_iter=%d distributed_slack=%s",
             init_eff,
             max_iter,
             bool(distributed_slack),
@@ -372,92 +375,17 @@ def _solve_ac_pf_with_pandapower(
         t_pf = _time.perf_counter()
         pp.runpp(nn, **runpp_kwargs)
         logger.info(
-            "pp.runpp attempt 1/3 (primary) completed in %.2f sec",
+            "pp.runpp primary solve completed in %.2f sec",
             _time.perf_counter() - t_pf,
         )
-    except Exception as e_first:
+    except Exception as exc:
         elapsed_pf = _time.perf_counter() - t_pf
-        logger.warning(
-            "pp.runpp attempt 1/3 (primary) FAILED after %.2f sec with init='%s': %s",
+        logger.exception(
+            "pp.runpp primary solve failed after %.2f sec with init='%s'.",
             elapsed_pf,
             init_eff,
-            e_first,
         )
-        # Retry with the opposite initialisation strategy.
-        alt_init = "dc" if init_eff == "flat" else "flat"
-        logger.warning(
-            "pandapower.runpp failed with init='%s', retrying with init='%s' (%d iterations)",
-            init_eff,
-            alt_init,
-            max_iter,
-        )
-        runpp_kwargs["init"] = alt_init
-        try:
-            logger.info(
-                "pp.runpp attempt 2/3 (alt_init): init='%s' max_iter=%d",
-                alt_init,
-                max_iter,
-            )
-            t_pf2 = _time.perf_counter()
-            pp.runpp(nn, **runpp_kwargs)
-            logger.info(
-                "pp.runpp attempt 2/3 (alt_init) completed in %.2f sec",
-                _time.perf_counter() - t_pf2,
-            )
-            pf_attempt = "alt_init"
-            pf_repairs.append(f"init_changed_to_{alt_init}")
-        except Exception as e_alt:
-            elapsed_pf2 = _time.perf_counter() - t_pf2
-            logger.warning(
-                "pp.runpp attempt 2/3 (alt_init) FAILED after %.2f sec: %s",
-                elapsed_pf2,
-                e_alt,
-            )
-            # Final fallback: relax settings (no Q limits, no distributed slack).
-            logger.warning(
-                "pandapower.runpp failed with both init strategies; "
-                "retrying with relaxed settings (enforce_q_lims=False, "
-                "distributed_slack=False, init='flat', max_iteration=%d)",
-                max_iter,
-            )
-            relaxed_kwargs: dict[str, Any] = dict(
-                calculate_voltage_angles=True,
-                enforce_q_lims=False,
-                init="flat",
-                max_iteration=max_iter,
-                trafo_model=str(trafo_model_eff),
-            )
-            try:
-                logger.info(
-                    "pp.runpp attempt 3/3 (relaxed): init='flat' max_iter=%d "
-                    "enforce_q_lims=False distributed_slack=False",
-                    max_iter,
-                )
-                t_pf3 = _time.perf_counter()
-                pp.runpp(nn, **relaxed_kwargs)
-                logger.info(
-                    "pp.runpp attempt 3/3 (relaxed) completed in %.2f sec",
-                    _time.perf_counter() - t_pf3,
-                )
-                pf_attempt = "relaxed"
-                distributed_slack_used = False
-                pf_repairs.extend(
-                    [
-                        "enforce_q_lims_disabled",
-                        "distributed_slack_disabled",
-                        "init_flat",
-                    ]
-                )
-            except Exception as e_relaxed:
-                elapsed_pf3 = _time.perf_counter() - t_pf3
-                logger.exception(
-                    "pp.runpp attempt 3/3 (relaxed) FAILED after %.2f sec: %s",
-                    elapsed_pf3,
-                    e_relaxed,
-                )
-                raise RuntimeError(
-                    "pandapower.runpp failed (all 3 attempts exhausted)."
-                ) from e_relaxed
+        raise RuntimeError("pandapower.runpp failed in primary solve.") from exc
 
     converged = bool(getattr(nn, "converged", True))
     if not converged:
@@ -490,6 +418,14 @@ def _solve_ac_pf_with_pandapower(
 
     if not hasattr(nn, "res_line") or nn.res_line is None or len(nn.res_line) == 0:
         raise RuntimeError("pandapower did not produce res_line results.")
+
+    q_limit_events = detect_q_limit_events(nn)
+    if q_limit_events:
+        logger.warning(
+            "pandapower AC PF solved with %d generator reactive limit event(s); "
+            "fixed-PV/PQ AC linearization is diagnostic-only for this active set.",
+            int(len(q_limit_events)),
+        )
 
     idx = [int(x) for x in line_indices]
     p0 = np.zeros(len(idx), dtype=float)
@@ -539,6 +475,8 @@ def _solve_ac_pf_with_pandapower(
         distributed_slack_used=bool(distributed_slack_used),
         bus_p_mw=bus_p_mw_arr,
         bus_q_mvar=bus_q_mvar_arr,
+        q_limit_hit=bool(q_limit_events),
+        q_limit_events=tuple(q_limit_events),
     )
 
 

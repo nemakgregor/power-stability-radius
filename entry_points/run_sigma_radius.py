@@ -65,9 +65,13 @@ from stability_radius.verification.verify_worst_case import (
     find_violation_scale,
     verify_worst_case,
 )
+from stability_radius.verification.sampling import (
+    sample_balanced_gaussian_sigma,
+    sigma_inverse_norm,
+)
 from stability_radius.workflows import (
-    _expand_h_reduced_to_full,
-    _extract_binding_end_data,
+    expand_h_reduced_to_full,
+    extract_binding_end_data,
 )
 
 logger = logging.getLogger(__name__)
@@ -87,11 +91,13 @@ _SIGMA_FLOOR = 1e-6
 
 
 def _load_config(path: Path) -> dict:
+    """Internal helper for module-local processing."""
     with path.open(encoding="utf-8") as fh:
         return yaml.safe_load(fh)
 
 
 def _clamp_sigma(sigma: np.ndarray, floor: float = _SIGMA_FLOOR) -> np.ndarray:
+    """Internal helper for module-local processing."""
     out = sigma.copy()
     out[out < floor] = floor
     return out
@@ -259,20 +265,20 @@ def _compute_at_average_point(
     slack_bus_id = resolve_slack_bus_id(net, slack_bus)
     slack_pos = bus_ids.index(slack_bus_id)
 
-    h_from = _expand_h_reduced_to_full(
+    h_from = expand_h_reduced_to_full(
         h_vecs_raw["h_from"],
         n_bus=n_bus,
         slack_pos=slack_pos,
         pq_mask=h_vecs_raw.get("pq_mask"),
     )
-    h_to = _expand_h_reduced_to_full(
+    h_to = expand_h_reduced_to_full(
         h_vecs_raw["h_to"],
         n_bus=n_bus,
         slack_pos=slack_pos,
         pq_mask=h_vecs_raw.get("pq_mask"),
     )
 
-    h_bind, s0_mva, s_limit_mva, line_ids = _extract_binding_end_data(
+    h_bind, s0_mva, s_limit_mva, line_ids = extract_binding_end_data(
         ac_results=ac_l2,
         h_from=h_from,
         h_to=h_to,
@@ -938,11 +944,6 @@ def _run_tightened_limit_mc(
 
     import pandapower as pp
 
-    from stability_radius.verification.ac_monte_carlo_sigma import (
-        _sample_gaussian_sigma,
-        _sigma_inv_norm,
-    )
-
     sig_p = np.asarray(sigma_p_mw, dtype=float)
     sig_q = np.asarray(sigma_q_mvar, dtype=float)
 
@@ -1003,7 +1004,7 @@ def _run_tightened_limit_mc(
     s0_pf = math.sqrt(p0**2 + q0**2)
 
     rng_pilot = np.random.default_rng(int(seed) + 99999)
-    dp_pilot, dq_pilot = _sample_gaussian_sigma(
+    dp_pilot, dq_pilot = sample_balanced_gaussian_sigma(
         rng=rng_pilot,
         n=n_pilot,
         sigma_p=sig_p,
@@ -1058,19 +1059,19 @@ def _run_tightened_limit_mc(
 
     # Analytical prediction (using empirical sigma)
     from stability_radius.radii.ac_sigma_radius import (
-        _overload_probability_symmetric_limit,
+        overload_probability_one_sided_limit,
     )
 
-    analytical_prob_empirical = _overload_probability_symmetric_limit(
-        s0_mva=s0_pf,
-        c_mva=tight_limit,
-        sigma_mva=sigma_flow_empirical,
+    analytical_prob_empirical = overload_probability_one_sided_limit(
+        y0=s0_pf,
+        limit=tight_limit,
+        sigma=sigma_flow_empirical,
     )
     # Also compute with analytical sigma for comparison
-    analytical_prob_analytical = _overload_probability_symmetric_limit(
-        s0_mva=s0,
-        c_mva=tight_limit,
-        sigma_mva=sigma_flow_analytical,
+    analytical_prob_analytical = overload_probability_one_sided_limit(
+        y0=s0,
+        limit=tight_limit,
+        sigma=sigma_flow_analytical,
     )
 
     logger.info(
@@ -1120,7 +1121,7 @@ def _run_tightened_limit_mc(
         return None
 
     rng_main = np.random.default_rng(int(seed) + 12345)
-    dp_all, dq_all = _sample_gaussian_sigma(
+    dp_all, dq_all = sample_balanced_gaussian_sigma(
         rng=rng_main,
         n=n_samples,
         sigma_p=sig_p,
@@ -1129,7 +1130,7 @@ def _run_tightened_limit_mc(
 
     inv_sig_p = 1.0 / sig_p
     inv_sig_q = 1.0 / sig_q
-    sigma_norms = _sigma_inv_norm(dp_all, dq_all, inv_sig_p, inv_sig_q)
+    sigma_norms = sigma_inverse_norm(dp_all, dq_all, inv_sig_p, inv_sig_q)
     inside_ball = sigma_norms <= float(target_r_sigma)
 
     n_violations = 0
@@ -1836,6 +1837,7 @@ def _plot_topology(
 
 
 def run(config_path: Path) -> None:
+    """Run the configured workflow."""
     cfg = _load_config(config_path)
     case_cfg = cfg["case"]
     compute_cfg = cfg.get("compute", {})
@@ -2246,6 +2248,7 @@ def run(config_path: Path) -> None:
 
 
 def main() -> None:
+    """Run the command-line entry point."""
     parser = argparse.ArgumentParser(
         description="Experiment 2: sigma-radius at average operating point.",
     )

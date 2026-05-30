@@ -5,6 +5,7 @@ import math
 import numpy as np
 import pytest
 
+from stability_radius.radii.ac_sigma_radius import compute_ac_sigma_radius
 from stability_radius.radii.ac_metric_radius import compute_ac_metric_radius
 
 
@@ -18,8 +19,9 @@ class TestACMetricRadiusDiagonalM:
           M = diag([2, 8, 4, 16])  (diagonal SPD)
           margin = 10 MVA
 
-        h is already balanced (sum(hP)=0, sum(hQ)=0), so balance should not
-        change the result.
+        This checks the unconstrained metric denominator.  With balance=True
+        and nonuniform M, the correct projection is M^{-1}-weighted and would
+        change even an unweighted zero-mean h-vector.
 
         h^T M^{-1} h = 1/2 + 1/8 + 0.25/4 + 0.25/16
                       = 0.5 + 0.125 + 0.0625 + 0.015625
@@ -43,7 +45,7 @@ class TestACMetricRadiusDiagonalM:
             s_limit_mva=c,
             s0_mva=s0,
             M=M_diag,
-            balance=True,
+            balance=False,
         )
         row = res["line_0"]
         assert float(row["metric_denom"]) == pytest.approx(expected_denom, abs=1e-12)
@@ -227,6 +229,66 @@ class TestACMetricRadiusValidation:
                 balance=False,
             )
 
+    def test_rejects_odd_h_vector_dimension(self) -> None:
+        h = np.array([[1.0, 2.0, 3.0]])
+        M = np.ones(3)
+        c = np.array([10.0])
+        s0 = np.array([5.0])
+
+        with pytest.raises(ValueError, match="must be even"):
+            compute_ac_metric_radius(
+                h_vectors=h,
+                s_limit_mva=c,
+                s0_mva=s0,
+                M=M,
+                balance=False,
+            )
+
+    def test_rejects_nonfinite_h_vectors(self) -> None:
+        h = np.array([[1.0, float("nan")]])
+        M = np.ones(2)
+        c = np.array([10.0])
+        s0 = np.array([5.0])
+
+        with pytest.raises(ValueError, match="h_vectors must be finite"):
+            compute_ac_metric_radius(
+                h_vectors=h,
+                s_limit_mva=c,
+                s0_mva=s0,
+                M=M,
+                balance=False,
+            )
+
+    def test_rejects_nonfinite_dense_m(self) -> None:
+        h = np.array([[1.0, 0.0]])
+        M = np.array([[1.0, float("nan")], [float("nan"), 1.0]])
+        c = np.array([10.0])
+        s0 = np.array([5.0])
+
+        with pytest.raises(ValueError, match="Dense M entries must be finite"):
+            compute_ac_metric_radius(
+                h_vectors=h,
+                s_limit_mva=c,
+                s0_mva=s0,
+                M=M,
+                balance=False,
+            )
+
+    def test_rejects_nonsymmetric_dense_m(self) -> None:
+        h = np.array([[1.0, 0.0]])
+        M = np.array([[2.0, 0.0], [0.5, 2.0]])
+        c = np.array([10.0])
+        s0 = np.array([5.0])
+
+        with pytest.raises(ValueError, match="Dense M must be symmetric"):
+            compute_ac_metric_radius(
+                h_vectors=h,
+                s_limit_mva=c,
+                s0_mva=s0,
+                M=M,
+                balance=False,
+            )
+
     def test_zero_denom_gives_inf(self) -> None:
         """When h is zero, denom is zero and radius should be +inf (margin > 0)."""
         h = np.array([[0.0, 0.0, 0.0, 0.0]])
@@ -284,3 +346,47 @@ class TestACMetricRadiusBalance:
             math.sqrt(14.0), abs=1e-12
         )
         assert float(res_bal["line_0"]["metric_denom"]) == pytest.approx(2.0, abs=1e-12)
+
+
+def test_metric_sigma_equivalence_nonuniform_sigma_with_balance_and_pq_mask() -> None:
+    rng = np.random.default_rng(1)
+    n_bus = 4
+    n_lines = 6
+    h = rng.normal(size=(n_lines, 2 * n_bus))
+    pq_mask = np.array([False, True, False, True])
+    h[:, n_bus + np.where(~pq_mask)[0]] = rng.normal(
+        loc=100.0, scale=10.0, size=(n_lines, int(np.sum(~pq_mask)))
+    )
+
+    sigma_p = np.array([1.0, 2.0, 0.5, 3.0])
+    sigma_q = np.array([1.5, 4.0, 0.75, 2.5])
+    s0 = np.linspace(10.0, 30.0, n_lines)
+    limit = s0 + np.linspace(5.0, 20.0, n_lines)
+
+    sigma = compute_ac_sigma_radius(
+        h_vectors=h,
+        s_limit_mva=limit,
+        s0_mva=s0,
+        sigma_p_mw=sigma_p,
+        sigma_q_mvar=sigma_q,
+        balance=True,
+        pq_mask=pq_mask,
+    )
+    metric = compute_ac_metric_radius(
+        h_vectors=h,
+        s_limit_mva=limit,
+        s0_mva=s0,
+        M=1.0 / np.r_[sigma_p * sigma_p, sigma_q * sigma_q],
+        balance=True,
+        pq_mask=pq_mask,
+    )
+
+    for i in range(n_lines):
+        srow = sigma[f"line_{i}"]
+        mrow = metric[f"line_{i}"]
+        assert float(mrow["metric_denom"]) == pytest.approx(
+            float(srow["sigma_flow_mva"]), rel=1e-12, abs=1e-12
+        )
+        assert float(mrow["radius_ac_metric"]) == pytest.approx(
+            float(srow["radius_ac_sigma"]), rel=1e-12, abs=1e-12
+        )
