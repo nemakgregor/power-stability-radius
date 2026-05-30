@@ -12,7 +12,6 @@ TEXT_ROOTS = (
     ROOT / "entry_points",
     ROOT / "tests",
     ROOT / "docs",
-    ROOT / ".codex" / "docs",
 )
 TEXT_FILES = (ROOT / "UNITS_CONTRACT.md",)
 TEXT_SUFFIXES = {".py", ".md", ".toml", ".yaml", ".yml"}

@@ -22,7 +22,7 @@ Run the formatting check used by CI:
 poetry run ruff format --check .
 ```
 
-Run the local design-principles audit used by the Codex agent:
+Run the local design-principles audit:
 
 ```bash
 python tools/design_principles_audit.py --root .
@@ -46,7 +46,7 @@ The suite in `tests/` includes:
   - [docs/index.md](index.md) links to the key operational docs
   - `README.md` points to the docs hub and primary CLI
   - `.github/workflows/ci.yml` still runs formatting checks and pytest
-- A Codex-facing design-principles audit in `tools/design_principles_audit.py`
+- A local design-principles audit in `tools/design_principles_audit.py`
   that reports DRY, KISS, YAGNI, and SOLID candidates for human review
 
 That last group is what keeps the entry-point inventory and CI behavior from silently drifting out of sync with the codebase.

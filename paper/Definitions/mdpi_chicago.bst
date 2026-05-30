@@ -1367,7 +1367,7 @@ MACRO {acmcs} {"ACM Computing Surveys"}
 
 MACRO {acta} {"Acta Informatica"}
 
-MACRO {ai} {"Artificial Intelligence"}
+MACRO {ai} {"Automated Intelligence"}
 
 MACRO {cacm} {"Communications of the ACM"}
 
