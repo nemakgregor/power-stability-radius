@@ -527,6 +527,9 @@ If AC sigma is computed, additional fields may include:
 - `worst_case_dq_mvar`
 - `worst_case_s_predicted_mva`
 
+`worst_case_dp_mw` and `worst_case_dq_mvar` are boundary directions only when
+`constraint_status_ac_sigma = ok_finite`; non-OK rows export zero vectors.
+
 ---
 
 ## 11. Failure Modes (CURRENT)

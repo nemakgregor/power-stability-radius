@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from tests.network_factories import make_three_bus_dispatch_net
 
 pp = pytest.importorskip("pandapower")
 pytest.importorskip("scipy")
@@ -20,59 +21,13 @@ pytest.importorskip("pandas")
 pytest.importorskip("highspy")
 
 
-def _make_3bus_net():
-    """3-bus network for ACPF testing.
-
-    Bus 0: ext_grid (slack)
-    Bus 1: gen (5 MW) + load (3 MW)
-    Bus 2: load (8 MW)
-    """
-    net = pp.create_empty_network(sn_mva=100.0)
-
-    b0 = pp.create_bus(net, vn_kv=110.0)
-    b1 = pp.create_bus(net, vn_kv=110.0)
-    b2 = pp.create_bus(net, vn_kv=110.0)
-
-    pp.create_ext_grid(net, b0, vm_pu=1.0)
-    pp.create_load(net, b1, p_mw=3.0, q_mvar=0.0)
-    pp.create_load(net, b2, p_mw=8.0, q_mvar=0.0)
-
-    pp.create_gen(
-        net,
-        b1,
-        p_mw=5.0,
-        min_p_mw=0.0,
-        max_p_mw=10.0,
-        controllable=True,
-    )
-
-    common = dict(
-        length_km=1.0,
-        r_ohm_per_km=0.01,
-        c_nf_per_km=0.0,
-        max_i_ka=10.0,
-        max_loading_percent=100.0,
-    )
-    pp.create_line_from_parameters(
-        net, from_bus=b0, to_bus=b1, x_ohm_per_km=0.10, **common
-    )
-    pp.create_line_from_parameters(
-        net, from_bus=b1, to_bus=b2, x_ohm_per_km=0.15, **common
-    )
-    pp.create_line_from_parameters(
-        net, from_bus=b0, to_bus=b2, x_ohm_per_km=0.20, **common
-    )
-
-    return net, b0
-
-
 def test_pypsa_apf_result_has_bus_p_mw() -> None:
     """AC PF with pandapower solver should populate bus_p_mw."""
     from stability_radius.base_point.pypsa_pf import (
         solve_ac_pf_base_point_from_pandapower,
     )
 
-    net, slack_bus = _make_3bus_net()
+    net, slack_bus = make_three_bus_dispatch_net(pp)
 
     result = solve_ac_pf_base_point_from_pandapower(
         net=net,
@@ -96,7 +51,7 @@ def test_base_point_ac_propagates_bus_p_mw() -> None:
     """solve_ac_pf_base_point should propagate bus_p_mw to BasePointAC."""
     from stability_radius.base_point.ac import solve_ac_pf_base_point
 
-    net, slack_bus = _make_3bus_net()
+    net, slack_bus = make_three_bus_dispatch_net(pp)
 
     bp_ac, raw = solve_ac_pf_base_point(
         net=net,
@@ -120,7 +75,7 @@ def test_build_dc_base_point_from_acpf_basic() -> None:
     """build_dc_base_point_from_acpf returns correct structure."""
     from stability_radius.base_point.dc import build_dc_base_point_from_acpf
 
-    net, slack_bus = _make_3bus_net()
+    net, slack_bus = make_three_bus_dispatch_net(pp)
 
     # Simulate AC PF bus injections (MW).
     bus_ids = [int(x) for x in sorted(net.bus.index)]
@@ -153,7 +108,7 @@ def test_acpf_slack_correction_equals_losses() -> None:
     """Slack bus loss correction should equal negative sum of input injections."""
     from stability_radius.base_point.dc import build_dc_base_point_from_acpf
 
-    net, slack_bus = _make_3bus_net()
+    net, slack_bus = make_three_bus_dispatch_net(pp)
     bus_ids = [int(x) for x in sorted(net.bus.index)]
 
     # Simulate AC PF with losses: sum = -0.3 MW (losses)
@@ -183,7 +138,7 @@ def test_acpf_non_slack_injections_preserved() -> None:
     """Non-slack bus injections must exactly match input from AC PF."""
     from stability_radius.base_point.dc import build_dc_base_point_from_acpf
 
-    net, slack_bus = _make_3bus_net()
+    net, slack_bus = make_three_bus_dispatch_net(pp)
     bus_ids = [int(x) for x in sorted(net.bus.index)]
 
     acpf_bus_p_mw = np.array([5.7, 2.0, -8.0])
@@ -212,7 +167,7 @@ def test_acpf_mode_compute_results_smoke() -> None:
     """Full integration: compute_results_for_case with base_dispatch=acpf."""
     from stability_radius.workflows import compute_results_for_case
 
-    net, slack_bus = _make_3bus_net()
+    net, slack_bus = make_three_bus_dispatch_net(pp)
 
     # Write a temporary .m file is complex; use the internal API directly.
     # Instead, we test the critical chain: AC PF → bus_p_mw → DC base point.

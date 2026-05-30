@@ -58,7 +58,12 @@ from stability_radius.geometry.balanced import (
     make_ac_block_specs,
     project_dual_balanced_rows,
 )
-from stability_radius.radii.common import classify_constraint_certificate, line_key
+from stability_radius.radii.common import (
+    ConstraintStatus,
+    classify_constraint_certificate,
+    line_key,
+    signed_radius_from_margin_norm,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +147,8 @@ def _validate_inputs(
     if H.ndim != 2:
         raise ValueError(f"h_vectors must be 2D, got shape={H.shape}")
     n_lines, d = int(H.shape[0]), int(H.shape[1])
+    if np.any(~np.isfinite(H)):
+        raise ValueError("h_vectors must be finite.")
 
     sig_p = np.asarray(sigma_p_mw, dtype=float).reshape(-1)
     sig_q = np.asarray(sigma_q_mvar, dtype=float).reshape(-1)
@@ -301,16 +308,13 @@ def compute_ac_sigma_radius(
     )
 
     margin = c - s0
-    valid = sigma_flow > eps
+    valid = np.isfinite(sigma_flow) & (sigma_flow > eps)
 
     radius = np.empty(n_lines, dtype=float)
-    radius.fill(float("nan"))
-    radius[valid] = margin[valid] / sigma_flow[valid]
-
-    # Degenerate sigma_flow==0:
-    # - if margin>=0 => "infinite sigmas" (flow does not respond to random injections)
-    # - if margin<0  => base already infeasible (radius is -inf in this normalization)
-    radius[~valid] = np.where(margin[~valid] >= 0.0, float("inf"), float("-inf"))
+    for i in range(n_lines):
+        radius[i] = signed_radius_from_margin_norm(
+            margin=float(margin[i]), dual_norm=float(sigma_flow[i]), eps=eps
+        )
 
     status: list[str] = []
     certificate_radius = np.empty(n_lines, dtype=float)
@@ -325,29 +329,38 @@ def compute_ac_sigma_radius(
         certificate_radius[i] = float(cert_r)
         signed_distance[i] = float(signed_d)
 
-    # Worst-case perturbations (MW/MVAr). For sigma_flow<=eps, we return zeros (well-defined).
+    ok_finite = np.asarray(
+        [st == ConstraintStatus.OK_FINITE.value for st in status], dtype=bool
+    )
+
+    # Worst-case perturbations (MW/MVAr). For non-ok rows, zeros avoid exporting
+    # a boundary direction that is not a valid robustness certificate.
     dp = np.zeros((n_lines, n_bus), dtype=float)
     dq = np.zeros((n_lines, n_bus), dtype=float)
 
-    if bool(np.any(valid)):
+    if bool(np.any(ok_finite)):
         # Vectorized formula:
         #   dp = r * (sigma_p^2 * hP) / sigma_flow
         #   dq = r * (sigma_q^2 * hQ) / sigma_flow
         sigp2 = (sig_p * sig_p)[None, :]
         sigq2 = (sig_q * sig_q)[None, :]
-        denom = sigma_flow[valid, None]
-        dp[valid, :] = (radius[valid, None] * (sigp2 * hP[valid, :])) / denom
-        dq[valid, :] = (radius[valid, None] * (sigq2 * hQ[valid, :])) / denom
+        denom = sigma_flow[ok_finite, None]
+        dp[ok_finite, :] = (
+            radius[ok_finite, None] * (sigp2 * hP[ok_finite, :])
+        ) / denom
+        dq[ok_finite, :] = (
+            radius[ok_finite, None] * (sigq2 * hQ[ok_finite, :])
+        ) / denom
 
     # Predicted worst-case |S| (linearized): s0 + h·Δu*
-    # For valid lines with finite sigma_flow, this equals c (up to numerical noise).
+    # For ok finite lines, this equals c (up to numerical noise).
     s_pred = np.asarray(s0, dtype=float).copy()
-    if bool(np.any(valid)):
+    if bool(np.any(ok_finite)):
         # Use explicit dot product to reflect the linear model definition.
-        s_pred[valid] = (
-            s0[valid]
-            + np.sum(hP[valid, :] * dp[valid, :], axis=1)
-            + np.sum(hQ[valid, :] * dq[valid, :], axis=1)
+        s_pred[ok_finite] = (
+            s0[ok_finite]
+            + np.sum(hP[ok_finite, :] * dp[ok_finite, :], axis=1)
+            + np.sum(hQ[ok_finite, :] * dq[ok_finite, :], axis=1)
         )
 
     # Overload probabilities

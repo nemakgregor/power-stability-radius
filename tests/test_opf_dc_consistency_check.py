@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from tests.network_factories import make_triangle_net
 
 pp = pytest.importorskip("pandapower")
 pytest.importorskip("scipy")
@@ -19,45 +20,13 @@ pytest.importorskip("pandas")
 pytest.importorskip("highspy")
 
 
-def _make_triangle_net():
-    """Small meshed network for consistency testing."""
-    net = pp.create_empty_network(sn_mva=100.0)
-
-    b0 = pp.create_bus(net, vn_kv=110.0)
-    b1 = pp.create_bus(net, vn_kv=110.0)
-    b2 = pp.create_bus(net, vn_kv=110.0)
-
-    pp.create_ext_grid(net, b0, vm_pu=1.0)
-    pp.create_load(net, b1, p_mw=10.0, q_mvar=0.0)
-    pp.create_load(net, b2, p_mw=5.0, q_mvar=0.0)
-
-    common = dict(
-        length_km=1.0,
-        r_ohm_per_km=0.01,
-        c_nf_per_km=0.0,
-        max_i_ka=1.0,
-        max_loading_percent=100.0,
-    )
-    pp.create_line_from_parameters(
-        net, from_bus=b0, to_bus=b1, x_ohm_per_km=0.10, **common
-    )
-    pp.create_line_from_parameters(
-        net, from_bus=b1, to_bus=b2, x_ohm_per_km=0.15, **common
-    )
-    pp.create_line_from_parameters(
-        net, from_bus=b0, to_bus=b2, x_ohm_per_km=0.20, **common
-    )
-
-    return net, b0
-
-
 def test_consistency_passes_for_matching_flows() -> None:
     """Consistency check passes when OPF and DC operator agree."""
     from stability_radius.dc.dc_model import build_dc_operator
     from stability_radius.radii.common import get_line_base_quantities
     from stability_radius.workflows import _check_opf_dc_consistency
 
-    net, slack_bus = _make_triangle_net()
+    net, slack_bus = make_triangle_net(pp)
 
     base = get_line_base_quantities(net, limit_factor=1.0)
     dc_op = build_dc_operator(net, slack_bus=int(slack_bus))
@@ -80,7 +49,7 @@ def test_consistency_returns_expected_fields() -> None:
     from stability_radius.radii.common import get_line_base_quantities
     from stability_radius.workflows import _check_opf_dc_consistency
 
-    net, slack_bus = _make_triangle_net()
+    net, slack_bus = make_triangle_net(pp)
     base = get_line_base_quantities(net, limit_factor=1.0)
     dc_op = build_dc_operator(net, slack_bus=int(slack_bus))
 
@@ -107,7 +76,7 @@ def test_consistency_detects_mismatch_without_crash() -> None:
     from stability_radius.radii.common import get_line_base_quantities
     from stability_radius.workflows import _check_opf_dc_consistency
 
-    net, slack_bus = _make_triangle_net()
+    net, slack_bus = make_triangle_net(pp)
     base = get_line_base_quantities(net, limit_factor=1.0)
     dc_op = build_dc_operator(net, slack_bus=int(slack_bus))
 
@@ -131,7 +100,7 @@ def test_consistency_rejects_unbalanced_injections() -> None:
     from stability_radius.radii.common import LineBaseQuantities
     from stability_radius.workflows import _check_opf_dc_consistency
 
-    net, slack_bus = _make_triangle_net()
+    net, slack_bus = make_triangle_net(pp)
     dc_op = build_dc_operator(net, slack_bus=int(slack_bus))
 
     bus_ids = [int(x) for x in sorted(net.bus.index)]

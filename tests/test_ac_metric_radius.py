@@ -229,6 +229,66 @@ class TestACMetricRadiusValidation:
                 balance=False,
             )
 
+    def test_rejects_odd_h_vector_dimension(self) -> None:
+        h = np.array([[1.0, 2.0, 3.0]])
+        M = np.ones(3)
+        c = np.array([10.0])
+        s0 = np.array([5.0])
+
+        with pytest.raises(ValueError, match="must be even"):
+            compute_ac_metric_radius(
+                h_vectors=h,
+                s_limit_mva=c,
+                s0_mva=s0,
+                M=M,
+                balance=False,
+            )
+
+    def test_rejects_nonfinite_h_vectors(self) -> None:
+        h = np.array([[1.0, float("nan")]])
+        M = np.ones(2)
+        c = np.array([10.0])
+        s0 = np.array([5.0])
+
+        with pytest.raises(ValueError, match="h_vectors must be finite"):
+            compute_ac_metric_radius(
+                h_vectors=h,
+                s_limit_mva=c,
+                s0_mva=s0,
+                M=M,
+                balance=False,
+            )
+
+    def test_rejects_nonfinite_dense_m(self) -> None:
+        h = np.array([[1.0, 0.0]])
+        M = np.array([[1.0, float("nan")], [float("nan"), 1.0]])
+        c = np.array([10.0])
+        s0 = np.array([5.0])
+
+        with pytest.raises(ValueError, match="Dense M entries must be finite"):
+            compute_ac_metric_radius(
+                h_vectors=h,
+                s_limit_mva=c,
+                s0_mva=s0,
+                M=M,
+                balance=False,
+            )
+
+    def test_rejects_nonsymmetric_dense_m(self) -> None:
+        h = np.array([[1.0, 0.0]])
+        M = np.array([[2.0, 0.0], [0.5, 2.0]])
+        c = np.array([10.0])
+        s0 = np.array([5.0])
+
+        with pytest.raises(ValueError, match="Dense M must be symmetric"):
+            compute_ac_metric_radius(
+                h_vectors=h,
+                s_limit_mva=c,
+                s0_mva=s0,
+                M=M,
+                balance=False,
+            )
+
     def test_zero_denom_gives_inf(self) -> None:
         """When h is zero, denom is zero and radius should be +inf (margin > 0)."""
         h = np.array([[0.0, 0.0, 0.0, 0.0]])

@@ -49,7 +49,7 @@ compute:
       # Source for per-bus injection std deviations:
       # - ""        : disabled (no sigma/metric radii computed)
       # - "uniform" : broadcast scalar values to all buses
-      # - "file"    : load from JSON/CSV (Phase 4 — UC.jl integration, not yet implemented)
+      # - "uc_jl"   : use per-bus arrays loaded from UnitCommitment.jl data
       sigma_p_mw_source: ""
       sigma_q_mvar_source: ""
 

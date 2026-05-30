@@ -76,6 +76,21 @@ def classify_constraint_certificate(
     return ConstraintStatus.OK_FINITE.value, float(max(radius, 0.0)), float(radius)
 
 
+def signed_radius_from_margin_norm(
+    *, margin: float, dual_norm: float, eps: float
+) -> float:
+    """Return the signed diagnostic radius using the same finite checks as certificates."""
+    margin_f = float(margin)
+    norm_f = float(dual_norm)
+    eps_f = float(eps)
+
+    if not math.isfinite(margin_f) or not math.isfinite(norm_f) or norm_f < 0.0:
+        return float("nan")
+    if norm_f > eps_f:
+        return float(margin_f / norm_f)
+    return float("inf") if margin_f >= 0.0 else float("-inf")
+
+
 @dataclass(frozen=True)
 class LineBaseQuantities:
     """

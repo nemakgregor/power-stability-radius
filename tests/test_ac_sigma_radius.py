@@ -130,6 +130,24 @@ def test_ac_sigma_negative_margin_exports_nonnegative_certificate_radius() -> No
     assert row["constraint_status_ac_sigma"] == "base_infeasible"
     assert float(row["certificate_radius_ac_sigma"]) == 0.0
     assert float(row["signed_distance_ac_sigma"]) < 0.0
+    assert np.allclose(np.asarray(row["worst_case_dp_mw"], dtype=float), 0.0)
+    assert np.allclose(np.asarray(row["worst_case_dq_mvar"], dtype=float), 0.0)
+    assert float(row["worst_case_s_predicted_mva"]) == pytest.approx(90.0)
+
+
+def test_ac_sigma_rejects_nonfinite_h_vectors() -> None:
+    h = np.array([[1.0, float("nan"), 0.5, -0.5]], dtype=float)
+    sigma = np.array([1.0, 1.0], dtype=float)
+
+    with pytest.raises(ValueError, match="h_vectors must be finite"):
+        compute_ac_sigma_radius(
+            h_vectors=h,
+            s_limit_mva=np.array([100.0]),
+            s0_mva=np.array([90.0]),
+            sigma_p_mw=sigma,
+            sigma_q_mvar=sigma,
+            balance=True,
+        )
 
 
 def test_ac_sigma_pq_mask_excludes_pv_and_slack_q_coordinates() -> None:

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
+from tests.config_assertions import (
+    assert_float_default_matches,
+    assert_int_default_matches,
+    assert_str_default_matches,
+    load_root_config,
+)
 
 
 def test_project_yaml_opf_unconstrained_line_nom_matches_python_default() -> None:
@@ -15,18 +19,13 @@ def test_project_yaml_opf_unconstrained_line_nom_matches_python_default() -> Non
     """
     pytest.importorskip("omegaconf")
 
-    from stability_radius.config import DEFAULT_OPF, load_project_config
+    from stability_radius.config import DEFAULT_OPF
 
-    repo_root = Path(__file__).resolve().parents[1]
-    cfg_path = repo_root / "conf" / "config.yaml"
-
-    cfg = load_project_config(cfg_path, allow_missing=False)
-    assert cfg is not None
-
-    yaml_val = float(cfg["opf"]["unconstrained_line_nom_mw"])
-    py_val = float(DEFAULT_OPF.unconstrained_line_nom_mw)
-
-    assert yaml_val == pytest.approx(py_val)
+    assert_float_default_matches(
+        section="opf",
+        key="unconstrained_line_nom_mw",
+        expected=DEFAULT_OPF.unconstrained_line_nom_mw,
+    )
 
 
 def test_project_yaml_opf_headroom_factor_matches_python_default() -> None:
@@ -35,18 +34,11 @@ def test_project_yaml_opf_headroom_factor_matches_python_default() -> None:
     """
     pytest.importorskip("omegaconf")
 
-    from stability_radius.config import DEFAULT_OPF, load_project_config
+    from stability_radius.config import DEFAULT_OPF
 
-    repo_root = Path(__file__).resolve().parents[1]
-    cfg_path = repo_root / "conf" / "config.yaml"
-
-    cfg = load_project_config(cfg_path, allow_missing=False)
-    assert cfg is not None
-
-    yaml_val = float(cfg["opf"]["headroom_factor"])
-    py_val = float(DEFAULT_OPF.headroom_factor)
-
-    assert yaml_val == pytest.approx(py_val)
+    assert_float_default_matches(
+        section="opf", key="headroom_factor", expected=DEFAULT_OPF.headroom_factor
+    )
 
 
 def test_project_yaml_highs_defaults_match_python_defaults() -> None:
@@ -55,13 +47,9 @@ def test_project_yaml_highs_defaults_match_python_defaults() -> None:
     """
     pytest.importorskip("omegaconf")
 
-    from stability_radius.config import DEFAULT_OPF, load_project_config
+    from stability_radius.config import DEFAULT_OPF
 
-    repo_root = Path(__file__).resolve().parents[1]
-    cfg_path = repo_root / "conf" / "config.yaml"
-
-    cfg = load_project_config(cfg_path, allow_missing=False)
-    assert cfg is not None
+    cfg = load_root_config()
 
     yaml_threads = int(cfg["opf"]["threads"])
     py_threads = int(DEFAULT_OPF.highs.threads)
@@ -78,32 +66,17 @@ def test_project_yaml_monte_carlo_seed_matches_python_default() -> None:
     """
     pytest.importorskip("omegaconf")
 
-    from stability_radius.config import DEFAULT_MC, load_project_config
+    from stability_radius.config import DEFAULT_MC
 
-    repo_root = Path(__file__).resolve().parents[1]
-    cfg_path = repo_root / "conf" / "config.yaml"
-
-    cfg = load_project_config(cfg_path, allow_missing=False)
-    assert cfg is not None
-
-    yaml_val = int(cfg["monte_carlo"]["sampling"]["seed"])
-    py_val = int(DEFAULT_MC.seed)
-
-    assert yaml_val == py_val
+    cfg = load_root_config()
+    assert int(cfg["monte_carlo"]["sampling"]["seed"]) == int(DEFAULT_MC.seed)
 
 
 def test_project_yaml_logging_runs_dir_matches_python_default() -> None:
     pytest.importorskip("omegaconf")
 
-    from stability_radius.config import DEFAULT_LOGGING, load_project_config
+    from stability_radius.config import DEFAULT_LOGGING
 
-    repo_root = Path(__file__).resolve().parents[1]
-    cfg_path = repo_root / "conf" / "config.yaml"
-
-    cfg = load_project_config(cfg_path, allow_missing=False)
-    assert cfg is not None
-
-    yaml_val = str(cfg["logging"]["runs_dir"])
-    py_val = str(DEFAULT_LOGGING.runs_dir)
-
-    assert yaml_val == py_val
+    assert_str_default_matches(
+        section="logging", key="runs_dir", expected=DEFAULT_LOGGING.runs_dir
+    )

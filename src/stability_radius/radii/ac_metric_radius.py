@@ -38,7 +38,11 @@ from stability_radius.geometry.balanced import (
     BlockSpec,
     project_dual_balanced_rows,
 )
-from stability_radius.radii.common import classify_constraint_certificate, line_key
+from stability_radius.radii.common import (
+    classify_constraint_certificate,
+    line_key,
+    signed_radius_from_margin_norm,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +63,10 @@ def _validate_inputs(
     if H.ndim != 2:
         raise ValueError(f"h_vectors must be 2D, got shape={H.shape}")
     n_lines, d = int(H.shape[0]), int(H.shape[1])
+    if np.any(~np.isfinite(H)):
+        raise ValueError("h_vectors must be finite.")
+    if d % 2 != 0:
+        raise ValueError(f"h_vectors second dimension must be even [P; Q], got {d}.")
 
     s_lim = np.asarray(s_limit_mva, dtype=float).reshape(-1)
     s0 = np.asarray(s0_mva, dtype=float).reshape(-1)
@@ -81,6 +89,10 @@ def _validate_inputs(
     elif M_arr.ndim == 2:
         if M_arr.shape != (d, d):
             raise ValueError(f"Dense M must have shape ({d},{d}), got {M_arr.shape}")
+        if np.any(~np.isfinite(M_arr)):
+            raise ValueError("Dense M entries must be finite.")
+        if not np.allclose(M_arr, M_arr.T, rtol=1e-10, atol=1e-12):
+            raise ValueError("Dense M must be symmetric.")
     else:
         raise ValueError(
             f"M must be 1D (diagonal) or 2D (dense), got ndim={M_arr.ndim}"
@@ -285,9 +297,11 @@ def compute_ac_metric_radius(
     margin = c - s0
 
     radius = np.empty(n_lines, dtype=float)
-    valid = denom > eps
-    radius[valid] = margin[valid] / denom[valid]
-    radius[~valid] = np.where(margin[~valid] >= 0.0, float("inf"), float("-inf"))
+    valid = np.isfinite(denom) & (denom > eps)
+    for i in range(n_lines):
+        radius[i] = signed_radius_from_margin_norm(
+            margin=float(margin[i]), dual_norm=float(denom[i]), eps=eps
+        )
 
     results: dict[str, dict[str, Any]] = {}
     for pos, lid in enumerate(ids):

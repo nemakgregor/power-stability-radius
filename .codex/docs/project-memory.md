@@ -72,6 +72,9 @@ Detailed entry-point inventory is in `docs/entry_points.md`.
   uncertainty coordinates.
 - AC metric radius under balance uses the constrained `M^{-1}` dual projection;
   with `M = diag(1/sigma^2)` it must match AC sigma for nonuniform sigma.
+- AC sigma worst-case perturbation vectors are boundary directions only for
+  `ok_finite` rows; non-OK rows export zero vectors so base-infeasible rows do
+  not advertise a repair direction as worst case.
 - `ac.lossless=false` is fail-fast for the supported AC certificate path until
   a full pi/shunt AC Jacobian and branch-flow model are implemented.
 - AC PF/FPF metadata records `q_limit_hit`/`q_limit_events`; if Q-limit events
@@ -106,6 +109,10 @@ Detailed entry-point inventory is in `docs/entry_points.md`.
   `src/stability_radius` and `entry_points`.
 - Post-processing plot modules force Matplotlib's `Agg` backend so tests and CLI
   runs do not depend on a local GUI/Tk installation.
+- Broad maintainability reviews should read
+  `.codex/docs/design-principles-agent.md` and run
+  `python tools/design_principles_audit.py --root .`; findings are heuristic
+  candidates for DRY/KISS/YAGNI/SOLID cleanup, not automatic contract failures.
 
 ## Current Config Defaults
 

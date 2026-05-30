@@ -2,6 +2,35 @@
 
 Keep this log short. Each entry should capture durable context, not a transcript.
 
+## 2026-05-30 - Design Principles Agent
+
+- Added `.codex/docs/design-principles-agent.md` and linked it from
+  `AGENTS.md` for broad DRY/KISS/YAGNI/SOLID maintainability work.
+- Added `tools/design_principles_audit.py`, a heuristic whole-code Python audit
+  for long/branchy functions, duplicate function bodies, unreferenced private
+  definitions, broad classes/modules, and excessive parameter counts.
+- Added tests for the audit tool and documented the local command in
+  `docs/testing_and_ci.md`.
+- Current audit output is intentionally candidate-based and shows larger
+  refactor targets, especially experiment entry points and workflow functions;
+  it is not wired into CI as a hard gate.
+
+## 2026-05-30 - Radius Guardrails From Static Review
+
+- Fixed AC metric validation to reject odd `[P; Q]` h-vector widths,
+  nonfinite h-vectors, nonfinite dense metric matrices, and nonsymmetric dense
+  metric matrices before Cholesky/solve.
+- Centralized signed raw radius handling so nonfinite sensitivities produce
+  `NaN` diagnostics consistently with `degenerate_sensitivity` status; applied
+  to DC L2, operator-path DC L2, DC sigma, AC sigma, and AC metric radii.
+- AC sigma now exports zero worst-case perturbation vectors for non-`ok_finite`
+  rows, including base-infeasible constraints, and documents that boundary
+  vectors are meaningful only for `ok_finite` rows.
+- Tightened DC covariance validation and corrected the config comment to list
+  the implemented `uc_jl` sigma source instead of stale `"file"` wording.
+- Verified with focused radius tests, static quality tests, `ruff format
+  --check .`, `git diff --check`, and full `python -m pytest -q` (350 passed).
+
 ## 2026-05-30 - Public Release Metadata And AC Unconstrained Edge Case
 
 - Verified the pasted audit against current code: AC nondifferentiable status
@@ -146,3 +175,16 @@ Keep this log short. Each entry should capture durable context, not a transcript
 - Verified with `python -m ruff format --check .`, `git diff --check`, and
   `python -m pytest --cov=stability_radius --cov-report=term-missing -q`
   (339 passed, 71.77% coverage).
+
+## 2026-05-30 - DRY/KISS Refactor Batch
+
+- Added shared test factories for repeated pandapower 2-bus, 3-bus dispatch,
+  and triangle networks; routed duplicated AC FPF, ACPF, OPF consistency, and
+  ext-grid absorption tests through them.
+- Added config assertion helpers for project-default tests and parameterized the
+  repeated logging output-dir checks.
+- Split DC L2 and Gaussian sigma radius routines into validation, per-line row
+  assembly, and summary helpers while preserving public result fields.
+- Verified with `python tools/design_principles_audit.py --root .`,
+  `python -m ruff format --check .`, `git diff --check`, and
+  `python -m pytest -q` (352 passed).

@@ -51,6 +51,7 @@ from stability_radius.radii.common import (
     assert_line_limit_sources_present,
     classify_constraint_certificate,
     estimate_line_limit_mva_with_flag,
+    signed_radius_from_margin_norm,
 )
 from stability_radius.radii.l2 import compute_l2_radius
 from stability_radius.radii.nminus1 import compute_nminus1_l2_radius
@@ -339,10 +340,8 @@ def _compute_radii_operator_path(
     for pos, lid in enumerate(base.line_indices):
         margin = float(base.margin_mw[pos])
         norm_g = float(norms[pos])
-        r_l2 = (
-            float(margin / norm_g)
-            if norm_g > 1e-12
-            else (float("inf") if margin >= 0.0 else float("-inf"))
+        r_l2 = signed_radius_from_margin_norm(
+            margin=margin, dual_norm=norm_g, eps=1e-12
         )
         status, cert_radius, signed_distance = classify_constraint_certificate(
             margin=margin,

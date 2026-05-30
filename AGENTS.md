@@ -14,6 +14,13 @@ Then open only the project docs or source files needed for the task. The public
 documentation source of truth starts at `docs/index.md`; the units and schema
 contract is `UNITS_CONTRACT.md`.
 
+For broad maintainability work, also read
+`.codex/docs/design-principles-agent.md` and run the local audit:
+
+```bash
+python tools/design_principles_audit.py --root .
+```
+
 ## Memory Rule
 
 After each meaningful conversation or code change:
@@ -59,6 +66,12 @@ Run formatting check:
 
 ```bash
 poetry run ruff format --check .
+```
+
+Run DRY/KISS/YAGNI/SOLID design audit:
+
+```bash
+python tools/design_principles_audit.py --root .
 ```
 
 Typical compute command:

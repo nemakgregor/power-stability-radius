@@ -764,8 +764,8 @@ Each `line_<N>` key maps to a dict containing DC fields, AC fields, or both:
 
 | Key | Type | Unit | Description |
 |-----|------|------|-------------|
-| `worst_case_dp_mw` | float[] | MW | Per-bus active power perturbation that achieves the radius. |
-| `worst_case_dq_mvar` | float[] | MVAr | Per-bus reactive power perturbation. |
+| `worst_case_dp_mw` | float[] | MW | Per-bus active power perturbation for `ok_finite` rows; zero vector otherwise. |
+| `worst_case_dq_mvar` | float[] | MVAr | Per-bus reactive power perturbation for `ok_finite` rows; zero vector otherwise. |
 
 #### Constraints
 
