@@ -5,13 +5,13 @@ openapi
 .ipynb_checkpoints
 
 
-runs/
-run_artifacts/
-outputs/
-verification/
-analysis_output/
+/runs/
+/run_artifacts/
+/outputs/
+/verification/
+/analysis_output/
 *.log
-data/
+/data/
 
 list.md
 res_sr.md

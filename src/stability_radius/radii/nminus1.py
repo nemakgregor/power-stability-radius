@@ -25,6 +25,17 @@ class LODFResult:
     islanded_contingencies: list[int]
 
 
+@dataclass(frozen=True)
+class _ProjectedSensitivityCache:
+    """Cached row quantities for balanced L2 sensitivity norms."""
+
+    matrix: np.ndarray
+    raw_norm2: np.ndarray
+    row_sum: np.ndarray
+    projected_norm2: np.ndarray
+    n_bus: int
+
+
 def ptdf_for_line_transfers(H_full: np.ndarray, E: np.ndarray) -> np.ndarray:
     """
     Compute PTDF matrix for line endpoint transfers.
@@ -135,6 +146,91 @@ def incidence_from_pandapower_net(
     return E
 
 
+def _validate_effective_inputs(
+    *,
+    base_flows: np.ndarray,
+    limits: np.ndarray,
+    G: np.ndarray,
+    lodf: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Return validated arrays for effective N-1 radius computation."""
+    f = np.asarray(base_flows, dtype=float).reshape(-1)
+    c = np.asarray(limits, dtype=float).reshape(-1)
+    Gm = np.asarray(G, dtype=float)
+    L = np.asarray(lodf, dtype=float)
+
+    m = f.size
+    if c.shape != (m,):
+        raise ValueError(f"limits must have shape ({m},); got {c.shape}.")
+    if Gm.shape[0] != m:
+        raise ValueError(f"G must have shape (m,n) with m={m}; got {Gm.shape}.")
+    if L.shape != (m, m):
+        raise ValueError(f"lodf must have shape ({m},{m}); got {L.shape}.")
+    if Gm.shape[1] <= 0:
+        raise ValueError("G must have a positive bus dimension.")
+    return f, c, Gm, L
+
+
+def _projected_sensitivity_cache(Gm: np.ndarray) -> _ProjectedSensitivityCache:
+    """Precompute quantities for projected balanced L2 norms."""
+    n_bus = int(Gm.shape[1])
+    raw_norm2 = np.sum(Gm * Gm, axis=1)
+    row_sum = np.sum(Gm, axis=1)
+    projected_norm2 = raw_norm2 - (row_sum * row_sum) / float(n_bus)
+    projected_norm2 = np.maximum(projected_norm2, 0.0)
+    return _ProjectedSensitivityCache(
+        matrix=Gm,
+        raw_norm2=raw_norm2,
+        row_sum=row_sum,
+        projected_norm2=projected_norm2,
+        n_bus=n_bus,
+    )
+
+
+def _post_contingency_denominator(
+    cache: _ProjectedSensitivityCache,
+    *,
+    alpha: np.ndarray,
+    contingency_pos: int,
+    update_sensitivities: bool,
+) -> np.ndarray:
+    """Return projected sensitivity denominators after one contingency."""
+    if not update_sensitivities:
+        return np.sqrt(cache.projected_norm2)
+
+    gk = cache.matrix[contingency_pos, :]
+    dots = cache.matrix @ gk
+    alpha2 = alpha * alpha
+    norm2_post = (
+        cache.raw_norm2 + 2.0 * alpha * dots + alpha2 * cache.raw_norm2[contingency_pos]
+    )
+    norm2_post = np.maximum(norm2_post, 0.0)
+
+    sum_post = cache.row_sum + alpha * cache.row_sum[contingency_pos]
+    proj_norm2_post = norm2_post - (sum_post * sum_post) / float(cache.n_bus)
+    return np.sqrt(np.maximum(proj_norm2_post, 0.0))
+
+
+def _contingency_radii(
+    *,
+    base_flows: np.ndarray,
+    limits: np.ndarray,
+    alpha: np.ndarray,
+    denominator: np.ndarray,
+    contingency_pos: int,
+    eps: float,
+) -> np.ndarray:
+    """Compute line radii under one outage column."""
+    f_post = base_flows + alpha * float(base_flows[contingency_pos])
+    f_post[contingency_pos] = 0.0
+
+    margin_post = limits - np.abs(f_post)
+    radii = np.where(margin_post >= 0.0, float("inf"), float("-inf"))
+    np.divide(margin_post, denominator, out=radii, where=denominator > eps)
+    radii[contingency_pos] = float("inf")
+    return radii
+
+
 def effective_nminus1_l2_radii(
     *,
     base_flows: np.ndarray,
@@ -183,31 +279,17 @@ def effective_nminus1_l2_radii(
         best_radii: (m,) radii per monitored line.
         worst_contingency: (m,) integer contingency index that attains the min, or -1 if none.
     """
-    f = np.asarray(base_flows, dtype=float).reshape(-1)
-    c = np.asarray(limits, dtype=float).reshape(-1)
-    Gm = np.asarray(G, dtype=float)
-    L = np.asarray(lodf, dtype=float)
+    f, c, Gm, L = _validate_effective_inputs(
+        base_flows=base_flows,
+        limits=limits,
+        G=G,
+        lodf=lodf,
+    )
 
     m = f.size
-    if c.shape != (m,):
-        raise ValueError(f"limits must have shape ({m},); got {c.shape}.")
-    if Gm.shape[0] != m:
-        raise ValueError(f"G must have shape (m,n) with m={m}; got {Gm.shape}.")
-    if L.shape != (m, m):
-        raise ValueError(f"lodf must have shape ({m},{m}); got {L.shape}.")
-
-    n_bus = int(Gm.shape[1])
-    if n_bus <= 0:
-        raise ValueError("G must have a positive bus dimension.")
-
     best = np.full(m, float("inf"), dtype=float)
     argmin = np.full(m, -1, dtype=int)
-
-    # Precompute base norms and sums for projected (balanced) norms.
-    g_norm2 = np.sum(Gm * Gm, axis=1)  # (m,)
-    g_sum = np.sum(Gm, axis=1)  # (m,)
-    g_proj_norm2 = g_norm2 - (g_sum * g_sum) / float(n_bus)
-    g_proj_norm2 = np.maximum(g_proj_norm2, 0.0)
+    cache = _projected_sensitivity_cache(Gm)
 
     for k in range(m):
         alpha = L[:, k]
@@ -217,34 +299,20 @@ def effective_nminus1_l2_radii(
             )
             continue
 
-        fk = float(f[k])
-        f_post = f + alpha * fk
-        f_post[k] = 0.0
-
-        margin_post = c - np.abs(f_post)
-
-        if update_sensitivities:
-            gk = Gm[k, :]  # (n,)
-            dots = Gm @ gk  # (m,)
-
-            # Raw ||g_m + alpha_m*gk||^2
-            norm2_post = g_norm2 + 2.0 * alpha * dots + (alpha * alpha) * g_norm2[k]
-            norm2_post = np.maximum(norm2_post, 0.0)
-
-            # Projected norm: ||Proj(v)||^2 = ||v||^2 - sum(v)^2 / n
-            sum_post = g_sum + alpha * g_sum[k]
-            proj_norm2_post = norm2_post - (sum_post * sum_post) / float(n_bus)
-            proj_norm2_post = np.maximum(proj_norm2_post, 0.0)
-
-            denom = np.sqrt(proj_norm2_post)
-        else:
-            denom = np.sqrt(g_proj_norm2)
-
-        radii_k = np.where(margin_post >= 0.0, float("inf"), float("-inf"))
-        np.divide(margin_post, denom, out=radii_k, where=denom > eps)
-
-        radii_k[k] = float("inf")  # skip the outaged line itself
-
+        denom = _post_contingency_denominator(
+            cache,
+            alpha=alpha,
+            contingency_pos=k,
+            update_sensitivities=bool(update_sensitivities),
+        )
+        radii_k = _contingency_radii(
+            base_flows=f,
+            limits=c,
+            alpha=alpha,
+            denominator=denom,
+            contingency_pos=k,
+            eps=float(eps),
+        )
         improved = radii_k < best
         best[improved] = radii_k[improved]
         argmin[improved] = k

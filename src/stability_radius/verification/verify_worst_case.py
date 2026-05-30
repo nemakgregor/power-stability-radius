@@ -457,12 +457,14 @@ def find_violation_scale(
             gen_dispatch_mw_by_name=gen_dispatch_mw_by_name,
         )
         n_pf += 1
-        trajectory.append({
-            "scale": alpha,
-            "actual_s_mva": result.actual_s_mva,
-            "violated": result.violated,
-            "pf_converged": result.pf_converged,
-        })
+        trajectory.append(
+            {
+                "scale": alpha,
+                "actual_s_mva": result.actual_s_mva,
+                "violated": result.violated,
+                "pf_converged": result.pf_converged,
+            }
+        )
         return result.actual_s_mva, result.violated, result.pf_converged
 
     # Phase 1: Find an upper bound where violation occurs.

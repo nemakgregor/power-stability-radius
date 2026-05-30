@@ -188,3 +188,15 @@ Keep this log short. Each entry should capture durable context, not a transcript
 - Verified with `python tools/design_principles_audit.py --root .`,
   `python -m ruff format --check .`, `git diff --check`, and
   `python -m pytest -q` (352 passed).
+
+## 2026-05-30 - CI Import Fix And N-1 Refactor
+
+- Fixed CI collection failures caused by `src/stability_radius/verification/sampling.py`
+  being locally present but omitted from Git because `.gitignore` had an
+  unanchored `verification/` artifact rule.
+- Anchored root artifact ignore rules and added the shared verification sampling
+  module to the package.
+- Split `effective_nminus1_l2_radii()` into input validation, projected-norm
+  cache, contingency denominator, and one-column radius helpers.
+- Verified the failing CI collection subset, N-1 tests, `python -m pytest -q`
+  (352 passed), `python -m ruff format --check .`, and `git diff --check`.

@@ -1,6 +1,6 @@
 # Project Memory
 
-Last reviewed: 2026-05-29.
+Last reviewed: 2026-05-30.
 
 ## Purpose
 
@@ -161,6 +161,9 @@ Known drift to watch:
   - `analysis_output/*/results.json`
   - `runs/n1_stability_demo/*`
 - Do not delete or rewrite generated artifacts unless the user asks.
+- Root artifact ignore rules in `.gitignore` should stay anchored, for example
+  `/verification/`, so source files under `src/stability_radius/verification/`
+  are not silently omitted from commits.
 
 Notable existing result summaries:
 
