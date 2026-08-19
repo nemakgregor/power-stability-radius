@@ -1,0 +1,22 @@
+\begin{table}[t]
+\centering
+\caption{Adjoint verification after the implementation corrections: centered
+finite differences along the balanced worst-case direction of the ten
+tightest differentiable line ends per case.  The relative error now decreases
+as $O(\varepsilon^2)$ down to the power-flow-tolerance floor, in contrast to
+the non-convergent $10^{-2}$-level plateau of the original submission, which
+was traced to a slack-index defect and an unmodeled reactive-limit active
+set.  Certificate time is mean of 7 repetitions (adjoint + norms, excluding
+AC PF).\label{tab:adjoint-validation}}
+\scriptsize
+\begin{tabularx}{\textwidth}{@{}Xrrrrrrr@{}}
+\toprule
+Case & Ends & Med.\ rel.\ ($\varepsilon{=}1$) & Med.\ rel.\ ($\varepsilon{=}10^{-2}$) & Med.\ rel.\ ($\varepsilon{=}10^{-3}$) & Max rel.\ ($\varepsilon{=}10^{-3}$) & Adj.\ resid. & Cert.\ (s) \\
+\midrule
+\texttt{case14\_ieee} & 10 & \num{2.33e-6} & \num{1.98e-10} & \num{1.19e-10} & \num{3.12e-10} & \num{4.06e-16} & 0.0305 \\
+\texttt{case30\_ieee} & 10 & \num{6.17e-6} & \num{6.16e-10} & \num{5.36e-11} & \num{6.38e-10} & \num{4.69e-16} & 0.0538 \\
+\texttt{case118\_ieee} & 10 & \num{4.11e-7} & \num{3.08e-11} & \num{1.73e-10} & \num{5.51e-10} & \num{4.36e-16} & 0.5022 \\
+\texttt{case200\_activ} & 10 & \num{6.62e-9} & \num{7.46e-11} & \num{4.07e-10} & \num{1.68e-9} & \num{1.69e-15} & 0.4795 \\
+\bottomrule
+\end{tabularx}
+\end{table}

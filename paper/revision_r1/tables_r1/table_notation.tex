@@ -1,0 +1,29 @@
+\begin{table}[t]
+\centering
+\caption{Notation and units.\label{tab:notation}}
+\scriptsize
+\begin{tabularx}{\textwidth}{@{}llY@{}}
+\toprule
+Symbol & Units & Meaning \\
+\midrule
+$\mathcal{N}, \mathcal{L}$ & -- & bus set ($|\mathcal{N}|=n$), monitored line set ($|\mathcal{L}|=m$) \\
+$\omega$ & MW, MVAr & primitive uncertainty (forecast errors) \\
+$T$ & -- & response map (participation, balancing, coordinate reduction) \\
+$\Delta u$ & MW, MVAr & response-coordinate perturbation, $\Delta u = T\omega$ \\
+$A$, $C$ & -- & admissibility (equality) matrices in response / primitive space \\
+$M$, $W$ & (MW)$^{-2}$ & metric matrices in response / primitive space \\
+$\Sigma$ & (MW)$^2$, (MVAr)$^2$ & injection covariance; $M=\Sigma^{-1}$ gives sigma radii \\
+$K_M(A)$ & (MW)$^2$ & inverse metric restricted to $\ker A$ \\
+$x$ & rad, p.u. & reduced AC state $[\theta_{\mathcal{N}\setminus s}; V_{\mathcal{PQ}}]$ \\
+$J$ & MW/rad, MW/p.u. & reduced AC power-flow Jacobian at the base point \\
+$b_{\ell,e}$ & MVA/rad, MVA/p.u. & state gradient of $s_{\ell,e}$ \\
+$h_{\ell,e}$ & MVA/MW & injection-space sensitivity, $J^\top h_{\ell,e} = b_{\ell,e}$ \\
+$s_{\ell,e},\, c_\ell$ & MVA & line-end apparent power; thermal limit \\
+$M_{\ell,e} = c_\ell - s^0_{\ell,e}$ & MVA & thermal margin at end $(\ell,e)$ \\
+$r^{DC}_\ell$ & MW & DC radius (balanced Euclidean MW injection norm) \\
+$r^{AC,M}_{\ell,e}$ & metric-dep. & AC end radius: MW-scale for Euclidean $M$; dimensionless standard deviations for $M=\Sigma^{-1}$ \\
+$\beta_j$ & -- & standardized affine margin (sigma radius) of constraint $j$ \\
+$\sigma_{\max}$ & MVA/MW & operator norm of the projected 2D $(P,Q)$ response at a zero-flow end \\
+\bottomrule
+\end{tabularx}
+\end{table}

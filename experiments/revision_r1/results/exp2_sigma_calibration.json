@@ -1,0 +1,175 @@
+{
+  "experiment": "sigma_calibration_case118",
+  "seed": 42,
+  "n_mc": 3000,
+  "n_pf_failures": 0,
+  "sigma_model": "sigma_P = 10% bus load (floor 1e-6), sigma_Q = sigma_P*tan(acos(0.9))",
+  "note": "UC.jl hourly sigma unreachable from sandbox; structure preserved",
+  "ratio_summary": {
+    "median": 1.003550876147659,
+    "min": 0.9890213688920232,
+    "max": 1.0173897557253093
+  },
+  "lines": [
+    {
+      "line": 96,
+      "end": "to",
+      "s0_mva": 402.44474401770174,
+      "sigma_flow_analytical_mva": 21.805390576700834,
+      "sigma_flow_empirical_mva": 21.618716792931636,
+      "ratio_analytical_over_empirical": 1.0086348225732913,
+      "tightened_limit_mva": 445.68217760356504,
+      "predicted_exceed_prob": 0.023690518219486614,
+      "empirical_exceed_prob": 0.019333333333333334,
+      "wilson95": [
+        0.014985749590420355,
+        0.02491031698419301
+      ],
+      "n_samples": 3000
+    },
+    {
+      "line": 90,
+      "end": "from",
+      "s0_mva": 244.62213194004454,
+      "sigma_flow_analytical_mva": 15.204481462064674,
+      "sigma_flow_empirical_mva": 15.070457418342855,
+      "ratio_analytical_over_empirical": 1.0088931636247944,
+      "tightened_limit_mva": 274.7630467767302,
+      "predicted_exceed_prob": 0.02371889689716046,
+      "empirical_exceed_prob": 0.022333333333333334,
+      "wilson95": [
+        0.01762477500157414,
+        0.028263618480687265
+      ],
+      "n_samples": 3000
+    },
+    {
+      "line": 89,
+      "end": "to",
+      "s0_mva": 363.67616903826405,
+      "sigma_flow_analytical_mva": 11.80381185334809,
+      "sigma_flow_empirical_mva": 11.766886475612504,
+      "ratio_analytical_over_empirical": 1.0031380754638974,
+      "tightened_limit_mva": 387.20994198948904,
+      "predicted_exceed_prob": 0.023090047416420446,
+      "empirical_exceed_prob": 0.025333333333333333,
+      "wilson95": [
+        0.02028834763664708,
+        0.03159237275326237
+      ],
+      "n_samples": 3000
+    },
+    {
+      "line": 88,
+      "end": "to",
+      "s0_mva": 169.20985327781437,
+      "sigma_flow_analytical_mva": 10.805233265218552,
+      "sigma_flow_empirical_mva": 10.731440286411132,
+      "ratio_analytical_over_empirical": 1.0068763350340646,
+      "tightened_limit_mva": 190.67273385063663,
+      "predicted_exceed_prob": 0.023497722526204978,
+      "empirical_exceed_prob": 0.02,
+      "wilson95": [
+        0.015569816893370038,
+        0.025657877882942888
+      ],
+      "n_samples": 3000
+    },
+    {
+      "line": 117,
+      "end": "from",
+      "s0_mva": 113.85018060860075,
+      "sigma_flow_analytical_mva": 9.821621236169952,
+      "sigma_flow_empirical_mva": 9.819297191912126,
+      "ratio_analytical_over_empirical": 1.000236681323765,
+      "tightened_limit_mva": 133.488774992425,
+      "predicted_exceed_prob": 0.022775695302536123,
+      "empirical_exceed_prob": 0.034333333333333334,
+      "wilson95": [
+        0.02839017317686661,
+        0.04146752793598697
+      ],
+      "n_samples": 3000
+    },
+    {
+      "line": 49,
+      "end": "from",
+      "s0_mva": 134.73137016979692,
+      "sigma_flow_analytical_mva": 9.433408318932257,
+      "sigma_flow_empirical_mva": 9.272167589506607,
+      "ratio_analytical_over_empirical": 1.0173897557253093,
+      "tightened_limit_mva": 153.27570534881013,
+      "predicted_exceed_prob": 0.024659994653985873,
+      "empirical_exceed_prob": 0.027,
+      "wilson95": [
+        0.021777157175250608,
+        0.033432633718907756
+      ],
+      "n_samples": 3000
+    },
+    {
+      "line": 118,
+      "end": "from",
+      "s0_mva": 89.20872196870674,
+      "sigma_flow_analytical_mva": 7.447456009318502,
+      "sigma_flow_empirical_mva": 7.418053243542827,
+      "ratio_analytical_over_empirical": 1.0039636768314206,
+      "tightened_limit_mva": 104.0448284557924,
+      "predicted_exceed_prob": 0.023179827176767687,
+      "empirical_exceed_prob": 0.025,
+      "wilson95": [
+        0.019991321290431362,
+        0.031223584998628307
+      ],
+      "n_samples": 3000
+    },
+    {
+      "line": 128,
+      "end": "to",
+      "s0_mva": 92.94210695423513,
+      "sigma_flow_analytical_mva": 7.283750721360477,
+      "sigma_flow_empirical_mva": 7.273660844810262,
+      "ratio_analytical_over_empirical": 1.001387179958688,
+      "tightened_limit_mva": 107.48942864385566,
+      "predicted_exceed_prob": 0.022900129819408505,
+      "empirical_exceed_prob": 0.02,
+      "wilson95": [
+        0.015569816893370038,
+        0.025657877882942888
+      ],
+      "n_samples": 3000
+    },
+    {
+      "line": 166,
+      "end": "to",
+      "s0_mva": 68.59949911574398,
+      "sigma_flow_analytical_mva": 6.777010811144222,
+      "sigma_flow_empirical_mva": 6.852239015559738,
+      "ratio_analytical_over_empirical": 0.9890213688920232,
+      "tightened_limit_mva": 82.30397714686346,
+      "predicted_exceed_prob": 0.021577795574389814,
+      "empirical_exceed_prob": 0.021666666666666667,
+      "wilson95": [
+        0.017036032303674745,
+        0.027520732976887098
+      ],
+      "n_samples": 3000
+    },
+    {
+      "line": 110,
+      "end": "from",
+      "s0_mva": 263.10368588791033,
+      "sigma_flow_analytical_mva": 6.542440872994379,
+      "sigma_flow_empirical_mva": 6.604940279160515,
+      "ratio_analytical_over_empirical": 0.9905374759612392,
+      "tightened_limit_mva": 276.31356644623133,
+      "predicted_exceed_prob": 0.02173811013177575,
+      "empirical_exceed_prob": 0.025,
+      "wilson95": [
+        0.019991321290431362,
+        0.031223584998628307
+      ],
+      "n_samples": 3000
+    }
+  ]
+}

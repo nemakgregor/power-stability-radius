@@ -1,0 +1,146 @@
+\begin{thebibliography}{17}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[Wood et~al.(2013)Wood, Wollenberg, and
+  Shebl{\'e}]{WoodWollenbergSheble2013}
+Allen~J. Wood, Bruce~F. Wollenberg, and Gerald~B. Shebl{\'e}.
+\newblock \emph{Power Generation, Operation, and Control}.
+\newblock Wiley, 3 edition, 2013.
+\newblock ISBN 9780471790556.
+
+\bibitem[Bertsimas and Sim(2004)]{BertsimasSim2004}
+Dimitris Bertsimas and Melvyn Sim.
+\newblock The price of robustness.
+\newblock \emph{Operations Research}, 52\penalty0 (1):\penalty0 35--53, 2004.
+\newblock \doi{10.1287/opre.1030.0065}.
+
+\bibitem[Ben-Tal and Nemirovski(1998)]{BenTalNemirovski1998}
+Aharon Ben-Tal and Arkadi Nemirovski.
+\newblock Robust convex optimization.
+\newblock \emph{Mathematics of Operations Research}, 23\penalty0 (4):\penalty0
+  769--805, 1998.
+\newblock \doi{10.1287/moor.23.4.769}.
+
+\bibitem[Bienstock et~al.(2014)Bienstock, Chertkov, and
+  Harnett]{BienstockChertkovHarnett2014}
+Daniel Bienstock, Michael Chertkov, and Sean Harnett.
+\newblock Chance-constrained optimal power flow: Risk-aware network control
+  under uncertainty.
+\newblock \emph{SIAM Review}, 56\penalty0 (3):\penalty0 461--495, 2014.
+\newblock \doi{10.1137/130910312}.
+
+\bibitem[Roald et~al.(2016)Roald, Misra, Chertkov, Backhaus, and
+  Andersson]{RoaldEtAl2016}
+Line Roald, Sidhant Misra, Michael Chertkov, Scott Backhaus, and Goran
+  Andersson.
+\newblock Chance constrained optimal power flow with curtailment and reserves
+  from wind power plants.
+\newblock \emph{arXiv preprint arXiv:1601.04321}, 2016.
+\newblock URL \url{https://arxiv.org/abs/1601.04321}.
+
+\bibitem[Lubin et~al.(2016)Lubin, Backhaus, and
+  Dvorkin]{LubinBackhausDvorkin2016}
+Miles Lubin, Scott Backhaus, and Yury Dvorkin.
+\newblock A robust approach to chance constrained optimal power flow with
+  renewable generation.
+\newblock \emph{IEEE Transactions on Power Systems}, 31\penalty0 (5):\penalty0
+  3840--3849, 2016.
+\newblock \doi{10.1109/TPWRS.2015.2499753}.
+
+\bibitem[Chen et~al.(2013)Chen, Chen, Xia, and Kang]{ChenChenXiaKang2013}
+Sijie Chen, Qixin Chen, Qing Xia, and Chongqing Kang.
+\newblock Steady-state security assessment method based on distance to security
+  region boundaries.
+\newblock \emph{IET Generation, Transmission \& Distribution}, 7\penalty0
+  (3):\penalty0 288--297, 2013.
+\newblock \doi{10.1049/iet-gtd.2012.0288}.
+
+\bibitem[Chen et~al.(2015{\natexlab{a}})Chen, Chen, and
+  Xia]{ChenChenXia2015Concept}
+Sijie Chen, Qixin Chen, and Qing Xia.
+\newblock Steady-state security distance: Concept, model and meaning.
+\newblock \emph{Proceedings of the CSEE}, 35\penalty0 (3):\penalty0 600--608,
+  2015{\natexlab{a}}.
+\newblock \doi{10.13334/j.0258-8013.pcsee.2015.03.012}.
+
+\bibitem[Chen et~al.(2015{\natexlab{b}})Chen, Chen, Xia, Zhong, and
+  Kang]{ChenEtAl2015N1}
+Sijie Chen, Qixin Chen, Qing Xia, Haiwang Zhong, and Chongqing Kang.
+\newblock N-1 security assessment approach based on the steady-state security
+  distance.
+\newblock \emph{IET Generation, Transmission \& Distribution}, 9\penalty0
+  (15):\penalty0 2419--2426, 2015{\natexlab{b}}.
+\newblock \doi{10.1049/iet-gtd.2015.0552}.
+
+\bibitem[Nguyen et~al.(2019)Nguyen, Dvijotham, and
+  Turitsyn]{NguyenDvijothamTuritsyn2019}
+Hung~D. Nguyen, Krishnamurthy Dvijotham, and Konstantin Turitsyn.
+\newblock Constructing convex inner approximations of steady-state security
+  regions.
+\newblock \emph{IEEE Transactions on Power Systems}, 34\penalty0 (1):\penalty0
+  257--267, 2019.
+\newblock \doi{10.1109/TPWRS.2018.2868752}.
+
+\bibitem[Anton and Ili{\'c}(2026)]{AntonIlic2026Diagnostics}
+Lauren{\c{t}}iu~Lucian Anton and Marija Ili{\'c}.
+\newblock Unified diagnostics for quantifying ac operating-point robustness
+  under injection and topological uncertainties with regime changes.
+\newblock \emph{International Journal of Electrical Power \& Energy Systems},
+  178:\penalty0 111979, 2026.
+\newblock \doi{10.1016/j.ijepes.2026.111979}.
+
+\bibitem[Lee et~al.(2021)Lee, Turitsyn, Molzahn, and
+  Roald]{LeeEtAl2021RobustAC}
+Dongchan Lee, Konstantin Turitsyn, Daniel~K. Molzahn, and Line~A. Roald.
+\newblock Robust ac optimal power flow with robust convex restriction.
+\newblock \emph{IEEE Transactions on Power Systems}, 36\penalty0 (6):\penalty0
+  4953--4966, 2021.
+\newblock \doi{10.1109/TPWRS.2021.3075925}.
+
+\bibitem[Hasofer and Lind(1974)]{HasoferLind1974}
+Abraham~M. Hasofer and Niels~C. Lind.
+\newblock Exact and invariant second-moment code format.
+\newblock \emph{Journal of the Engineering Mechanics Division}, 100\penalty0
+  (1):\penalty0 111--121, 1974.
+\newblock \doi{10.1061/JMCEA3.0001848}.
+
+\bibitem[Babaeinejadsarookolaee et~al.(2021)Babaeinejadsarookolaee, Birchfield,
+  Christie, et~al.]{PGLibOPF2019}
+Sogol Babaeinejadsarookolaee, Adam Birchfield, Richard~D. Christie, et~al.
+\newblock The power grid library for benchmarking ac optimal power flow
+  algorithms.
+\newblock arXiv:1908.02788, 2021.
+\newblock IEEE PES PGLib-OPF Task Force.
+
+\bibitem[Zimmerman et~al.(2011)Zimmerman, Murillo-S{\'a}nchez, and
+  Thomas]{ZimmermanMurilloSanchezThomas2011}
+Ray~D. Zimmerman, Carlos~E. Murillo-S{\'a}nchez, and Robert~J. Thomas.
+\newblock Matpower: Steady-state operations, planning, and analysis tools for
+  power systems research and education.
+\newblock \emph{IEEE Transactions on Power Systems}, 26\penalty0 (1):\penalty0
+  12--19, 2011.
+\newblock \doi{10.1109/TPWRS.2010.2051168}.
+
+\bibitem[Thurner et~al.(2018)Thurner, Scheidler, Sch{\"a}fer, Menke, Dollichon,
+  Meier, Meinecke, and Braun]{ThurnerEtAl2018}
+Leon Thurner, Alexander Scheidler, Florian Sch{\"a}fer, Jan-Hendrik Menke,
+  Julian Dollichon, Friederike Meier, Steffen Meinecke, and Martin Braun.
+\newblock Pandapower---an open-source python tool for convenient modeling,
+  analysis, and optimization of electric power systems.
+\newblock \emph{IEEE Transactions on Power Systems}, 33\penalty0 (6):\penalty0
+  6510--6521, 2018.
+\newblock \doi{10.1109/TPWRS.2018.2829021}.
+
+\bibitem[Xavier et~al.(2024)Xavier, Kazachkov, Yurdakul, He, and
+  Qiu]{UnitCommitmentJL2024}
+Alinson~S. Xavier, Aleksandr~M. Kazachkov, O{\u{g}}uzhan Yurdakul, Jun He, and
+  Feng Qiu.
+\newblock Unitcommitment.jl: A julia/jump optimization package for
+  security-constrained unit commitment, version 0.4.
+\newblock Zenodo, 2024.
+
+\end{thebibliography}

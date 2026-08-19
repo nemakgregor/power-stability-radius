@@ -1,0 +1,570 @@
+% Revision R1 manuscript — post-dispatch screening/diagnostic framing.
+% Journal-agnostic article class; port into the target journal template
+% (e.g. IEEE Access) before submission.  Tables live in tables_r1/.
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{enumitem}
+\usepackage{graphicx}
+\usepackage[hidelinks]{hyperref}
+\usepackage[numbers,sort&compress]{natbib}
+\usepackage{siunitx}
+
+\newtheorem{assumption}{Assumption}
+\newtheorem{definition}{Definition}
+\newtheorem{proposition}{Proposition}
+\newtheorem{theorem}{Theorem}
+\newtheorem{remark}{Remark}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\ones}{\mathbf{1}}
+\newcommand{\norm}[1]{\left\lVert #1 \right\rVert}
+\newcommand{\abs}[1]{\left\lvert #1 \right\rvert}
+\newcommand{\Proj}{\mathrm{Proj}}
+
+\graphicspath{{../figures/}{figures/}}
+
+\title{Adjoint-Based Thermal-Security Robustness Radii for AC Power Systems:\\
+A Post-Dispatch Screening and Diagnostic Certificate Under
+Response-Constrained Injection Uncertainty}
+
+\author{Egor Grishin\\
+Center for Energy Science and Technology, Moscow, Russia\\
+\texttt{mkgrgor@gmail.com}}
+
+\date{Revision R1}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This paper develops a constrained dual-norm framework for first-order
+robustness radii of power-system operating points and specializes it to AC
+thermal security.  The radius is the largest metric ball of admissible
+injection perturbations, restricted by an uncertainty-response model, that
+remains feasible for all monitored affine constraint surrogates.  For AC
+networks, two-ended apparent-power constraints are mapped to injection space
+through sparse transposed-Jacobian solves, avoiding dense sensitivity
+matrices; zero-flow line ends, where the apparent-power magnitude is
+nondifferentiable, receive an exact first-order operator-norm radius, so the
+certificate covers every monitored constraint.  The framework covers
+Euclidean, covariance-weighted, and sigma radii, yields worst-case
+perturbation directions, and extends to steady-state security-distance
+concepts with explicit response constraints.  We prove exact affine-model
+maximality, DC slack-reference invariance, and metric--sigma equivalence.
+The contribution is positioned strictly as a \emph{post-dispatch screening
+and diagnostic layer}: it evaluates a fixed operating point produced by any
+dispatch process and certifies the affine surrogate only.  Verification is
+correspondingly thorough: the assembled adjoint derivative now agrees with
+centered finite differences to the power-flow-tolerance floor (relative
+errors decreasing as $O(\varepsilon^2)$ from $10^{-6}$ to $10^{-10}$);
+line-wise analytical flow standard deviations match nonlinear Monte Carlo
+within $\pm 2\%$ (median ratio 1.004), making the sigma radius a calibrated
+first-order index in the tested regime; multi-scale nonlinear replay of
+worst-case directions quantifies the mild nonconservatism of the affine
+radius (empirical crossing at 0.90--1.00 of the certified radius); and
+danger-oriented radius rankings outperform loading- and headroom-only
+indicators with scenario-bootstrap confidence intervals that exclude zero.
+\end{abstract}
+
+\noindent\textbf{Keywords:} power-system security; security distance;
+robustness radius; post-dispatch screening; AC power flow; adjoint
+sensitivity; thermal limits; uncertainty quantification.
+
+\section{Introduction}
+\label{sec:intro}
+
+Power-system operators need fast, interpretable security margins around an
+operating point that has already been selected --- by an OPF, a
+security-constrained OPF, a market process, or manual procedures.  The
+question this paper answers is strictly \emph{post-dispatch}: given a fixed
+AC operating point, how large is the admissible set of continuous injection
+perturbations before some monitored thermal constraint is reached, which
+constraint is it, and which injection pattern gets there first?
+
+Finite-contingency SCOPF does not answer this continuous, high-dimensional
+question, and fast operational metrics --- loading ratio, thermal headroom,
+PTDF sensitivities, LODF screening~\citep{WoodWollenbergSheble2013} ---
+measure either margin or sensitivity but not a constrained multidimensional
+distance to violation.  Robust and chance-constrained OPF internalize
+uncertainty during dispatch~\citep{BertsimasSim2004,BenTalNemirovski1998,%
+BienstockChertkovHarnett2014,RoaldEtAl2016,LubinBackhausDvorkin2016}, but
+they require a chosen uncertainty model and a new dispatch solve, and they do
+not evaluate an arbitrary existing operating point.
+
+The idea of measuring security as a \emph{distance} from an operating point
+to a security-region boundary is established: steady-state security distance
+(SSSD) combines operating margin with boundary sensitivity and has been used
+for N$-$1 assessment~\citep{ChenChenXiaKang2013,ChenChenXia2015Concept,%
+ChenEtAl2015N1}.  This paper is a constrained-geometry, AC-adjoint member of
+that family, not the first distance-to-boundary construction; the precise
+positioning is given in Section~\ref{sec:literature} and
+Table~\ref{tab:secdist}.  Relative to SSSD, the radius developed here
+(i) restricts perturbations to an explicit uncertainty-\emph{response}
+subspace $\{\Delta u: A\Delta u = 0\}$ or response map $\Delta u = T\omega$,
+so balancing, participation, and reactive-support conventions are part of
+the geometry; (ii) supports general metrics $M \succ 0$, recovering
+covariance-weighted (sigma) radii as inverse-covariance metric radii;
+(iii) evaluates \emph{two-ended AC apparent-power} constraints through
+sparse transposed-Jacobian (adjoint) solves, without dense sensitivity
+matrices; and (iv) returns closed-form worst-case directions, including an
+operator-norm treatment of zero-flow ends where the scalar gradient does not
+exist.
+
+The contribution is a unified certificate model and a verified algorithmic
+framework:
+\begin{enumerate}[leftmargin=*]
+  \item a constrained dual-norm radius formula for affine engineering
+        constraints, with exact affine-model maximality, worst-case
+        directions, DC slack invariance, and metric--sigma equivalence;
+  \item DC and AC thermal-security specializations with two-ended
+        apparent-power constraints, a reactive-limit-aware active set, and a
+        first-order operator-norm certificate for zero-flow ends, so that
+        \emph{every} monitored constraint receives a radius;
+  \item a sparse AC adjoint implementation whose derivative is verified to
+        the power-flow-tolerance floor by step-sweep centered finite
+        differences and per-solve adjoint residuals;
+  \item a screening-oriented validation methodology: line-wise sigma
+        calibration against nonlinear Monte Carlo, multi-scale worst-case
+        replay quantifying affine nonconservatism, scenario-bootstrap
+        ranking statistics with paired confidence intervals and
+        precision/recall, and a physically realizable participation-factor
+        response study.
+\end{enumerate}
+
+Scope statement, stated once and used throughout: the certificate is
+\emph{exact for the affine surrogate} and is a \emph{local first-order
+screening indicator} for the nonlinear AC system.  It is not a nonlinear
+feasibility certificate, and this paper does not propose a dispatch
+optimization method; radius-aware dispatch is left to future work precisely
+because a fair evaluation requires matched-cost baselines and a full SCOPF
+comparator.
+
+\section{Literature Review}
+\label{sec:literature}
+
+\paragraph{Steady-state security distance}
+SSSD defines the distance from an operating point to a steady-state
+security-region boundary and uses it for assessment and
+ranking~\citep{ChenChenXiaKang2013,ChenChenXia2015Concept}; the N$-$1
+extension screens contingencies through the same
+distance~\citep{ChenEtAl2015N1}.  The present radius differs in the
+uncertainty geometry (equality-constrained ellipsoids and covariance metrics
+instead of a fixed Euclidean injection norm), the constraint model
+(two-ended AC apparent-power limits handled by adjoint solves instead of
+DC or boundary-wise linearizations), the explicit worst-direction recovery,
+and the computational profile (one sparse LU plus $2m$ triangular solves).
+Table~\ref{tab:secdist} gives the side-by-side comparison requested by the
+steady-state security-distance literature.
+
+\input{tables_r1/table_secdist_comparison}
+
+\paragraph{Nonlinear inner approximations}
+Convex inner approximations construct genuinely nonlinear feasibility
+certificates by bounding nonlinear terms~\citep{NguyenDvijothamTuritsyn2019}.
+They provide stronger guarantees at higher computational cost; the radius
+developed here trades the nonlinear guarantee for closed-form evaluation
+and scalable adjoint linear algebra, and Section~\ref{sec:results}
+quantifies empirically how far the affine radius sits from the nonlinear
+crossing distance.
+
+\paragraph{Post-solution diagnostics}
+Recent unified diagnostics quantify AC operating-point robustness under
+injection and topological uncertainty with regime
+changes~\citep{AntonIlic2026Diagnostics}.  That framework spans a broader
+diagnostic family (including topology and regime switching); the present
+work is narrower and more formulaic: for thermal constraints in a fixed
+affine regime it provides a closed-form constrained ellipsoidal radius, an
+exact worst-case direction, and a two-ended sparse adjoint implementation
+with a machine-verifiable derivative.  The two approaches are complementary:
+the radius could serve as one diagnostic inside such a unified suite.
+
+\paragraph{Robust and chance-constrained OPF}
+Robust optimization provides feasibility guarantees over uncertainty
+sets~\citep{BenTalNemirovski1998,BertsimasSim2004}; chance-constrained OPF
+enforces probabilistic security
+levels~\citep{BienstockChertkovHarnett2014,RoaldEtAl2016,%
+LubinBackhausDvorkin2016}; robust convex restrictions target nonlinear AC
+feasibility~\citep{LeeEtAl2021RobustAC}.  These are dispatch-side tools; the
+radius is an evaluation-side tool that measures the robustness such methods
+achieve, for whatever operating point they produce.
+
+\paragraph{Reliability indices and sensitivity screening}
+The sigma radius is structurally a first-order reliability
+index~\citep{HasoferLind1974} specialized to affine thermal surrogates with
+response-constrained Gaussian geometry; Section~\ref{sec:results} reports
+the calibration evidence that justifies (and bounds) this interpretation.
+PTDF/LODF and loading-based screening~\citep{WoodWollenbergSheble2013}
+remain the fast baselines against which the radius is evaluated.
+
+\section{Problem Formulation}
+\label{sec:formulation}
+
+Table~\ref{tab:notation} collects notation and units.
+
+\input{tables_r1/table_notation}
+
+\paragraph{General affine-radius model}
+Consider an operating point with monitored affine surrogate constraints
+\begin{equation}
+  y_j^0+a_j^\top\Delta u \le c_j,
+  \qquad j\in\mathcal{J},
+\end{equation}
+where $\Delta u$ is the local response coordinate.  In primitive space,
+uncertainty $\omega$ may pass through a response map $\Delta u=T\omega$
+representing balancing participation, storage response, reactive-control
+assumptions, or coordinate reduction.  If
+$\Omega_W(1)=\{\omega:C\omega=0,\ \omega^\top W\omega\le1\}$, the support
+denominator of sensitivity $h$ is
+$\sigma(h)=\sqrt{h^\top T K_W(C)T^\top h}$ with $W\succ0$, $C$ full row
+rank, and
+\begin{equation}
+  K_W(C)=W^{-1}-W^{-1}C^\top(CW^{-1}C^\top)^{-1}CW^{-1}.
+\end{equation}
+Alternatively, work directly in response space with
+$\mathcal{B}=\{\Delta u\in\R^d:A\Delta u=0\}$, a metric $M\succ0$, and the
+unit set $\mathcal{U}_M(1)=\{\Delta u:A\Delta u=0,\ \Delta u^\top M\Delta
+u\le1\}$.  The two descriptions agree when $M$ is the metric induced by
+$(T,W,C)$ on $\mathrm{range}(T)$.  For one-sided constraints the margin is
+$m_j=c_j-y_j^0$; a two-sided constraint contributes its two one-sided forms.
+
+\begin{definition}[Linearized robustness radius]
+$r\ge0$ is a linearized robustness-radius certificate if every
+$\Delta u\in r\,\mathcal{U}_M(1)$ satisfies all monitored affine
+constraints.  The global radius $r^\star$ is the largest such $r$ when all
+base margins are nonnegative.  If any margin is negative, the operating
+point is reported as base-infeasible for that constraint rather than
+assigned a certified radius.
+\end{definition}
+
+\paragraph{Power-system specialization}
+Let $\mathcal{N}$ ($|\mathcal{N}|=n$) be the buses and $\mathcal{L}$
+($|\mathcal{L}|=m$) the monitored lines with symmetric thermal limits
+$c_\ell>0$.  DC certificates monitor active-power flows $f_\ell$ (MW) under
+the balanced subspace
+$\mathcal{B}_P=\{\Delta p\in\R^n:\ones^\top\Delta p=0\}$.  AC certificates
+monitor from- and to-end apparent-power magnitudes $s_{\ell,e}$ (MVA),
+$e\in\{f,t\}$, with the response coordinate
+$\Delta u=(\Delta P_{\mathcal{I}_P},\Delta Q_{\mathcal{I}_Q})$ on the
+retained reduced mismatch coordinates.  The admissibility matrix $A$
+encodes the chosen uncertainty-response convention, not a physical law:
+examples include net-zero active balance, blockwise active/reactive
+net-zero forecast error, or a participation-factor response map
+(Section~\ref{sec:results} evaluates one with finite generator headroom).
+The radius is exact for the selected affine surrogate; for nonlinear AC
+power flow it is a local first-order indicator, and nonlinear replay is an
+independent validation layer, not part of the proof.
+
+\paragraph{DC radius}
+With DC sensitivities $\Delta f=H\Delta p$, headroom
+$M_\ell^{DC}=c_\ell-\abs{f_\ell^0}$, and the ones-complement projection
+$\bar g_\ell=g_\ell-(\ones^\top g_\ell/n)\ones$, the line radius is
+$r_\ell^{DC}=M_\ell^{DC}/\norm{\bar g_\ell}_2$ (finite case), with
+infeasible/inactive classifications as in the implementation.
+
+\paragraph{AC radius}
+Let $x=[\theta_{\mathcal{N}\setminus s};V_{\mathcal{PQ}}]$ be the reduced
+state and $J=\partial(P,Q)/\partial x$ the reduced Jacobian at the base
+point.  \emph{Active-set consistency:} the power flow is solved with
+reactive limits enforced; a bus whose every in-service voltage-controlling
+generator is saturated at a Q limit is effectively PQ in the converged
+solution and is linearized as PQ (its voltage variable and reactive
+equation enter $x$ and $J$).  This choice is validated to the
+power-flow-tolerance floor in Section~\ref{sec:results}.  For
+$s^0_{\ell,e}>0$,
+\begin{equation}
+  b_{\ell,e}=\frac{P^0_{\ell,e}\nabla_x P_{\ell,e}
+  +Q^0_{\ell,e}\nabla_x Q_{\ell,e}}{s^0_{\ell,e}},
+  \qquad
+  J^\top h_{\ell,e}=b_{\ell,e},
+\end{equation}
+and the end radius is $r^{AC,M}_{\ell,e}=M^{AC}_{\ell,e}/
+\sigma_{\mathcal{U}_M(1)}(h_{\ell,e})$ with
+$M^{AC}_{\ell,e}=c_\ell-s^0_{\ell,e}$; the line takes the binding end and
+the system takes the minimum line.
+
+\paragraph{Zero-flow ends}
+At $s^0_{\ell,e}=0$ the magnitude has no scalar gradient, but the
+first-order model is still exact:
+$s_{\ell,e}(\Delta u)=\norm{(\nabla P^\top\Delta u,\ \nabla Q^\top\Delta
+u)}_2+O(\norm{\Delta u}^2)$.  With $H_{\ell,e}=[h^P_{\ell,e};
+h^Q_{\ell,e}]$ obtained from two adjoint solves and projected onto the
+admissible subspace, the exact first-order radius is
+\begin{equation}
+  r_{\ell,e}
+  =
+  \frac{c_\ell}{\sigma_{\max}\!\left(H_{\ell,e}\,\Proj_{\ker A}\right)},
+  \label{eq:opnorm}
+\end{equation}
+a $2\times2$ eigenvalue computation per end.  The nondifferentiability
+threshold is scale-aware, $\max(10^{-9},10^{-9}c_\ell)$ MVA, and
+Section~\ref{sec:results} reports its sensitivity.  This closes the gap of
+the original submission, where zero-flow ends were excluded and large cases
+were only partially certified.
+
+\section{Method}
+\label{sec:method}
+
+\paragraph{Constrained support function and exact radius}
+With $K_M(A)=M^{-1}-M^{-1}A^\top(AM^{-1}A^\top)^{-1}AM^{-1}$, the support
+function of the constrained unit ball is
+$\sigma_{\mathcal{U}_M(1)}(h)=\sqrt{h^\top K_M(A)h}$, the worst-case unit
+perturbation is $K_M(A)h/\sqrt{h^\top K_M(A)h}$, and:
+
+\begin{theorem}[Exact affine-model radius]
+\label{thm:exact-radius}
+For one-sided constraints with nonnegative margins $m_j$,
+$r^\star=\min_j m_j/\sqrt{a_j^\top K_M(A)a_j}$ is the largest radius for
+which every $\Delta u\in r^\star\,\mathcal{U}_M(1)$ satisfies all affine
+constraints.
+\end{theorem}
+
+The proof is the standard support-function argument for an ellipsoid
+intersected with a subspace, specialized to thermal surrogates; following
+the convex-geometry literature we present it as a unifying engineering
+specialization rather than a new theoretical result.  Slack-reference
+invariance of the balanced DC radius and the metric--sigma equivalence
+$\beta_j=m_j/\sqrt{h_j^\top K_{\Sigma^{-1}}(A)h_j}$ (the conditional
+standard deviation of the affine response under $A\Delta u=0$) carry over
+from the original submission unchanged; for a diagonal covariance and a
+single balance equation the projection is variance-weighted mean removal.
+We emphasize the distinction, raised during review, between
+\emph{conditioning} a Gaussian vector on $A\Delta u=0$ and \emph{applying a
+physical response map} $T\omega$: the two coincide only when the conditional
+covariance equals $T\Sigma_\omega T^\top$, and every experiment below states
+which mechanism it uses.
+
+\paragraph{Sparse adjoint algorithm and verification hooks}
+The AC computation factorizes the reduced Jacobian once (sparse LU) and
+solves one transposed system per line end, in chunks; zero-flow ends add two
+solves.  Two verification quantities are computed \emph{inside} the
+certificate: the adjoint residual
+$\norm{J^\top h-b}_\infty/\max(1,\norm{b}_\infty)$ per chunk (reported with
+every run), and the step-sweep centered finite-difference protocol of
+Section~\ref{sec:evaluation} (reported with every case study).  Peak
+adjoint right-hand-side storage is $O(n_x q)$ at chunk size $q$.
+
+\paragraph{DC N$-$1 screening layer}
+For DC contingency screening, LODF-updated sensitivities give
+post-contingency radii as a fast diagnostic layer.  This is screening only:
+it is not a substitute for AC contingency simulation, and no dispatch
+procedure is built on it in this paper.
+
+\section{Verification and Evaluation Protocol}
+\label{sec:evaluation}
+
+\paragraph{Benchmarks}
+PGLib-OPF networks~\citep{PGLibOPF2019} parsed via
+MATPOWER-format inputs~\citep{ZimmermanMurilloSanchezThomas2011} into
+pandapower~\citep{ThurnerEtAl2018}; hourly demand profiles derived from
+UnitCommitment.jl instances~\citep{UnitCommitmentJL2024} where used.  The
+certificate model is the series-only lossless surrogate; the verification
+power flow applies the SAME policy, and a regression test asserts equality
+of the certificate admittance model and the verification solver's internal
+admittance matrix, so the affine model and the replay model cannot drift
+apart silently.
+
+\paragraph{Derivative verification}
+For each case, the ten tightest differentiable binding ends are replayed
+with centered finite differences along the balanced worst-case direction at
+$\varepsilon\in\{1,10^{-1},10^{-2},10^{-3}\}$ MVA.  Acceptance requires the
+relative error to decrease with $\varepsilon$ until the power-flow-tolerance
+floor; a plateau is treated as a model defect, not a diagnostic curiosity.
+The original submission's plateau at the $10^{-2}$ level was traced to two
+implementation defects --- an ext-grid-inconsistent slack index that shifted
+every active-power sensitivity entry by one bus position on affected cases,
+and an unmodeled reactive-limit active set --- both fixed and
+regression-tested.
+
+\paragraph{Statistical protocol}
+Monte Carlo experiments use fixed seeds, report attempted/converged sample
+counts and PF failures, and quantify ranking uncertainty by
+\emph{scenario-level} bootstrap (resampling Monte Carlo scenarios, which
+preserves the cross-line correlation structure), with paired bootstrap
+intervals for score differences and precision/recall at $k$ for top-risk
+identification.  Timing rows are mean $\pm$ std over 7 repetitions with
+measured peak resident memory.
+
+\paragraph{Reproducibility}
+All experiments in this revision regenerate from one commit of the public
+repository via committed scripts
+(\texttt{experiments/revision\_r1/scripts/}), with JSON artifacts committed
+alongside (\texttt{experiments/revision\_r1/results/}).  The revision
+experiments ran on a Linux container (48-thread Intel Xeon class, Python
+3.11, pandapower 2.14, SciPy 1.13, NumPy 1.26); absolute timings therefore
+differ from the original submission's hardware, and only relative structure
+should be compared.
+
+\section{Results}
+\label{sec:results}
+
+\paragraph{Derivative correctness}
+Table~\ref{tab:adjoint-validation} shows the step-sweep verification after
+the corrections: median relative errors fall from $\sim10^{-6}$ at
+$\varepsilon=1$ MVA to $\sim10^{-10}$ at $\varepsilon=10^{-3}$ MVA ---
+$O(\varepsilon^2)$ convergence to the power-flow-tolerance floor --- with
+adjoint residuals at machine precision.  The non-convergent
+$10^{-2}$-plateau of the original submission is fully explained by the two
+implementation defects above; no unexplained discrepancy remains.
+
+\input{tables_r1/table_adjoint_validation}
+
+\paragraph{DC--AC divergence}
+Table~\ref{tab:dc-ac} regenerates the paired radii with the corrected
+implementation.  DC radii are bit-identical to the original table, as
+implied by slack invariance; AC radii shift moderately where the defects
+were active (case73: $14.24\to11.64$; case118: $6.18\to5.80$).  The
+qualitative conclusion is unchanged: AC and DC radii differ materially
+(AC/DC from 0.45 to 1.16), so DC-only screening misjudges AC thermal
+robustness in both directions.
+
+\input{tables_r1/table_dc_ac_radii}
+
+\paragraph{Complete certification of zero-flow ends}
+Table~\ref{tab:zero-flow} demonstrates the operator-norm extension on
+\texttt{case2000\_goc}: all 17 lines with zero-flow ends now carry
+first-order radii, the all-constraint system radius is defined, and the
+nondifferentiable-end count is insensitive to the detection threshold over
+eight orders of magnitude.
+
+\input{tables_r1/table_zero_flow}
+
+\paragraph{Sigma calibration}
+Table~\ref{tab:sigma-calibration} reports line-wise calibration on the IEEE
+118-bus system: the analytical first-order standard deviation matches the
+nonlinear empirical one with median ratio 1.004 (range 0.989--1.017) over
+the ten highest-variance ends, and tightened-limit exceedance probabilities
+fall inside or near the Wilson intervals.  The $2.8\times$ miscalibration
+reported in the original submission was an artifact of the slack-index
+defect, not a property of the method; with the corrected sensitivities the
+sigma radius behaves as a calibrated first-order index \emph{in this tested
+regime}.  We retain the scope limitation: system-level risk is not the
+minimum line-wise index, and calibration under strong nonlinearity, larger
+perturbation scales, or heterogeneous covariance families requires the
+broader protocol outlined in Section~\ref{sec:discussion}.
+
+\input{tables_r1/table_sigma_calibration}
+
+\paragraph{Nonlinear validity range of the affine radius}
+Table~\ref{tab:replay} quantifies, per case, where nonlinear violation
+actually occurs along the certified worst direction: the interpolated
+crossing sits at 0.90--1.00 of the affine radius (median 0.95--0.999).  The
+affine radius is therefore mildly \emph{optimistic} --- by at most 10\% and
+typically under 5\% on these cases --- and a user who requires conservatism
+can de-rate the radius by the reported case-wise factor.  All replays
+converged; no voltage-band violations occurred at or below the certified
+radius.
+
+\input{tables_r1/table_replay_multiscale}
+
+\paragraph{Ranking quality with scenario-level uncertainty}
+Table~\ref{tab:ranking} repeats the 118-bus ranking study with 10{,}000
+converged nonlinear scenarios and scenario-bootstrap intervals.  The
+radius-based danger score dominates loading- and headroom-only scores, and
+the \emph{paired} confidence intervals for the Spearman differences exclude
+zero, which the line bootstrap of the original submission could not
+legitimately claim.  Precision at $k$ and top-$k$ mean overload frequencies
+quantify the operational value directly.
+
+\input{tables_r1/table_ranking}
+
+\paragraph{Realizable response models}
+With uncertainty restricted to load buses and generators responding through
+headroom-proportional participation factors, the certified radii change by
+$-1\%$ to $+21\%$ relative to the blockwise-balanced convention on the five
+tightest 118-bus lines, every worst-case perturbation respects all generator
+limits, and nonlinear replay at the certified radius reaches
+$\abs{S}/c_\ell=1.001$--$1.015$ on the target line --- the certificate is
+simultaneously realizable and tight under this response model.  This
+supports the central modeling claim: the response convention is part of the
+certificate geometry, and changing it changes the certified number in an
+auditable way.
+
+\paragraph{Computational profile}
+Table~\ref{tab:timing} separates power-flow, operator-build, and certificate
+stages with repeated timings and measured peak memory.  The certificate
+stage (adjoint solves + norms, including residual checks) remains sub-second
+through 200 buses on the revision hardware; the lossless \texttt{runpp}
+base point does not converge for \texttt{case2000\_goc}, which is why the
+zero-flow study uses the AC feasibility power flow --- the accounting is
+reported rather than hidden.
+
+\input{tables_r1/table_timing}
+
+\section{Discussion}
+\label{sec:discussion}
+
+\paragraph{What the certificate is}
+A post-dispatch screening and diagnostic layer: exact for the affine
+surrogate, locally valid for the nonlinear system, calibrated in the tested
+regime, and honest about where the nonlinear crossing sits relative to the
+certified radius (0.90--1.00 on the studied cases).  Under isotropic
+uncertainty several classical scores are monotone transformations of the
+same standardized margin; the value of the radius family is that it stays
+well-defined and auditable when the geometry is \emph{not} isotropic ---
+heterogeneous covariance, response constraints, participation maps.
+
+\paragraph{What it is not}
+Not a nonlinear feasibility certificate (unlike convex inner
+approximations~\citep{NguyenDvijothamTuritsyn2019}), not a system-level
+probability of overload, and not a dispatch method.  Radius-aware dispatch
+is deliberately out of scope: a defensible evaluation requires matched-cost
+baselines (loading-, headroom-, PTDF-, and chance-based tightening under
+equal cost or equal cut budgets) and a recognized preventive/corrective
+SCOPF comparator across multiple lossy systems; that is a separate study.
+
+\paragraph{Inequality-constrained uncertainty sets}
+Box and polyhedral restrictions (generator headroom, ramp bounds, load
+nonnegativity, renewable availability) leave the closed-form family: the
+support function becomes a convex program (an SOCP for ellipsoid-plus-box).
+The participation-factor study shows one practically relevant middle ground
+that stays closed-form; the general trade-off between closed form and
+realism is inherent and should be chosen per application.
+
+\paragraph{Limitations}
+The AC certificate is local to the linearization at the base point,
+including its reactive-limit active set; large perturbations can change the
+active set along the path even when the base set is modeled correctly (the
+replay protocol reports these events).  The lossless series-only surrogate
+is a modeling choice enforced consistently across certificate and
+verification; extending the Jacobian to the full pi-model (charging,
+shunts, transformer magnetizing branches) removes the need for the lossless
+policy and is mechanical but not yet implemented.  Calibration evidence
+covers the tested uncertainty scale and one network family; base
+infeasibility, PF non-convergence on stressed cases, and islanding
+contingencies are reported as explicit statuses rather than silently
+dropped.
+
+\section{Conclusions}
+
+This paper provides a response-constrained thermal-security robustness
+radius as a verified post-dispatch screening and diagnostic certificate:
+a constrained dual-norm formulation with exact affine-model maximality,
+slack invariance, and metric--sigma equivalence; a sparse two-ended AC
+adjoint implementation whose derivative is machine-verified; operator-norm
+radii that certify zero-flow ends and make the all-constraint radius
+well-defined on large cases; calibrated sigma diagnostics; quantified
+affine-to-nonlinear crossing ratios; statistically defensible ranking
+evidence; and a realizable participation-response study.  The framework is
+positioned within the steady-state security-distance literature as its
+constrained-geometry, AC-adjoint extension, and the dispatch-side use of
+the radius is left to a dedicated future study.
+
+\section*{Data and Code Availability}
+
+Source code, entry points, tests, configuration files, revision experiment
+scripts, and their JSON artifacts are available in the public repository
+\url{https://github.com/nemakgregor/power-stability-radius} (branch
+\texttt{revision-r1-screening}; the exact commit hash accompanies each
+artifact).  An archived release with a DOI will be minted at
+resubmission.  Benchmark cases are public PGLib-OPF
+inputs~\citep{PGLibOPF2019}.
+
+\bibliographystyle{unsrtnat}
+\bibliography{references_r1}
+
+\end{document}

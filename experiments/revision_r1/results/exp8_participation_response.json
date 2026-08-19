@@ -1,0 +1,68 @@
+{
+  "experiment": "participation_response_case118",
+  "response_model": "omega at load buses; gens respond prop. to headroom; alpha sums to 1",
+  "n_load_buses": 99,
+  "n_gens": 53,
+  "lines": [
+    {
+      "line": 28,
+      "end": "to",
+      "radius_balanced_pq": 15.360153738469437,
+      "radius_participation_load_only": 16.525194718742394,
+      "ratio_participation_over_balanced": 1.07584826298679,
+      "worst_case_total_load_error_mw": -9.840726951634155,
+      "max_single_gen_response_mw": 1.446677279220172,
+      "generator_limits_respected": true,
+      "replay_converged": true,
+      "replay_s_over_limit": 1.0012608245112828
+    },
+    {
+      "line": 152,
+      "end": "from",
+      "radius_balanced_pq": 28.076360848084402,
+      "radius_participation_load_only": 29.677819475251923,
+      "ratio_participation_over_balanced": 1.0570393946648817,
+      "worst_case_total_load_error_mw": -46.19966539951036,
+      "max_single_gen_response_mw": 6.791775299684253,
+      "generator_limits_respected": true,
+      "replay_converged": true,
+      "replay_s_over_limit": 1.0014590188421004
+    },
+    {
+      "line": 118,
+      "end": "from",
+      "radius_balanced_pq": 32.384565274577874,
+      "radius_participation_load_only": 34.892959342563785,
+      "ratio_participation_over_balanced": 1.077456468744233,
+      "worst_case_total_load_error_mw": 8.330715222102219,
+      "max_single_gen_response_mw": 1.224691680879081,
+      "generator_limits_respected": true,
+      "replay_converged": true,
+      "replay_s_over_limit": 1.00254190764496
+    },
+    {
+      "line": 37,
+      "end": "to",
+      "radius_balanced_pq": 36.58870346414405,
+      "radius_participation_load_only": 36.39705900055911,
+      "ratio_participation_over_balanced": 0.9947621958298484,
+      "worst_case_total_load_error_mw": -88.50933496295741,
+      "max_single_gen_response_mw": 13.011685469896609,
+      "generator_limits_respected": true,
+      "replay_converged": true,
+      "replay_s_over_limit": 1.0012698545788021
+    },
+    {
+      "line": 101,
+      "end": "to",
+      "radius_balanced_pq": 49.71763258955616,
+      "radius_participation_load_only": 59.96289309367257,
+      "ratio_participation_over_balanced": 1.2060689532161786,
+      "worst_case_total_load_error_mw": -137.8920520634796,
+      "max_single_gen_response_mw": 20.27139861574499,
+      "generator_limits_respected": true,
+      "replay_converged": true,
+      "replay_s_over_limit": 1.0153342365377982
+    }
+  ]
+}

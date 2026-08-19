@@ -1,0 +1,29 @@
+\begin{table}[t]
+\centering
+\caption{Line-wise sigma calibration on the IEEE 118-bus system
+(load-proportional $\sigma_P$, $\sigma_Q=\sigma_P\tan(\arccos 0.9)$,
+3000 nonlinear Monte Carlo replays, seed 42, 0 PF failures).
+Ten highest-variance binding ends.  The analytical first-order standard
+deviation now matches the empirical nonlinear standard deviation
+(median ratio 1.004, range [0.989, 1.017]);
+the tightened-limit exceedance probability at $s_0+2\hat\sigma$ is compared
+with the empirical frequency and its Wilson 95\% interval.
+\label{tab:sigma-calibration}}
+\scriptsize
+\begin{tabularx}{\textwidth}{@{}Xlrrrrrrl@{}}
+\toprule
+Line & End & $|S_0|$ & Ana.\ sd & Emp.\ sd & Ratio & $P_{\mathrm{pred}}$ & $P_{\mathrm{emp}}$ & Wilson 95\% \\
+\midrule
+\texttt{line\_96} & to & 402.44 & 21.805 & 21.619 & 1.009 & 0.0237 & 0.0193 & [0.0150, 0.0249] \\
+\texttt{line\_90} & from & 244.62 & 15.204 & 15.070 & 1.009 & 0.0237 & 0.0223 & [0.0176, 0.0283] \\
+\texttt{line\_89} & to & 363.68 & 11.804 & 11.767 & 1.003 & 0.0231 & 0.0253 & [0.0203, 0.0316] \\
+\texttt{line\_88} & to & 169.21 & 10.805 & 10.731 & 1.007 & 0.0235 & 0.0200 & [0.0156, 0.0257] \\
+\texttt{line\_117} & from & 113.85 & 9.822 & 9.819 & 1.000 & 0.0228 & 0.0343 & [0.0284, 0.0415] \\
+\texttt{line\_49} & from & 134.73 & 9.433 & 9.272 & 1.017 & 0.0247 & 0.0270 & [0.0218, 0.0334] \\
+\texttt{line\_118} & from & 89.21 & 7.447 & 7.418 & 1.004 & 0.0232 & 0.0250 & [0.0200, 0.0312] \\
+\texttt{line\_128} & to & 92.94 & 7.284 & 7.274 & 1.001 & 0.0229 & 0.0200 & [0.0156, 0.0257] \\
+\texttt{line\_166} & to & 68.60 & 6.777 & 6.852 & 0.989 & 0.0216 & 0.0217 & [0.0170, 0.0275] \\
+\texttt{line\_110} & from & 263.10 & 6.542 & 6.605 & 0.991 & 0.0217 & 0.0250 & [0.0200, 0.0312] \\
+\bottomrule
+\end{tabularx}
+\end{table}

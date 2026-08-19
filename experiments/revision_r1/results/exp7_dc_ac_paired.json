@@ -1,0 +1,62 @@
+{
+  "experiment": "dc_ac_paired_radii",
+  "convention": "base_dispatch=ac_fpf, lossless AC, balanced [P;Q] AC certificate, balanced DC PTDF",
+  "cases": [
+    {
+      "case": "case5_pjm",
+      "r_dc_global": 112.83160216968191,
+      "r_ac_global": 110.33467300012136,
+      "ac_over_dc": 0.9778703029865201,
+      "n_nondiff_ends": 0
+    },
+    {
+      "case": "case14_ieee",
+      "r_dc_global": 121.41663251466905,
+      "r_ac_global": 118.87706446334687,
+      "ac_over_dc": 0.979083853680299,
+      "n_nondiff_ends": 0
+    },
+    {
+      "case": "case24_ieee_rts",
+      "r_dc_global": 7.903150957694251,
+      "r_ac_global": 4.204152662243343,
+      "ac_over_dc": 0.531959048327467,
+      "n_nondiff_ends": 0
+    },
+    {
+      "case": "case30_ieee",
+      "r_dc_global": 12.207396168943635,
+      "r_ac_global": 8.317820023230096,
+      "ac_over_dc": 0.6813754471564657,
+      "n_nondiff_ends": 0
+    },
+    {
+      "case": "case57_ieee",
+      "r_dc_global": 27.524394261757543,
+      "r_ac_global": 23.541511793622693,
+      "ac_over_dc": 0.8552962717269068,
+      "n_nondiff_ends": 0
+    },
+    {
+      "case": "case73_ieee_rts",
+      "r_dc_global": 25.70362292120999,
+      "r_ac_global": 11.640395867291273,
+      "ac_over_dc": 0.4528698504087495,
+      "n_nondiff_ends": 0
+    },
+    {
+      "case": "case118_ieee",
+      "r_dc_global": 5.019837605112842,
+      "r_ac_global": 5.801369926871327,
+      "ac_over_dc": 1.1556887659000108,
+      "n_nondiff_ends": 0
+    },
+    {
+      "case": "case200_activ",
+      "r_dc_global": 41.012660136319795,
+      "r_ac_global": 38.58255391496837,
+      "ac_over_dc": 0.9407474127921934,
+      "n_nondiff_ends": 0
+    }
+  ]
+}

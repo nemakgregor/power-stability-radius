@@ -1,0 +1,141 @@
+{
+  "experiment": "timing_breakdown",
+  "cases": [
+    {
+      "case": "case14_ieee",
+      "n_bus": 14,
+      "n_line": 17,
+      "repeats": 7,
+      "ac_pf": {
+        "mean_s": 0.24020698100009344,
+        "std_s": 0.028735325144098864,
+        "min_s": 0.20788269700005912,
+        "max_s": 0.29227188099957857,
+        "n": 7
+      },
+      "operator_build_assembly_plus_lu": {
+        "mean_s": 0.017550377142729952,
+        "std_s": 0.0053447338060431645,
+        "min_s": 0.013164402999791491,
+        "max_s": 0.025404074000107357,
+        "n": 7
+      },
+      "certificate_adjoint_plus_norms": {
+        "mean_s": 0.03048635185716973,
+        "std_s": 0.004443260979721466,
+        "min_s": 0.024598801000138337,
+        "max_s": 0.035295262000545335,
+        "n": 7
+      },
+      "peak_rss_after_pf_mb": 322.4453125,
+      "peak_rss_after_operator_mb": 322.5703125,
+      "peak_rss_after_certificate_mb": 322.5703125,
+      "stored_h_arrays_mb": 0.006528,
+      "adjoint_residual_max": 4.062835385973699e-16,
+      "n_nondiff_ends": 0
+    },
+    {
+      "case": "case30_ieee",
+      "n_bus": 30,
+      "n_line": 34,
+      "repeats": 7,
+      "ac_pf": {
+        "mean_s": 0.27469674385715087,
+        "std_s": 0.021124491111569735,
+        "min_s": 0.25794590399982553,
+        "max_s": 0.30451676399934513,
+        "n": 7
+      },
+      "operator_build_assembly_plus_lu": {
+        "mean_s": 0.035851856428572706,
+        "std_s": 0.007137547325511243,
+        "min_s": 0.026615859999765235,
+        "max_s": 0.044539732999510306,
+        "n": 7
+      },
+      "certificate_adjoint_plus_norms": {
+        "mean_s": 0.05384634385726323,
+        "std_s": 0.005281736944418133,
+        "min_s": 0.048152717999983,
+        "max_s": 0.0629353929998615,
+        "n": 7
+      },
+      "peak_rss_after_pf_mb": 322.8203125,
+      "peak_rss_after_operator_mb": 322.9453125,
+      "peak_rss_after_certificate_mb": 323.1953125,
+      "stored_h_arrays_mb": 0.030464,
+      "adjoint_residual_max": 4.693066682871974e-16,
+      "n_nondiff_ends": 0
+    },
+    {
+      "case": "case118_ieee",
+      "n_bus": 118,
+      "n_line": 175,
+      "repeats": 7,
+      "ac_pf": {
+        "mean_s": 0.35505342114278654,
+        "std_s": 0.021286582641773955,
+        "min_s": 0.3318114110006718,
+        "max_s": 0.37934547799977736,
+        "n": 7
+      },
+      "operator_build_assembly_plus_lu": {
+        "mean_s": 0.1290762829999689,
+        "std_s": 0.008613934299667149,
+        "min_s": 0.11805244399965886,
+        "max_s": 0.1400244129999919,
+        "n": 7
+      },
+      "certificate_adjoint_plus_norms": {
+        "mean_s": 0.502150355714418,
+        "std_s": 0.04514108531657281,
+        "min_s": 0.46078863900038414,
+        "max_s": 0.5922152709999864,
+        "n": 7
+      },
+      "peak_rss_after_pf_mb": 324.1953125,
+      "peak_rss_after_operator_mb": 324.1953125,
+      "peak_rss_after_certificate_mb": 326.5703125,
+      "stored_h_arrays_mb": 0.588,
+      "adjoint_residual_max": 5.451792256057499e-16,
+      "n_nondiff_ends": 0
+    },
+    {
+      "case": "case200_activ",
+      "n_bus": 200,
+      "n_line": 179,
+      "repeats": 7,
+      "ac_pf": {
+        "mean_s": 0.48859634114290074,
+        "std_s": 0.14691292886591076,
+        "min_s": 0.39140208899971185,
+        "max_s": 0.8139316580000013,
+        "n": 7
+      },
+      "operator_build_assembly_plus_lu": {
+        "mean_s": 0.18638799357138072,
+        "std_s": 0.015869385702118943,
+        "min_s": 0.16363649100003386,
+        "max_s": 0.21007822699993994,
+        "n": 7
+      },
+      "certificate_adjoint_plus_norms": {
+        "mean_s": 0.4794706999998328,
+        "std_s": 0.028919189173772404,
+        "min_s": 0.4540223229996627,
+        "max_s": 0.5345364259992493,
+        "n": 7
+      },
+      "peak_rss_after_pf_mb": 326.6953125,
+      "peak_rss_after_operator_mb": 326.6953125,
+      "peak_rss_after_certificate_mb": 329.6953125,
+      "stored_h_arrays_mb": 1.094048,
+      "adjoint_residual_max": 1.6940106211881253e-15,
+      "n_nondiff_ends": 0
+    },
+    {
+      "case": "case2000_goc",
+      "failed": "pandapower.runpp failed in primary solve."
+    }
+  ]
+}

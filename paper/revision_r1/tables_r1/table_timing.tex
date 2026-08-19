@@ -1,0 +1,20 @@
+\begin{table}[t]
+\centering
+\caption{Separated, repeated timings (mean $\pm$ std over 7 repetitions) and
+measured peak resident memory.  Stages: nonlinear AC PF; operator build
+(Jacobian assembly + sparse LU); certificate (chunked adjoint solves +
+balanced norms, including the adjoint-residual check).
+\label{tab:timing}}
+\scriptsize
+\begin{tabularx}{\textwidth}{@{}Xrrrrrrr@{}}
+\toprule
+Case & Buses & Lines & AC PF (s) & Operator (s) & Certificate (s) & Peak RSS (MB) & Stored $h$ (MB) \\
+\midrule
+\texttt{case14\_ieee} & 14 & 17 & 0.240$\pm$0.029 & 0.018$\pm$0.005 & 0.030$\pm$0.004 & 323 & 0.01 \\
+\texttt{case30\_ieee} & 30 & 34 & 0.275$\pm$0.021 & 0.036$\pm$0.007 & 0.054$\pm$0.005 & 323 & 0.03 \\
+\texttt{case118\_ieee} & 118 & 175 & 0.355$\pm$0.021 & 0.129$\pm$0.009 & 0.502$\pm$0.045 & 327 & 0.59 \\
+\texttt{case200\_activ} & 200 & 179 & 0.489$\pm$0.147 & 0.186$\pm$0.016 & 0.479$\pm$0.029 & 330 & 1.09 \\
+\texttt{case2000\_goc} & \multicolumn{7}{l}{lossless runpp base point does not converge (AC-FPF base required, cf.\ Table~\ref{tab:zero-flow})} \\
+\bottomrule
+\end{tabularx}
+\end{table}

@@ -1,0 +1,25 @@
+\begin{table}[t]
+\centering
+\caption{Positioning relative to the steady-state security-distance and
+robustness-diagnostics literature.  SSSD = steady-state security distance
+\citep{ChenChenXiaKang2013,ChenChenXia2015Concept,ChenEtAl2015N1};
+CIA = convex inner approximations of steady-state security regions
+\citep{NguyenDvijothamTuritsyn2019}; UD = unified AC operating-point
+robustness diagnostics \citep{AntonIlic2026Diagnostics}.
+\label{tab:secdist}}
+\scriptsize
+\begin{tabularx}{\textwidth}{@{}lYYYY@{}}
+\toprule
+ & SSSD & CIA & UD & This work \\
+\midrule
+Uncertainty space & bus injections, fixed directions/boundary distance & full nonlinear feasible set & injections + topology, regime changes & response-constrained injections $\{\Delta u: A\Delta u=0\}$ \\
+Metric & Euclidean distance to boundary & set inclusion (no scalar metric) & sensitivity-normalized margins & any $M\succ0$: Euclidean, per-unit, covariance ($\Sigma^{-1}$) \\
+Constraints & steady-state security region boundary & nonlinear AC feasibility & multiple diagnostic families & two-ended AC apparent-power thermal limits \\
+Network model & DC / PV-curve based boundaries & nonlinear AC with bounded remainders & AC sensitivities around solved PF & AC first-order (reduced Jacobian, lossless series model) \\
+Contingency treatment & N$-$1 via boundary recomputation & base topology & topological uncertainty classes & DC LODF screening layer (diagnostic only) \\
+Nonlinear guarantee & none (boundary linearization) & yes (inner approximation) & none (local) & none beyond affine surrogate; empirically quantified crossing ratios \\
+Worst direction & not explicit & not applicable & partially (per diagnostic) & closed form $K_M(A)h/\sqrt{h^\top K_M(A)h}$; operator-norm at $|S_0|{=}0$ \\
+Complexity & boundary construction per scenario & SDP/convex program & per-diagnostic linear algebra & one sparse LU + $2m$ triangular solves (chunked) \\
+\bottomrule
+\end{tabularx}
+\end{table}

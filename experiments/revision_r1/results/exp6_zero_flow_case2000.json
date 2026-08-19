@@ -1,0 +1,155 @@
+{
+  "experiment": "zero_flow_case2000_goc",
+  "n_lines": 2743,
+  "n_nd_lines": 17,
+  "n_operator_norm_certified": 17,
+  "all_constraint_radius_now_defined": true,
+  "global_min_radius": 14.067969844385216,
+  "nd_threshold_sensitivity_end_counts": {
+    "1e-12": 42,
+    "1e-09": 46,
+    "1e-06": 46,
+    "0.001": 46,
+    "0.1": 46
+  },
+  "q_limit_events_at_base": 19,
+  "adjoint_residual_max": 2.2896430694669664e-15,
+  "nd_lines": [
+    {
+      "line": 168,
+      "s0_from": 0.0,
+      "s0_to": 0.0,
+      "operator_norm_radius_from": 100024.0091288169,
+      "operator_norm_radius_to": 100024.0091288169,
+      "status": "ok_finite_operator_norm"
+    },
+    {
+      "line": 170,
+      "s0_from": 9.661692895276012e-12,
+      "s0_to": 9.661692895276015e-12,
+      "operator_norm_radius_from": 176.73073247684437,
+      "operator_norm_radius_to": 176.73073247684437,
+      "status": "ok_finite_operator_norm"
+    },
+    {
+      "line": 878,
+      "s0_from": 0.0,
+      "s0_to": 0.0,
+      "operator_norm_radius_from": 100024.00912881334,
+      "operator_norm_radius_to": 100024.00912881334,
+      "status": "ok_finite_operator_norm"
+    },
+    {
+      "line": 930,
+      "s0_from": 0.0,
+      "s0_to": 0.0,
+      "operator_norm_radius_from": 100024.00912881491,
+      "operator_norm_radius_to": 100024.00912881491,
+      "status": "ok_finite_operator_norm"
+    },
+    {
+      "line": 1851,
+      "s0_from": 0.0,
+      "s0_to": 0.0,
+      "operator_norm_radius_from": 100024.00912881477,
+      "operator_norm_radius_to": 100024.00912881477,
+      "status": "ok_finite_operator_norm"
+    },
+    {
+      "line": 1889,
+      "s0_from": 0.0,
+      "s0_to": 0.0,
+      "operator_norm_radius_from": 100024.00912881416,
+      "operator_norm_radius_to": 100024.00912881416,
+      "status": "ok_finite_operator_norm"
+    },
+    {
+      "line": 1966,
+      "s0_from": 0.0,
+      "s0_to": 0.0,
+      "operator_norm_radius_from": 100024.00912881416,
+      "operator_norm_radius_to": 100024.00912881416,
+      "status": "ok_finite_operator_norm"
+    },
+    {
+      "line": 1972,
+      "s0_from": 0.0,
+      "s0_to": 0.0,
+      "operator_norm_radius_from": 100024.00912881481,
+      "operator_norm_radius_to": 100024.00912881481,
+      "status": "ok_finite_operator_norm"
+    },
+    {
+      "line": 1973,
+      "s0_from": 0.0,
+      "s0_to": 0.0,
+      "operator_norm_radius_from": 100024.00912881346,
+      "operator_norm_radius_to": 100024.00912881346,
+      "status": "ok_finite_operator_norm"
+    },
+    {
+      "line": 1976,
+      "s0_from": 0.0,
+      "s0_to": 0.0,
+      "operator_norm_radius_from": 100024.00912881416,
+      "operator_norm_radius_to": 100024.00912881416,
+      "status": "ok_finite_operator_norm"
+    },
+    {
+      "line": 1990,
+      "s0_from": 0.0,
+      "s0_to": 0.0,
+      "operator_norm_radius_from": 100024.00912881416,
+      "operator_norm_radius_to": 100024.00912881416,
+      "status": "ok_finite_operator_norm"
+    },
+    {
+      "line": 1993,
+      "s0_from": 0.0,
+      "s0_to": 0.0,
+      "operator_norm_radius_from": 100024.00912881205,
+      "operator_norm_radius_to": 100024.00912881205,
+      "status": "ok_finite_operator_norm"
+    },
+    {
+      "line": 2013,
+      "s0_from": 0.0,
+      "s0_to": 0.0,
+      "operator_norm_radius_from": 100024.00912881523,
+      "operator_norm_radius_to": 100024.00912881523,
+      "status": "ok_finite_operator_norm"
+    },
+    {
+      "line": 2021,
+      "s0_from": 0.0,
+      "s0_to": 0.0,
+      "operator_norm_radius_from": 70745.35253573513,
+      "operator_norm_radius_to": 70745.35253573513,
+      "status": "ok_finite_operator_norm"
+    },
+    {
+      "line": 2062,
+      "s0_from": 0.0,
+      "s0_to": 0.0,
+      "operator_norm_radius_from": 100024.00912881416,
+      "operator_norm_radius_to": 100024.00912881416,
+      "status": "ok_finite_operator_norm"
+    },
+    {
+      "line": 2738,
+      "s0_from": 2.3876299677457573e-11,
+      "s0_to": 2.387629967745758e-11,
+      "operator_norm_radius_from": 57777.79918028158,
+      "operator_norm_radius_to": 57777.79918028158,
+      "status": "ok_finite_operator_norm"
+    },
+    {
+      "line": 2741,
+      "s0_from": 0.0,
+      "s0_to": 0.0,
+      "operator_norm_radius_from": 100024.00912881416,
+      "operator_norm_radius_to": 100024.00912881416,
+      "status": "ok_finite_operator_norm"
+    }
+  ]
+}
