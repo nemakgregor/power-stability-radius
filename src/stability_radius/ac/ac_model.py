@@ -688,6 +688,7 @@ def build_ac_operator(
     va_rad: np.ndarray,
     line_indices: list[int] | None = None,
     lossless: bool = True,
+    pv_to_pq_bus_ids: list[int] | tuple[int, ...] | None = None,
 ) -> ACOperator:
     """
     Build ACOperator around a base AC PF point.
@@ -704,6 +705,12 @@ def build_ac_operator(
         Optional explicit ordering of monitored net.line indices.
     lossless:
         If True, enforces r=0 in the internal Ybus (keeps closer to DC assumptions).
+    pv_to_pq_bus_ids:
+        Bus ids whose voltage control saturated at a reactive-power limit in
+        the base power flow (``enforce_q_lims=True``).  pandapower treats such
+        buses as PQ in the converged solution, so the reduced Jacobian must do
+        the same, otherwise the certificate linearizes a different active set
+        than the one the power flow actually solved.
 
     Returns
     -------
@@ -777,6 +784,23 @@ def build_ac_operator(
     )
 
     pv_mask = _detect_pv_buses(net, bus_ids, slack_pos)
+
+    if pv_to_pq_bus_ids:
+        bus_pos_map = {bid: pos for pos, bid in enumerate(bus_ids)}
+        n_converted = 0
+        for bid in pv_to_pq_bus_ids:
+            pos = bus_pos_map.get(int(bid))
+            if pos is None or pos == slack_pos:
+                continue
+            if pv_mask[pos]:
+                pv_mask[pos] = False
+                n_converted += 1
+        if n_converted:
+            logger.info(
+                "ACOperator: converted %d PV bus(es) to PQ because their "
+                "voltage control is saturated at a Q limit in the base PF.",
+                int(n_converted),
+            )
     n_pv = int(np.sum(pv_mask))
 
     J, mask_non_slack, theta_red_pos, v_red_pos, pq_mask, n_pq = (

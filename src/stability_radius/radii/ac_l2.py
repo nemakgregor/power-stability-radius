@@ -172,6 +172,53 @@ def _end_gradient_rows(
     return entries
 
 
+def _q_saturated_pv_buses(net: Any, q_limit_events: Any) -> list[int]:
+    """
+    Bus ids whose every in-service gen/ext_grid is Q-limit-saturated.
+
+    A bus keeps PV status if at least one in-service voltage-controlling
+    element at that bus still has reactive headroom.  The slack (ext_grid)
+    bus is never converted.
+    """
+    events = list(q_limit_events or [])
+    if not events:
+        return []
+
+    saturated: dict[int, set[tuple[str, int]]] = {}
+    for ev in events:
+        try:
+            bid = int(ev.get("bus", -1))
+            key = (str(ev.get("element", "")), int(ev.get("element_index", -1)))
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if bid >= 0 and key[0] == "gen":
+            saturated.setdefault(bid, set()).add(key)
+    if not saturated:
+        return []
+
+    ext_buses: set[int] = set()
+    eg = getattr(net, "ext_grid", None)
+    if eg is not None and len(eg):
+        for _, row in eg.iterrows():
+            if bool(row.get("in_service", True)):
+                ext_buses.add(int(row.get("bus", -1)))
+
+    out: list[int] = []
+    gen = getattr(net, "gen", None)
+    for bid, keys in saturated.items():
+        if bid in ext_buses:
+            continue
+        controllers: set[tuple[str, int]] = set()
+        if gen is not None and len(gen):
+            for gid in gen.index:
+                row = gen.loc[gid]
+                if bool(row.get("in_service", True)) and int(row.get("bus", -1)) == bid:
+                    controllers.add(("gen", int(gid)))
+        if controllers and controllers.issubset(keys):
+            out.append(int(bid))
+    return sorted(out)
+
+
 def compute_ac_l2_radius(
     net: Any,
     *,
@@ -233,6 +280,13 @@ def compute_ac_l2_radius(
     # by one bus position downstream.)
     slack_bus_id = int(resolve_slack_bus_id(net, int(slack_bus)))
 
+    # Active-set consistency: buses whose EVERY in-service voltage-controlling
+    # element saturated at a Q limit in the base PF are effectively PQ in the
+    # converged pandapower solution; linearize them as PQ.
+    pv_to_pq_bus_ids = _q_saturated_pv_buses(
+        net, getattr(base_pf, "q_limit_events", ()) or ()
+    )
+
     op = build_ac_operator(
         net=net,
         slack_bus=slack_bus_id,
@@ -240,6 +294,7 @@ def compute_ac_l2_radius(
         va_rad=np.asarray(base_pf.v_ang_rad, dtype=float),
         line_indices=line_ids,
         lossless=bool(lossless),
+        pv_to_pq_bus_ids=pv_to_pq_bus_ids,
     )
 
     m = int(len(line_ids))
@@ -586,6 +641,7 @@ def compute_ac_l2_radius(
             "pq_mask": op.pq_mask,
             "slack_pos": int(slack_pos),
             "slack_bus_id": int(slack_bus_id),
+            "pv_to_pq_bus_ids": list(pv_to_pq_bus_ids),
             "adjoint_residual_max": float(adjoint_residual_max),
         }
 

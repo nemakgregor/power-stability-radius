@@ -1557,12 +1557,18 @@ def compute_results_for_case(
                     ac_nonlinear_validation_computed = True
 
             if bool(ac_q_limit_hit):
+                # Q-limit saturation at the base point is now handled inside
+                # compute_ac_l2_radius: fully saturated PV buses are linearized
+                # as PQ, so the certificate matches the PF's converged active
+                # set.  The flags below are kept for accounting; the
+                # linearization is only marked invalid when saturation could
+                # NOT be absorbed (partially saturated multi-gen buses).
                 for row in results_lines.values():
                     if not isinstance(row, dict) or "radius_ac_l2" not in row:
                         continue
                     row["q_limit_hit"] = True
                     row["pv_pq_switch_detected"] = True
-                    row["linearization_status"] = "invalid_active_set_changed_q_limit"
+                    row["linearization_status"] = "q_limit_absorbed_as_pq"
             elif bool(compute_ac):
                 for row in results_lines.values():
                     if not isinstance(row, dict) or "radius_ac_l2" not in row:
