@@ -24,6 +24,34 @@ Documentation starts at [docs/index.md](docs/index.md). The most useful referenc
 
 ## Quick Start
 
+### Docker
+
+The most reproducible path is Docker:
+
+```bash
+docker build -t power-stability-radius .
+docker run --rm power-stability-radius
+```
+
+Run a small bundled compute example:
+
+```bash
+docker run --rm \
+  -v "$PWD/run_artifacts:/app/run_artifacts" \
+  power-stability-radius \
+  python entry_points/power_stability_radius.py \
+    --config conf/config.yaml \
+    compute \
+    --input data/input/ieee30.m \
+    --slack-bus 0 \
+    --base-dispatch case
+```
+
+For large PGLib or UnitCommitment.jl inputs, mount the data directory into
+`/app/data/input` or pass absolute paths inside a mounted volume.
+
+### Local Python
+
 Install the project with Poetry:
 
 ```bash

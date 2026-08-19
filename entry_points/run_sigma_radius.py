@@ -47,7 +47,6 @@ from stability_radius.utils import (
     create_module_output_dir,
     numpy_to_builtin,
     resolve_artifacts_root,
-    setup_output_dir_logging,
 )
 from stability_radius.base_point.pandapower_opp import ACFPFConfig
 from stability_radius.base_point.pandapower_tools import (
@@ -355,7 +354,6 @@ def _build_result_dict(avg_result: dict) -> dict[str, Any]:
     sigma_res = avg_result["sigma_results"]
     ac_l2 = avg_result["ac_l2_results"]
     line_ids = avg_result["line_ids"]
-    n_bus = avg_result["h_bind"].shape[1] // 2
 
     sigma_radius: dict[str, float] = {}
     h_bind_dict: dict[str, np.ndarray] = {}
@@ -977,7 +975,12 @@ def _run_tightened_limit_mc(
 
     try:
         pp.runpp(
-            nn_pilot, calculate_voltage_angles=True, enforce_q_lims=True, init="results"
+            nn_pilot,
+            calculate_voltage_angles=True,
+            enforce_q_lims=True,
+            init="results",
+            max_iteration=30,
+            numba=True,
         )
     except Exception:
         try:
@@ -986,6 +989,8 @@ def _run_tightened_limit_mc(
                 calculate_voltage_angles=True,
                 enforce_q_lims=True,
                 init="flat",
+                max_iteration=30,
+                numba=True,
             )
         except Exception:
             logger.warning("Tightened-limit MC: pilot base PF did not converge.")
@@ -1021,6 +1026,8 @@ def _run_tightened_limit_mc(
                 calculate_voltage_angles=True,
                 enforce_q_lims=True,
                 init="results",
+                max_iteration=30,
+                numba=True,
             )
             conv = bool(getattr(nn_pilot, "converged", True))
         except Exception:
@@ -1107,11 +1114,23 @@ def _run_tightened_limit_mc(
         sgen_idx.append(idx)
 
     try:
-        pp.runpp(nn, calculate_voltage_angles=True, enforce_q_lims=True, init="results")
+        pp.runpp(
+            nn,
+            calculate_voltage_angles=True,
+            enforce_q_lims=True,
+            init="results",
+            max_iteration=30,
+            numba=True,
+        )
     except Exception:
         try:
             pp.runpp(
-                nn, calculate_voltage_angles=True, enforce_q_lims=True, init="flat"
+                nn,
+                calculate_voltage_angles=True,
+                enforce_q_lims=True,
+                init="flat",
+                max_iteration=30,
+                numba=True,
             )
         except Exception:
             logger.warning("Tightened-limit MC: main base PF did not converge.")
@@ -1144,7 +1163,12 @@ def _run_tightened_limit_mc(
 
         try:
             pp.runpp(
-                nn, calculate_voltage_angles=True, enforce_q_lims=True, init="results"
+                nn,
+                calculate_voltage_angles=True,
+                enforce_q_lims=True,
+                init="results",
+                max_iteration=30,
+                numba=True,
             )
             conv = bool(getattr(nn, "converged", True))
         except Exception:
