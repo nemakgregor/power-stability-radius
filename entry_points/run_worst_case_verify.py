@@ -38,7 +38,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from stability_radius.base_point.ac import solve_ac_fpf_base_point
-from stability_radius.base_point.pandapower_tools import resolve_slack_bus_id
 from stability_radius.parsers.matpower import load_network
 from stability_radius.radii.ac_l2 import compute_ac_l2_radius
 from stability_radius.utils import (
@@ -110,8 +109,8 @@ def _recompute_h_vectors(
     if h_vecs_raw is None:
         raise RuntimeError("AC L2 did not return h-vectors")
 
-    slack_bus_id = resolve_slack_bus_id(net, slack_bus)
-    slack_pos = bus_ids.index(slack_bus_id)
+    # Use the slack position the AC operator actually eliminated.
+    slack_pos = int(h_vecs_raw["slack_pos"])
 
     h_from = expand_h_reduced_to_full(
         h_vecs_raw["h_from"],

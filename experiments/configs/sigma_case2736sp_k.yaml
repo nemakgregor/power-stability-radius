@@ -6,7 +6,7 @@
 case:
   name: case2736sp_k
   matpower_file: pglib_opf_case2736sp_k.m
-  slack_bus: 0
+  slack_bus: 28   # ext_grid bus id (positional 0 is inconsistent with the ACOperator)
 
 sigma_source: synthetic
 

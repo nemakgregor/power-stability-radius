@@ -29,6 +29,7 @@ class ConstraintStatus(str, Enum):
     NONLINEAR_OPTIMISTIC = "nonlinear_optimistic"
     POST_CONTINGENCY_INFEASIBLE = "post_contingency_infeasible"
     NONDIFFERENTIABLE_APPARENT_POWER = "nondifferentiable_apparent_power"
+    OK_FINITE_OPERATOR_NORM = "ok_finite_operator_norm"
 
 
 def classify_constraint_certificate(

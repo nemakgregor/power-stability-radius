@@ -213,7 +213,7 @@ def test_h_vector_predicts_delta_s_via_finite_difference() -> None:
                 ds_from_actual[pos],
                 err_from,
             )
-            assert err_from < 0.05, (
+            assert err_from < 0.01, (
                 f"Line {line_ids[pos]} from-end: h-vector FD mismatch "
                 f"(pred={ds_from_pred[pos]:.6e}, actual={ds_from_actual[pos]:.6e}, "
                 f"rel_err={err_from:.4f})"
@@ -228,7 +228,7 @@ def test_h_vector_predicts_delta_s_via_finite_difference() -> None:
                 ds_to_actual[pos],
                 err_to,
             )
-            assert err_to < 0.05, (
+            assert err_to < 0.01, (
                 f"Line {line_ids[pos]} to-end: h-vector FD mismatch "
                 f"(pred={ds_to_pred[pos]:.6e}, actual={ds_to_actual[pos]:.6e}, "
                 f"rel_err={err_to:.4f})"
@@ -344,13 +344,13 @@ def test_h_vector_with_q_perturbation() -> None:
             err = abs(ds_from_pred[pos] - ds_from_actual[pos]) / abs(
                 ds_from_actual[pos]
             )
-            assert err < 0.05, (
+            assert err < 0.01, (
                 f"Line {line_ids[pos]} from-end Q-pert: rel_err={err:.4f}"
             )
 
         if abs(ds_to_actual[pos]) > 1e-10:
             err = abs(ds_to_pred[pos] - ds_to_actual[pos]) / abs(ds_to_actual[pos])
-            assert err < 0.05, f"Line {line_ids[pos]} to-end Q-pert: rel_err={err:.4f}"
+            assert err < 0.01, f"Line {line_ids[pos]} to-end Q-pert: rel_err={err:.4f}"
 
 
 def _make_5bus_with_shunts_and_charging() -> tuple[object, int]:
@@ -529,7 +529,7 @@ def test_h_vector_fd_with_shunts_and_charging() -> None:
                 ds_from_actual[pos],
                 err,
             )
-            assert err < 0.05, (
+            assert err < 0.01, (
                 f"Line {line_ids[pos]} from-end (shunt net): rel_err={err:.4f}"
             )
             checked += 1
@@ -543,7 +543,7 @@ def test_h_vector_fd_with_shunts_and_charging() -> None:
                 ds_to_actual[pos],
                 err,
             )
-            assert err < 0.05, (
+            assert err < 0.01, (
                 f"Line {line_ids[pos]} to-end (shunt net): rel_err={err:.4f}"
             )
             checked += 1
@@ -709,7 +709,7 @@ def test_h_vector_fd_with_pv_buses() -> None:
                 ds_from_actual[pos],
                 err,
             )
-            assert err < 0.05, (
+            assert err < 0.01, (
                 f"Line {line_ids[pos]} from-end (PV net): rel_err={err:.4f}"
             )
             checked += 1
@@ -723,7 +723,7 @@ def test_h_vector_fd_with_pv_buses() -> None:
                 ds_to_actual[pos],
                 err,
             )
-            assert err < 0.05, (
+            assert err < 0.01, (
                 f"Line {line_ids[pos]} to-end (PV net): rel_err={err:.4f}"
             )
             checked += 1

@@ -35,7 +35,10 @@ def apply_lossless_policy_to_pandapower_net(net: Any) -> Any:
     - net.line.c_nf_per_km   = 0.0   (no shunt charging — series-only model)
     - net.line.g_us_per_km   = 0.0   (no shunt conductance)
     - net.trafo.vkr_percent  = 0.0   (lossless transformers)
+    - net.trafo.i0_percent   = 0.0   (no magnetizing shunt branch)
+    - net.trafo.pfe_kw       = 0.0   (no iron-loss shunt branch)
     - net.impedance.rft_pu   = 0.0   (lossless impedances)
+    - net.impedance.rtf_pu   = 0.0   (lossless impedances, reverse direction)
     - net.shunt.in_service   = False  (disable bus shunt devices)
     - net.ward.in_service    = False  (disable ward equivalents)
     - net.xward.in_service   = False  (disable extended ward equivalents)
@@ -56,12 +59,44 @@ def apply_lossless_policy_to_pandapower_net(net: Any) -> Any:
             nn.line.loc[:, "g_us_per_km"] = 0.0
 
     if hasattr(nn, "trafo") and nn.trafo is not None and len(nn.trafo):
-        if "vkr_percent" in nn.trafo.columns:
-            nn.trafo.loc[:, "vkr_percent"] = 0.0
+        # vkr: series resistance; i0/pfe: magnetizing / iron-loss shunt branch.
+        # The series-only Jacobian models none of these, so all must be zeroed
+        # to keep the verification PF consistent with the linearization.
+        for col in ("vkr_percent", "i0_percent", "pfe_kw"):
+            if col in nn.trafo.columns:
+                nn.trafo.loc[:, col] = 0.0
 
     if hasattr(nn, "impedance") and nn.impedance is not None and len(nn.impedance):
-        if "rft_pu" in nn.impedance.columns:
-            nn.impedance.loc[:, "rft_pu"] = 0.0
+        for col in ("rft_pu", "rtf_pu"):
+            if col in nn.impedance.columns:
+                nn.impedance.loc[:, col] = 0.0
+
+    # Fail fast on element types the series-only Jacobian cannot represent
+    # and the policy cannot neutralize.  Silently keeping them would create
+    # exactly the kind of systematic PF-vs-Jacobian mismatch this policy
+    # exists to prevent.
+    for tbl in ("trafo3w", "tcsc", "svc", "ssc", "dcline"):
+        df = getattr(nn, tbl, None)
+        if df is not None and len(df):
+            n_active = (
+                int(df["in_service"].sum()) if "in_service" in df.columns else len(df)
+            )
+            if n_active > 0:
+                raise ValueError(
+                    f"Lossless policy: net contains {n_active} in-service "
+                    f"'{tbl}' element(s), which the series-only AC certificate "
+                    "model cannot represent. Remove or convert them first."
+                )
+    sw = getattr(nn, "switch", None)
+    if sw is not None and len(sw) and "z_ohm" in sw.columns:
+        closed = sw["closed"] if "closed" in sw.columns else True
+        n_z = int(((sw["z_ohm"].astype(float).abs() > 0.0) & closed).sum())
+        if n_z > 0:
+            raise ValueError(
+                f"Lossless policy: net contains {n_z} closed switch(es) with "
+                "z_ohm != 0, which the series-only AC certificate model "
+                "cannot represent."
+            )
 
     # Disable shunt devices — the series-only Jacobian does not model them.
     for tbl in ("shunt", "ward", "xward"):

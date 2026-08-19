@@ -2,13 +2,13 @@
 #
 # Uses synthetic sigma (10% of bus loads) since UC.jl data is not available
 # for this network.
-# NOTE: lossless=false to help OPP convergence on this challenging network;
-# the sigma-radius code still computes sensitivity with the lossless model.
+# NOTE: the AC certificate requires a lossless (series-only) base PF so the
+# power flow matches the certificate Jacobian; lossy runs are rejected.
 
 case:
   name: case2869_pegase
   matpower_file: pglib_opf_case2869_pegase.m
-  slack_bus: 0
+  slack_bus: -1   # auto-detect from ext_grid
 
 sigma_source: synthetic
 
@@ -20,7 +20,7 @@ compute:
   ac:
     chunk_size: 64
     balance: true
-    lossless: false
+    lossless: true   # series-only Jacobian requires a lossless base PF
     fpf:
       pg0_source: case
       vm_min_pu: 0.85

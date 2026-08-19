@@ -171,7 +171,7 @@ compute:
     balance: true
     pf_init: dc                # DC warmstart for better convergence
     pf_solver: pandapower
-    lossless: false            # lossy AC PF (r ≠ 0) for realistic base point
+    lossless: true             # REQUIRED: certificate Jacobian is series-only; lossy base PF would be inconsistent
     distributed_slack: true    # distribute losses ∝ headroom (Pmax − Pset)
     trafo_model: pi            # π-model for transformers (convergence)
   ac_fpf:

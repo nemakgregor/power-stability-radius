@@ -7,7 +7,7 @@
 case:
   name: case118
   matpower_file: pglib_opf_case118_ieee.m
-  slack_bus: 0
+  slack_bus: 69   # ext_grid bus id (positional 0 is inconsistent with the ACOperator)
 
 uc_jl:
   case_name: case118

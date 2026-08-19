@@ -252,7 +252,15 @@ def verify_worst_case(
     # Run nonlinear AC power flow
     pf_converged = False
     try:
-        pp.runpp(nn, calculate_voltage_angles=True, enforce_q_lims=True, init="flat")
+        pp.runpp(
+            nn,
+            calculate_voltage_angles=True,
+            enforce_q_lims=True,
+            init="flat",
+            trafo_model="pi",
+            tolerance_mva=1e-8,
+            max_iteration=300,
+        )
         pf_converged = bool(getattr(nn, "converged", True))
     except Exception:  # noqa: BLE001
         pf_converged = False

@@ -241,7 +241,21 @@ def _build_ybus_pu(
             if hv not in bus_pos or lv not in bus_pos:
                 raise ValueError(f"Trafo {tid} refers to missing buses {hv}->{lv}")
 
-            x_ohm = float(trafo_x_total_ohm(net, row))
+            # Consistency with the lossless verification PF: the policy zeroes
+            # vkr_percent BEFORE pandapower computes x = sqrt(z^2 - r^2), so the
+            # PF sees x = vk.  Build the Jacobian from the same convention,
+            # otherwise every transformer reactance is off by
+            # sqrt(1 + (r/x)^2) - 1 relative to the replayed network.
+            if bool(lossless):
+                row_x = row.copy()
+                row_x["vkr_percent"] = 0.0
+            else:
+                row_x = row
+            x_ohm = float(trafo_x_total_ohm(net, row_x))
+            parallel = float(row.get("parallel", 1.0))
+            if not math.isfinite(parallel) or parallel <= 0.0:
+                raise ValueError(f"Trafo {tid}: invalid parallel={parallel!r}")
+            x_ohm = x_ohm / parallel
 
             vn_kv = float(row.get("vn_hv_kv", np.nan))
             if not math.isfinite(vn_kv) or vn_kv <= 0.0:

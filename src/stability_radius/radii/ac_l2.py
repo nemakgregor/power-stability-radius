@@ -7,6 +7,7 @@ from typing import Any, Dict
 import numpy as np
 
 from stability_radius.ac.ac_model import build_ac_operator
+from stability_radius.base_point.pandapower_tools import resolve_slack_bus_id
 from stability_radius.base_point.pypsa_pf import PyPSAAPFResult
 from stability_radius.geometry.balanced import dual_norm_l2_balanced_from_block_vectors
 from stability_radius.radii.common import (
@@ -20,7 +21,24 @@ logger = logging.getLogger(__name__)
 
 _EPS_NORM = 1e-12
 _EPS_S0_MVA = 1e-9
+_EPS_S0_REL_LIMIT = 1e-9
 _DIAGNOSTIC_SUBGRADIENT_WP_WQ = 1.0 / math.sqrt(2.0)
+
+
+def zero_flow_threshold_mva(limit_mva: float) -> float:
+    """
+    Scale-aware nondifferentiability threshold for |S0|.
+
+    A fixed absolute threshold behaves differently across systems with
+    different base MVA and line ratings, so the threshold is tied to the
+    line rating with an absolute floor:
+
+        eps(limit) = max(_EPS_S0_MVA, _EPS_S0_REL_LIMIT * limit)
+    """
+    lim = float(limit_mva)
+    if not math.isfinite(lim) or lim <= 0.0:
+        return float(_EPS_S0_MVA)
+    return float(max(_EPS_S0_MVA, _EPS_S0_REL_LIMIT * lim))
 
 
 def _balanced_two_block_norm_from_red(
@@ -54,6 +72,106 @@ def _balanced_two_block_norm_from_red(
     )
 
 
+def _balanced_cross_inner(
+    u_p: np.ndarray,
+    u_q: np.ndarray,
+    v_p: np.ndarray,
+    v_q: np.ndarray,
+    *,
+    n_bus_total: int,
+    n_pq_total: int,
+    balance: bool,
+) -> float:
+    """
+    Inner product <Proj(u), Proj(v)> under the balanced two-block projection.
+
+    Uses the same implicit-zero convention as
+    ``dual_norm_l2_balanced_from_block_vectors``: reduced vectors carry
+    ``n_bus_total`` (P block) and ``n_pq_total`` (Q block) implicit
+    coordinates, and the balanced projector removes the block mean over the
+    full block size.  For an orthogonal projector P:
+      <Pu, Pv> = u.v - (sum u)(sum v)/n.
+    """
+    t = float(np.dot(u_p, v_p)) + float(np.dot(u_q, v_q))
+    if bool(balance):
+        n_p = int(n_bus_total)
+        if n_p > 0:
+            t -= (float(np.sum(u_p)) * float(np.sum(v_p))) / float(n_p)
+        n_q = int(n_pq_total)
+        if n_q > 0:
+            t -= (float(np.sum(u_q)) * float(np.sum(v_q))) / float(n_q)
+    return t
+
+
+def _end_gradient_rows(
+    op: Any, line_pos: int, is_from_end: bool
+) -> list[tuple[int, float, float]] | None:
+    """
+    Reduced-state gradient entries of the line-end (P, Q) flows.
+
+    Returns a list of ``(reduced_row, dP, dQ)`` triples in MW/MVAr per
+    (rad, pu) for the flow leaving the selected end, or None for an
+    out-of-service branch.
+    """
+    fb_pos = int(op.from_bus_pos[line_pos])
+    tb_pos = int(op.to_bus_pos[line_pos])
+    i_pos = fb_pos if is_from_end else tb_pos
+    k_pos = tb_pos if is_from_end else fb_pos
+
+    y = complex(op.y_series_pu[line_pos])
+    if abs(y) <= 0.0:
+        return None
+
+    g = float(np.real(y))
+    b = float(np.imag(y))
+
+    Vi = float(op.vm_pu[i_pos])
+    Vk = float(op.vm_pu[k_pos])
+    if Vi <= 0.0 or Vk <= 0.0:
+        raise ValueError(
+            "Non-positive Vm in AC base point; cannot compute sensitivities."
+        )
+
+    theta = float(op.va_rad[i_pos] - op.va_rad[k_pos])
+    s = math.sin(theta)
+    c = math.cos(theta)
+
+    A = g * c + b * s
+    Btmp = g * s - b * c
+
+    scale = float(op.sn_mva)
+
+    # per-unit derivatives for flow leaving bus i towards bus k, scaled to MW/MVAr
+    dP_dti = scale * (Vi * Vk * Btmp)
+    dP_dtk = -dP_dti
+    dQ_dti = scale * (-Vi * Vk * A)
+    dQ_dtk = -dQ_dti
+
+    dP_dVi = scale * (2.0 * g * Vi - Vk * A)
+    dP_dVk = scale * (-Vi * A)
+    dQ_dVi = scale * (-2.0 * b * Vi - Vk * Btmp)
+    dQ_dVk = scale * (-Vi * Btmp)
+
+    n_theta = int(op.n_red)
+    entries: list[tuple[int, float, float]] = []
+
+    ri_theta = int(op.theta_red_pos[i_pos])
+    rk_theta = int(op.theta_red_pos[k_pos])
+    if ri_theta >= 0:
+        entries.append((ri_theta, float(dP_dti), float(dQ_dti)))
+    if rk_theta >= 0:
+        entries.append((rk_theta, float(dP_dtk), float(dQ_dtk)))
+
+    ri_v = int(op.v_red_pos[i_pos])
+    rk_v = int(op.v_red_pos[k_pos])
+    if ri_v >= 0:
+        entries.append((n_theta + ri_v, float(dP_dVi), float(dQ_dVi)))
+    if rk_v >= 0:
+        entries.append((n_theta + rk_v, float(dP_dVk), float(dQ_dVk)))
+
+    return entries
+
+
 def compute_ac_l2_radius(
     net: Any,
     *,
@@ -63,22 +181,34 @@ def compute_ac_l2_radius(
     balance: bool = True,
     lossless: bool = True,
     return_h_vectors: bool = False,
+    zero_flow_operator_norm: bool = True,
 ) -> Dict[str, Dict[str, Any]]:
     """
     Compute a fast AC L2 "stability radius" certificate around an AC PF base point.
 
-    The certificate differentiates the apparent-power magnitude ``|S|`` at each
-    monitored line end. At ``|S0| <= 1e-9`` MVA that norm is nondifferentiable;
-    this implementation uses an equal P/Q diagnostic subgradient, records the
-    nondifferentiable end, and marks real binding constraints as non-strict
-    certificates with zero nonnegative radius. Unconstrained lines keep their
-    ``unconstrained_limit`` certificate status even if the diagnostic
-    subgradient is used.
+    Slack consistency
+    -----------------
+    The slack bus is resolved with ``resolve_slack_bus_id`` (ext_grid-aware)
+    BEFORE building the AC operator, so the Jacobian eliminates exactly the
+    bus that the power-flow solver used as slack.  The resolved slack position
+    is returned in ``_h_vectors["slack_pos"]`` and MUST be used by callers of
+    ``expand_h_reduced_to_full`` instead of re-deriving it independently.
+
+    Zero-flow (nondifferentiable) line ends
+    ---------------------------------------
+    At ``|S0| <= eps(limit)`` (scale-aware threshold, see
+    ``zero_flow_threshold_mva``) the apparent-power magnitude has no scalar
+    gradient.  When ``zero_flow_operator_norm=True`` (default), such ends get
+    a first-order operator-norm radius instead of being excluded: with
+    ``H = [∇P; ∇Q]`` mapped to injection space by two adjoint solves and
+    projected onto the balanced subspace, the exact first-order bound is
+    ``|S(Δu)| = ||H Δu||_2 <= sigma_max(H_proj) ||Δu||_2``, so
+    ``r = margin / sigma_max``.  These ends are labeled with status
+    ``ok_finite_operator_norm`` and remain flagged as nondifferentiable for
+    accounting.
 
     Sensitivity norms below ``1e-12`` are treated as degenerate/infinite
-    according to ``classify_constraint_certificate``. These thresholds are
-    documented in ``docs/algorithms_and_models.md`` and are intentionally kept
-    local to the numerical kernels rather than hidden in the CLI config.
+    according to ``classify_constraint_certificate``.
 
     Output fields (key additions for unified tables)
     ------------------------------------------------
@@ -97,9 +227,15 @@ def compute_ac_l2_radius(
             "AC PF base point line ordering mismatch: expected base_pf.line_ids == sorted(net.line.index)."
         )
 
+    # Resolve the slack bus AGAINST net.ext_grid so the reduced Jacobian
+    # eliminates the same bus the PF solver used.  (Regression: a positional
+    # slack like 0 with an ext_grid elsewhere used to shift every h_P entry
+    # by one bus position downstream.)
+    slack_bus_id = int(resolve_slack_bus_id(net, int(slack_bus)))
+
     op = build_ac_operator(
         net=net,
-        slack_bus=int(slack_bus),
+        slack_bus=slack_bus_id,
         vm_pu=np.asarray(base_pf.v_mag_pu, dtype=float),
         va_rad=np.asarray(base_pf.v_ang_rad, dtype=float),
         line_indices=line_ids,
@@ -108,7 +244,11 @@ def compute_ac_l2_radius(
 
     m = int(len(line_ids))
     n_bus = int(len(op.bus_ids))
-    n_red = int(op.n_red)
+    slack_pos = int(op.slack_pos)
+    if list(op.bus_ids).index(slack_bus_id) != slack_pos:
+        raise AssertionError(
+            "Internal slack inconsistency between resolve_slack_bus_id and ACOperator."
+        )
 
     # ---------- limits + unconstrained flags ----------
     limits_mva = np.empty(m, dtype=float)
@@ -117,6 +257,10 @@ def compute_ac_l2_radius(
         lim, is_uc = estimate_line_limit_mva_with_flag(net, net.line.loc[int(lid)])
         limits_mva[pos] = float(lim)
         is_unconstrained[pos] = bool(is_uc)
+
+    nd_threshold_mva = np.array(
+        [zero_flow_threshold_mva(limits_mva[pos]) for pos in range(m)], dtype=float
+    )
 
     # ---------- base flows ----------
     p0 = np.asarray(base_pf.line_p0_mw, dtype=float).reshape(-1)
@@ -166,6 +310,7 @@ def compute_ac_l2_radius(
     # ---------- chunked adjoint solves ----------
     diagnostic_subgradient_used = 0
     nondifferentiable_end = np.zeros(n_con, dtype=bool)
+    adjoint_residual_max = 0.0
 
     start = 0
     while start < n_con:
@@ -179,92 +324,32 @@ def compute_ac_l2_radius(
             line_pos = int(con_idx // 2)
             is_from_end = (con_idx % 2) == 0
 
-            fb_pos = int(op.from_bus_pos[line_pos])
-            tb_pos = int(op.to_bus_pos[line_pos])
-
-            i_pos = fb_pos if is_from_end else tb_pos
-            k_pos = tb_pos if is_from_end else fb_pos
-
-            y = complex(op.y_series_pu[line_pos])
-            if abs(y) <= 0.0:
+            entries = _end_gradient_rows(op, line_pos, is_from_end)
+            if entries is None:
                 continue
 
-            g = float(np.real(y))
-            b = float(np.imag(y))
-
-            Vi = float(op.vm_pu[i_pos])
-            Vk = float(op.vm_pu[k_pos])
-            if Vi <= 0.0 or Vk <= 0.0:
-                raise ValueError(
-                    "Non-positive Vm in AC base point; cannot compute sensitivities."
-                )
-
-            theta = float(op.va_rad[i_pos] - op.va_rad[k_pos])
-            s = math.sin(theta)
-            c = math.cos(theta)
-
-            A = g * c + b * s
-            Btmp = g * s - b * c
-
-            # per-unit derivatives for flow leaving bus i towards bus k
-            dP_dti_pu = Vi * Vk * Btmp
-            dP_dtk_pu = -dP_dti_pu
-            dQ_dti_pu = -Vi * Vk * A
-            dQ_dtk_pu = -dQ_dti_pu
-
-            dP_dVi_pu = 2.0 * g * Vi - Vk * A
-            dP_dVk_pu = -Vi * A
-            dQ_dVi_pu = -2.0 * b * Vi - Vk * Btmp
-            dQ_dVk_pu = -Vi * Btmp
-
-            scale = float(op.sn_mva)
-            dP_dti = scale * dP_dti_pu
-            dP_dtk = scale * dP_dtk_pu
-            dQ_dti = scale * dQ_dti_pu
-            dQ_dtk = scale * dQ_dtk_pu
-
-            dP_dVi = scale * dP_dVi_pu
-            dP_dVk = scale * dP_dVk_pu
-            dQ_dVi = scale * dQ_dVi_pu
-            dQ_dVk = scale * dQ_dVk_pu
-
             s0 = float(s_end[con_idx])
-            if s0 > _EPS_S0_MVA:
+            if s0 > float(nd_threshold_mva[line_pos]):
                 wP = float(p_end[con_idx]) / s0
                 wQ = float(q_end[con_idx]) / s0
             else:
                 # At |S|=0 the gradient of a norm is undefined.
-                # Use an equal P/Q diagnostic subgradient and mark the result
-                # as non-strict below.
+                # Use an equal P/Q diagnostic subgradient here; the certified
+                # value for this end comes from the operator-norm pass below.
                 wP = _DIAGNOSTIC_SUBGRADIENT_WP_WQ
                 wQ = _DIAGNOSTIC_SUBGRADIENT_WP_WQ
                 diagnostic_subgradient_used += 1
                 nondifferentiable_end[con_idx] = True
 
-            b_ti = wP * dP_dti + wQ * dQ_dti
-            b_tk = wP * dP_dtk + wQ * dQ_dtk
-            b_Vi = wP * dP_dVi + wQ * dQ_dVi
-            b_Vk = wP * dP_dVk + wQ * dQ_dVk
-
-            # Theta entries (all non-slack buses)
-            ri_theta = int(op.theta_red_pos[i_pos])
-            rk_theta = int(op.theta_red_pos[k_pos])
-
-            if ri_theta >= 0:
-                B[ri_theta, j] += float(b_ti)
-            if rk_theta >= 0:
-                B[rk_theta, j] += float(b_tk)
-
-            # V entries (PQ buses only)
-            ri_v = int(op.v_red_pos[i_pos])
-            rk_v = int(op.v_red_pos[k_pos])
-
-            if ri_v >= 0:
-                B[n_theta + ri_v, j] += float(b_Vi)
-            if rk_v >= 0:
-                B[n_theta + rk_v, j] += float(b_Vk)
+            for row, dP, dQ in entries:
+                B[row, j] += wP * dP + wQ * dQ
 
         Y = op.solve_J_transpose(B)
+
+        # Adjoint residual diagnostic: || J^T Y - B ||_inf / max(1, ||B||_inf)
+        resid = float(np.max(np.abs(op.J.T @ Y - B))) if k > 0 else 0.0
+        denom_resid = max(1.0, float(np.max(np.abs(B))) if k > 0 else 0.0)
+        adjoint_residual_max = max(adjoint_residual_max, resid / denom_resid)
 
         for j in range(k):
             con_idx = int(start + j)
@@ -298,14 +383,105 @@ def compute_ac_l2_radius(
 
         start = end
 
+    # ---------- operator-norm pass for zero-flow (nondifferentiable) ends ----------
+    operator_norm_end = np.zeros(n_con, dtype=bool)
+    nd_indices = np.flatnonzero(nondifferentiable_end)
+
+    if bool(zero_flow_operator_norm) and nd_indices.size:
+        ends_per_chunk = max(1, int(chunk_size) // 2)
+        for cs in range(0, int(nd_indices.size), ends_per_chunk):
+            batch = nd_indices[cs : cs + ends_per_chunk]
+            kb = int(batch.size)
+            B2 = np.zeros((n_vars, 2 * kb), dtype=float)
+
+            valid = np.zeros(kb, dtype=bool)
+            for j, con_idx in enumerate(batch):
+                line_pos = int(con_idx // 2)
+                is_from_end = (int(con_idx) % 2) == 0
+                entries = _end_gradient_rows(op, line_pos, is_from_end)
+                if entries is None:
+                    continue
+                valid[j] = True
+                for row, dP, dQ in entries:
+                    B2[row, 2 * j] += dP
+                    B2[row, 2 * j + 1] += dQ
+
+            Y2 = op.solve_J_transpose(B2)
+
+            resid = float(np.max(np.abs(op.J.T @ Y2 - B2)))
+            denom_resid = max(1.0, float(np.max(np.abs(B2))))
+            adjoint_residual_max = max(adjoint_residual_max, resid / denom_resid)
+
+            for j, con_idx in enumerate(batch):
+                if not valid[j]:
+                    continue
+                hP = Y2[:, 2 * j]
+                hQ = Y2[:, 2 * j + 1]
+
+                g11 = _balanced_cross_inner(
+                    hP[0:n_theta],
+                    hP[n_theta:n_vars],
+                    hP[0:n_theta],
+                    hP[n_theta:n_vars],
+                    n_bus_total=n_bus,
+                    n_pq_total=n_pq,
+                    balance=bool(balance),
+                )
+                g22 = _balanced_cross_inner(
+                    hQ[0:n_theta],
+                    hQ[n_theta:n_vars],
+                    hQ[0:n_theta],
+                    hQ[n_theta:n_vars],
+                    n_bus_total=n_bus,
+                    n_pq_total=n_pq,
+                    balance=bool(balance),
+                )
+                g12 = _balanced_cross_inner(
+                    hP[0:n_theta],
+                    hP[n_theta:n_vars],
+                    hQ[0:n_theta],
+                    hQ[n_theta:n_vars],
+                    n_bus_total=n_bus,
+                    n_pq_total=n_pq,
+                    balance=bool(balance),
+                )
+
+                tr = g11 + g22
+                disc = math.sqrt(max((g11 - g22) ** 2 + 4.0 * g12 * g12, 0.0))
+                lam_max = 0.5 * (tr + disc)
+                sigma = math.sqrt(max(lam_max, 0.0))
+
+                operator_norm_end[int(con_idx)] = True
+                norms[int(con_idx)] = float(sigma)
+                margin = float(margin_end[int(con_idx)])
+                if sigma > _EPS_NORM:
+                    radii[int(con_idx)] = margin / sigma
+                else:
+                    radii[int(con_idx)] = (
+                        float("inf") if margin >= 0.0 else float("-inf")
+                    )
+
+        logger.info(
+            "AC zero-flow operator-norm radii computed for %d/%d nondifferentiable "
+            "line end(s) (2D (P,Q) directional derivative, balanced sigma_max).",
+            int(np.sum(operator_norm_end)),
+            int(nd_indices.size),
+        )
+
     if diagnostic_subgradient_used > 0:
         logger.debug(
-            "AC |S| diagnostic subgradient used: %d/%d constraint-ends with |S0|<=%.3g MVA "
-            "(used equal P/Q weights).",
+            "AC |S| nondifferentiable ends: %d/%d constraint-ends below the "
+            "scale-aware threshold max(%.3g, %.3g*limit) MVA.",
             int(diagnostic_subgradient_used),
             int(n_con),
             float(_EPS_S0_MVA),
+            float(_EPS_S0_REL_LIMIT),
         )
+
+    logger.info(
+        "AC adjoint residual: max ||J^T h - b||_inf / max(1, ||b||_inf) = %.3e",
+        float(adjoint_residual_max),
+    )
 
     # ---------- aggregate per line (min of from/to end) ----------
     results: Dict[str, Dict[str, Any]] = {}
@@ -317,17 +493,15 @@ def compute_ac_l2_radius(
         r_line = min(r_from, r_to)
 
         binding_end = "from" if r_from <= r_to else "to"
+        bind_idx = 2 * pos if binding_end == "from" else 2 * pos + 1
         margin_bind = (
             float(margin_from[pos]) if binding_end == "from" else float(margin_to[pos])
         )
-        norm_bind = (
-            float(norms[2 * pos])
-            if binding_end == "from"
-            else float(norms[2 * pos + 1])
-        )
+        norm_bind = float(norms[bind_idx])
         nondiff_from = bool(nondifferentiable_end[2 * pos])
         nondiff_to = bool(nondifferentiable_end[2 * pos + 1])
         nondiff_bind = nondiff_from if binding_end == "from" else nondiff_to
+        opnorm_bind = bool(operator_norm_end[bind_idx])
         status_bind, cert_radius_bind, signed_distance_bind = (
             classify_constraint_certificate(
                 margin=float(margin_bind),
@@ -338,11 +512,16 @@ def compute_ac_l2_radius(
         )
         linearization_status = "nonlinear_unvalidated"
         if bool(nondiff_bind) and not bool(is_unconstrained[pos]):
-            status_bind = ConstraintStatus.NONDIFFERENTIABLE_APPARENT_POWER.value
-            cert_radius_bind = 0.0
-            linearization_status = (
-                ConstraintStatus.NONDIFFERENTIABLE_APPARENT_POWER.value
-            )
+            if opnorm_bind:
+                if status_bind == ConstraintStatus.OK_FINITE.value:
+                    status_bind = ConstraintStatus.OK_FINITE_OPERATOR_NORM.value
+                linearization_status = "operator_norm_first_order"
+            else:
+                status_bind = ConstraintStatus.NONDIFFERENTIABLE_APPARENT_POWER.value
+                cert_radius_bind = 0.0
+                linearization_status = (
+                    ConstraintStatus.NONDIFFERENTIABLE_APPARENT_POWER.value
+                )
 
         k = line_key(int(lid))
         results[k] = {
@@ -355,6 +534,7 @@ def compute_ac_l2_radius(
             "ac_margin_from_mva": float(margin_from[pos]),
             "ac_norm_a_from": float(norms[2 * pos]),
             "ac_nondifferentiable_from": bool(nondiff_from),
+            "ac_operator_norm_from": bool(operator_norm_end[2 * pos]),
             "radius_ac_l2_from": float(r_from),
             "ac_p0_to_mw": float(p1[pos]),
             "ac_q0_to_mvar": float(q1[pos]),
@@ -362,7 +542,9 @@ def compute_ac_l2_radius(
             "ac_margin_to_mva": float(margin_to[pos]),
             "ac_norm_a_to": float(norms[2 * pos + 1]),
             "ac_nondifferentiable_to": bool(nondiff_to),
+            "ac_operator_norm_to": bool(operator_norm_end[2 * pos + 1]),
             "radius_ac_l2_to": float(r_to),
+            "ac_nd_threshold_mva": float(nd_threshold_mva[pos]),
             # per-line aggregate
             "radius_ac_l2": float(r_line),
             "ac_limiting_end": str(binding_end),
@@ -402,6 +584,9 @@ def compute_ac_l2_radius(
             "h_from": h_from,
             "h_to": h_to,
             "pq_mask": op.pq_mask,
+            "slack_pos": int(slack_pos),
+            "slack_bus_id": int(slack_bus_id),
+            "adjoint_residual_max": float(adjoint_residual_max),
         }
 
     return results

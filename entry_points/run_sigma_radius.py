@@ -53,7 +53,6 @@ from stability_radius.base_point.pandapower_opp import ACFPFConfig
 from stability_radius.base_point.pandapower_tools import (
     apply_lossless_policy_to_pandapower_net,
     apply_opp_result_to_pandapower_net,
-    resolve_slack_bus_id,
 )
 from stability_radius.parsers.matpower import load_network
 from stability_radius.parsers.uc_jl import load_hourly_profiles, load_sigma
@@ -262,8 +261,10 @@ def _compute_at_average_point(
         return None
 
     n_bus = len(bus_ids)
-    slack_bus_id = resolve_slack_bus_id(net, slack_bus)
-    slack_pos = bus_ids.index(slack_bus_id)
+    # Use the slack position that the AC operator actually eliminated
+    # (returned by compute_ac_l2_radius) instead of re-deriving it.
+    slack_pos = int(h_vecs_raw["slack_pos"])
+    slack_bus_id = int(h_vecs_raw["slack_bus_id"])
 
     h_from = expand_h_reduced_to_full(
         h_vecs_raw["h_from"],
@@ -1854,6 +1855,13 @@ def run(config_path: Path) -> None:
     allow_download = bool(cfg.get("allow_download", False))
 
     lossless = bool(ac_cfg.get("lossless", True))
+    if not lossless:
+        raise NotImplementedError(
+            "AC sigma-radius with ac.lossless=false is not implemented: the "
+            "ACOperator is a series-only model and would be inconsistent with "
+            "a full pandapower PF containing charging/shunts. Use "
+            "ac.lossless=true or implement the full pi-model Jacobian first."
+        )
     ac_chunk_size = int(ac_cfg.get("chunk_size", 64))
     ac_balance = bool(ac_cfg.get("balance", True))
     top_k_critical = int(plot_cfg.get("top_k_critical", 5))

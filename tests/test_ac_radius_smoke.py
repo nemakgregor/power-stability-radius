@@ -76,8 +76,8 @@ def test_ac_l2_radius_near_zero_flow_keeps_nonzero_sensitivity() -> None:
     Contract:
     - The computed sensitivity norm must remain strictly positive (||h||2 > 0).
     - The resulting radius must be > 0 (finite or +inf).
-    - The nonnegative certificate field is not treated as strict because the
-      apparent-power norm is nondifferentiable at |S0|=0.
+    - The end is flagged nondifferentiable and receives a first-order
+      operator-norm certificate (|S(du)| = ||[dP;dQ] du|| <= sigma_max ||du||).
     """
     from stability_radius.base_point.pypsa_pf import (
         solve_ac_pf_base_point_from_pandapower,
@@ -137,8 +137,12 @@ def test_ac_l2_radius_near_zero_flow_keeps_nonzero_sensitivity() -> None:
     assert float(row["||h||2"]) > 0.0
     assert float(row["radius_ac_l2"]) > 0.0
     assert row["nondifferentiable_apparent_power"] is True
-    assert row["constraint_status_ac_l2"] == "nondifferentiable_apparent_power"
-    assert float(row["certificate_radius_ac_l2"]) == 0.0
+    # Zero-flow ends now receive a first-order operator-norm certificate
+    # (2D (P,Q) directional derivative) instead of being excluded.
+    assert row["constraint_status_ac_l2"] == "ok_finite_operator_norm"
+    assert row["linearization_status"] == "operator_norm_first_order"
+    assert bool(row["ac_operator_norm_from"]) or bool(row["ac_operator_norm_to"])
+    assert float(row["certificate_radius_ac_l2"]) > 0.0
 
 
 def test_ac_l2_unconstrained_zero_flow_keeps_unconstrained_status() -> None:

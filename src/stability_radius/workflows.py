@@ -38,7 +38,6 @@ from stability_radius.base_point import (
     solve_ac_fpf_base_point,
     solve_ac_pf_base_point,
 )
-from stability_radius.base_point.pandapower_tools import resolve_slack_bus_id
 from stability_radius.config import DEFAULT_OPF, OPFConfig
 from stability_radius.dc.dc_model import build_dc_matrices, build_dc_operator
 from stability_radius.parsers.matpower import load_network
@@ -1444,8 +1443,9 @@ def compute_results_for_case(
             if h_vecs_raw is not None:
                 bus_ids_ac = [int(x) for x in sorted(net.bus.index)]
                 n_bus_ac = len(bus_ids_ac)
-                slack_bus_id = resolve_slack_bus_id(net, int(slack_bus))
-                slack_pos = bus_ids_ac.index(slack_bus_id)
+                # Use the slack position the AC operator actually eliminated.
+                slack_pos = int(h_vectors_ac["slack_pos"])
+                slack_bus_id = int(h_vectors_ac["slack_bus_id"])
                 pq_mask_ac = h_vecs_raw.get("pq_mask")
 
                 h_from_full = expand_h_reduced_to_full(
