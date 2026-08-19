@@ -63,6 +63,7 @@ GitHub Actions CI is configured in `.github/workflows/ci.yml`. It runs the test 
    import numpy as np
    from .common import LineBaseQuantities, get_line_base_quantities, line_key
 
+
    def compute_my_radius(
        net,
        H_full: np.ndarray,
@@ -87,6 +88,7 @@ GitHub Actions CI is configured in `.github/workflows/ci.yml`. It runs the test 
 2. **Export** from `radii/__init__.py`:
    ```python
    from .my_radius import compute_my_radius
+
    __all__.append("compute_my_radius")
    ```
 
@@ -150,6 +152,7 @@ GitHub Actions CI is configured in `.github/workflows/ci.yml`. It runs the test 
    # src/stability_radius/parsers/my_format.py
    import pandapower as pp
 
+
    def load_network(path: Path) -> pp.pandapowerNet:
        # Parse your format → pandapower network
        net = pp.create_empty_network()
@@ -205,9 +208,11 @@ def compute_baseline_metrics(results: dict) -> dict:
 
    from stability_radius.workflows import compute_results_for_case
 
+
    def run(config_path: Path) -> None:
        cfg = load_config(config_path)
        # Your experiment logic
+
 
    if __name__ == "__main__":
        parser = argparse.ArgumentParser()
@@ -296,9 +301,11 @@ def case5_net():
     """5-bus PJM test case."""
     return load_network(Path("data/input/pglib_opf_case5_pjm.m"))
 
+
 @pytest.fixture
 def case14_net():
     """14-bus IEEE test case."""
+
 
 @pytest.fixture
 def case30_net():

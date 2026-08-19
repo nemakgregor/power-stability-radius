@@ -69,7 +69,9 @@ def main() -> None:
                     "status": str(d["constraint_status_ac_l2"]),
                 }
             )
-            if d.get("ac_operator_norm_from") or d.get("ac_operator_norm_to"):
+            if d.get("ac_zero_flow_operator_norm_from") or d.get(
+                "ac_zero_flow_operator_norm_to"
+            ):
                 opn_lines.append(int(lid))
 
     # threshold sensitivity on |S0| counts
@@ -89,8 +91,7 @@ def main() -> None:
         "n_nd_lines": len(nd_lines),
         "n_operator_norm_certified": len(opn_lines),
         "all_constraint_radius_now_defined": all(
-            x["status"] in ("ok_finite_operator_norm", "ok_finite", "ok_infinite")
-            for x in nd_lines
+            x["status"] in ("ok_finite", "ok_infinite") for x in nd_lines
         ),
         "global_min_radius": finite_min,
         "nd_threshold_sensitivity_end_counts": sensitivity,

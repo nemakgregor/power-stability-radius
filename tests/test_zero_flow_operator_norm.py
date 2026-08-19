@@ -75,7 +75,8 @@ def test_operator_norm_radius_finite_and_fd_tight() -> None:
     # zero-flow end detected and certified via operator norm
     assert float(row["ac_s0_from_mva"]) < 1e-6
     assert row["nondifferentiable_apparent_power"] is True
-    assert row["constraint_status_ac_l2"] == "ok_finite_operator_norm"
+    assert row["constraint_status_ac_l2"] == "ok_finite"
+    assert row["zero_flow_operator_norm_certified"] is True
     r_cert = float(row["certificate_radius_ac_l2"])
     sigma = float(row["||h||2"])
     assert np.isfinite(r_cert) and r_cert > 0.0

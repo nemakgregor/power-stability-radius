@@ -553,11 +553,11 @@ All radius computations produce per-line results following a common structure:
 ```python
 {
     "line_<idx>": {
-        "flow0_mw": float,        # Base flow magnitude
-        "limit_mw": float,        # Thermal limit
-        "margin_mw": float,       # limit - |flow0|
-        "norm_g": float,          # Sensitivity norm
-        "radius_<variant>": float # Stability radius
+        "flow0_mw": float,  # Base flow magnitude
+        "limit_mw": float,  # Thermal limit
+        "margin_mw": float,  # limit - |flow0|
+        "norm_g": float,  # Sensitivity norm
+        "radius_<variant>": float,  # Stability radius
     }
 }
 ```
@@ -571,7 +571,7 @@ For AC radius computation, materializing the full sensitivity matrix would requi
 ```python
 for chunk in line_chunks:
     # Build RHS for this chunk of lines
-    rhs = flow_sensitivity_rhs(chunk)    # (n_reduced, chunk_size)
+    rhs = flow_sensitivity_rhs(chunk)  # (n_reduced, chunk_size)
     # Solve J^T * h = rhs for h-vectors
     h_block = ac_op.solve_J_transpose(rhs)
     # Compute radius for this chunk

@@ -1,0 +1,17 @@
+.git
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+.coverage
+run_artifacts
+runs
+outputs
+verification
+analysis_output
+experiments/output
+*.log
+openapi
+list.md
+res_sr.md

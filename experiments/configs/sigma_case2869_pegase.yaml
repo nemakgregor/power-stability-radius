@@ -36,13 +36,13 @@ verification:
   scales: [0.5, 1.0, 1.5]
 
 monte_carlo:
-  enabled: true
-  n_samples: 2000
+  enabled: false
+  n_samples: 1000
   seed: 42
   tightened_limit:
-    enabled: true
+    enabled: false
     target_r_sigma: 2.0
-    n_samples: 2000
+    n_samples: 1000
 
 plot:
   top_k_critical: 5

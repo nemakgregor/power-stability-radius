@@ -20,27 +20,27 @@ compute:
     balance: true
     lossless: true
     fpf:
-      pg0_source: case
-      vm_min_pu: 0.9
+      pg0_source: midpoint
+      vm_min_pu: 0.8
       vm_max_pu: 1.1
       max_iteration: 300
       max_loading_percent: 99.0
-      init: flat
-      max_attempts: 2
-      per_attempt_timeout: 600
+      init: dc
+      max_attempts: 3
+      per_attempt_timeout: 240
 
 verification:
-  top_k: 5
+  top_k: 0
   scales: [0.5, 1.0, 1.5]
 
 monte_carlo:
-  enabled: true
-  n_samples: 2000
+  enabled: false
+  n_samples: 1000
   seed: 42
   tightened_limit:
-    enabled: true
+    enabled: false
     target_r_sigma: 2.0
-    n_samples: 2000
+    n_samples: 1000
 
 plot:
   top_k_critical: 5

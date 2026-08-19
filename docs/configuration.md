@@ -218,8 +218,8 @@ class LoggingConfig:
     module_name: str = "general"
     level_console: str = "INFO"
     level_file: str = "DEBUG"
-    run_dir_mode: str = "timestamp"   # "timestamp" | "overwrite"
-    run_name: str = "latest"          # used only when run_dir_mode="overwrite"
+    run_dir_mode: str = "timestamp"  # "timestamp" | "overwrite"
+    run_name: str = "latest"  # used only when run_dir_mode="overwrite"
 ```
 
 ### `HiGHSConfig`
@@ -242,8 +242,8 @@ class HiGHSConfig:
 @dataclass(frozen=True)
 class OPFConfig:
     highs: HiGHSConfig = field(default_factory=HiGHSConfig)
-    unconstrained_line_nom_mw: float = 1e5      # [determinism-critical]
-    headroom_factor: float = 0.98                # [determinism-critical]
+    unconstrained_line_nom_mw: float = 1e5  # [determinism-critical]
+    headroom_factor: float = 0.98  # [determinism-critical]
     ext_grid_marginal_cost_base: float = 1000.0
 ```
 
@@ -252,9 +252,9 @@ class OPFConfig:
 ```python
 @dataclass(frozen=True)
 class DCConfig:
-    mode: str = "operator"    # "operator" | "materialize"
+    mode: str = "operator"  # "operator" | "materialize"
     chunk_size: int = 256
-    dtype: str = "float64"    # "float64" | "float32"
+    dtype: str = "float64"  # "float64" | "float32"
 ```
 
 ### `MonteCarloConfig`
@@ -278,7 +278,7 @@ class DCExtensionsConfig:
     probabilistic_enabled: bool = False
     nminus1_enabled: bool = False
     nminus1_update_sensitivities: bool = True
-    nminus1_islanding: str = "skip"   # "skip" | "raise"
+    nminus1_islanding: str = "skip"  # "skip" | "raise"
 ```
 
 ### `ACExtensionsConfig` (in `workflows.py`)
@@ -286,8 +286,8 @@ class DCExtensionsConfig:
 ```python
 @dataclass(frozen=True)
 class ACExtensionsConfig:
-    sigma_p_mw_source: str = ""         # "uniform" | "uc_jl" | ""
-    sigma_q_mvar_source: str = ""       # "uniform" | "uc_jl" | ""
+    sigma_p_mw_source: str = ""  # "uniform" | "uc_jl" | ""
+    sigma_q_mvar_source: str = ""  # "uniform" | "uc_jl" | ""
     sigma_p_mw_uniform: float = 1.0
     sigma_q_mvar_uniform: float = 1.0
     sigma_p_mw_array: np.ndarray | None = None
@@ -307,7 +307,7 @@ class ACExtensionsConfig:
 ```python
 @dataclass(frozen=True)
 class ACFPFConfig:
-    pg0_source: str = "case"             # "case" | "midpoint"
+    pg0_source: str = "case"  # "case" | "midpoint"
     vm_min_pu: float = 0.9
     vm_max_pu: float = 1.1
     max_iteration: int = 300
@@ -317,9 +317,9 @@ class ACFPFConfig:
     pdipm_comptol: float = 1e-4
     pdipm_costtol: float = 1e-4
     opf_violation: float = 1e-4
-    init: str = "dc"                     # "dc" | "flat"
+    init: str = "dc"  # "dc" | "flat"
     max_attempts: int = 1
-    per_attempt_timeout: float = 0       # seconds; 0 = unlimited
+    per_attempt_timeout: float = 0  # seconds; 0 = unlimited
 ```
 
 ---

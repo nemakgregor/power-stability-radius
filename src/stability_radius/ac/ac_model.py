@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import logging
 import math
 from dataclasses import dataclass
@@ -241,21 +242,7 @@ def _build_ybus_pu(
             if hv not in bus_pos or lv not in bus_pos:
                 raise ValueError(f"Trafo {tid} refers to missing buses {hv}->{lv}")
 
-            # Consistency with the lossless verification PF: the policy zeroes
-            # vkr_percent BEFORE pandapower computes x = sqrt(z^2 - r^2), so the
-            # PF sees x = vk.  Build the Jacobian from the same convention,
-            # otherwise every transformer reactance is off by
-            # sqrt(1 + (r/x)^2) - 1 relative to the replayed network.
-            if bool(lossless):
-                row_x = row.copy()
-                row_x["vkr_percent"] = 0.0
-            else:
-                row_x = row
-            x_ohm = float(trafo_x_total_ohm(net, row_x))
-            parallel = float(row.get("parallel", 1.0))
-            if not math.isfinite(parallel) or parallel <= 0.0:
-                raise ValueError(f"Trafo {tid}: invalid parallel={parallel!r}")
-            x_ohm = x_ohm / parallel
+            x_ohm = float(trafo_x_total_ohm(net, row))
 
             vn_kv = float(row.get("vn_hv_kv", np.nan))
             if not math.isfinite(vn_kv) or vn_kv <= 0.0:
@@ -611,6 +598,12 @@ class ACOperator:
     to_bus_pos: np.ndarray  # (m_line,)
     y_series_pu: np.ndarray  # (m_line,), series admittance (pu); 0 for out-of-service
 
+    # Exact two-ended branch-flow derivatives from the pandapower/PYPOWER
+    # branch model, restricted to x = [theta_non_slack; V_pq]. Values are in
+    # MVA per radian or MVA per p.u. voltage magnitude.
+    dS_from_dx: Any
+    dS_to_dx: Any
+
     Ybus: Any  # scipy.sparse.csr_matrix (complex)
     J: Any  # scipy.sparse.csc_matrix (float)
     J_lu: Any  # scipy.sparse.linalg.SuperLU
@@ -688,7 +681,7 @@ def build_ac_operator(
     va_rad: np.ndarray,
     line_indices: list[int] | None = None,
     lossless: bool = True,
-    pv_to_pq_bus_ids: list[int] | tuple[int, ...] | None = None,
+    forced_pq_bus_ids: set[int] | None = None,
 ) -> ACOperator:
     """
     Build ACOperator around a base AC PF point.
@@ -705,12 +698,10 @@ def build_ac_operator(
         Optional explicit ordering of monitored net.line indices.
     lossless:
         If True, enforces r=0 in the internal Ybus (keeps closer to DC assumptions).
-    pv_to_pq_bus_ids:
-        Bus ids whose voltage control saturated at a reactive-power limit in
-        the base power flow (``enforce_q_lims=True``).  pandapower treats such
-        buses as PQ in the converged solution, so the reduced Jacobian must do
-        the same, otherwise the certificate linearizes a different active set
-        than the one the power flow actually solved.
+    forced_pq_bus_ids:
+        Bus identifiers whose generators reached reactive limits in the solved
+        base power flow. These buses are treated as PQ buses in the fixed-active-
+        set Jacobian even if the input case declares them as PV buses.
 
     Returns
     -------
@@ -779,40 +770,144 @@ def build_ac_operator(
             raise ValueError(f"Line {lid}: invalid z_pu ~ 0.")
         y_series_pu[pos] = 1.0 / z_pu
 
-    Ybus = _build_ybus_pu(
-        net=net, bus_ids=bus_ids, slack_pos=slack_pos, lossless=bool(lossless)
+    # Build the exact pandapower/PYPOWER network matrices used by nonlinear
+    # replay. This includes series resistance, line charging, taps, phase
+    # shifts, transformer shunts, and bus shunts when lossless=False.
+    try:
+        from pandapower.converter import to_ppc
+        from pandapower.pypower.dSbr_dV import dSbr_dV
+        from pandapower.pypower.dSbus_dV import dSbus_dV
+        from pandapower.pypower.idx_bus import BUS_TYPE, PQ, REF, VA, VM
+        from pandapower.pypower.makeYbus import makeYbus
+
+        from stability_radius.base_point.pandapower_tools import (
+            apply_lossless_policy_to_pandapower_net,
+        )
+    except ImportError as exc:  # pragma: no cover - project dependency
+        raise ImportError(
+            "pandapower/PYPOWER derivatives are required for the exact AC operator."
+        ) from exc
+
+    nn = copy.deepcopy(net)
+    if bool(lossless):
+        nn = apply_lossless_policy_to_pandapower_net(nn)
+    ppc = to_ppc(
+        nn,
+        calculate_voltage_angles=True,
+        trafo_model="pi",
+        voltage_depend_loads=False,
+        init="flat",
     )
+    base_mva = float(ppc["baseMVA"])
+    if not math.isclose(base_mva, sn_mva, rel_tol=1e-12, abs_tol=1e-12):
+        raise ValueError(
+            f"pandapower baseMVA={base_mva!r} does not match net.sn_mva={sn_mva!r}."
+        )
 
-    pv_mask = _detect_pv_buses(net, bus_ids, slack_pos)
+    bus_lookup = np.asarray(nn._pd2ppc_lookups["bus"], dtype=int)
+    try:
+        ppc_bus_pos = np.asarray([int(bus_lookup[bid]) for bid in bus_ids], dtype=int)
+    except (IndexError, TypeError) as exc:
+        raise ValueError(
+            "Could not map pandapower buses into the PYPOWER case."
+        ) from exc
+    if np.any(ppc_bus_pos < 0) or len(set(ppc_bus_pos.tolist())) != n_bus:
+        raise ValueError(
+            "ACOperator requires every monitored pandapower bus to map to one "
+            "in-service PYPOWER bus."
+        )
+    if int(ppc["bus"].shape[0]) != n_bus:
+        raise ValueError(
+            "ACOperator does not yet support auxiliary PYPOWER buses created by "
+            "three-winding transformers."
+        )
 
-    if pv_to_pq_bus_ids:
-        bus_pos_map = {bid: pos for pos, bid in enumerate(bus_ids)}
-        n_converted = 0
-        for bid in pv_to_pq_bus_ids:
-            pos = bus_pos_map.get(int(bid))
-            if pos is None or pos == slack_pos:
-                continue
-            if pv_mask[pos]:
-                pv_mask[pos] = False
-                n_converted += 1
-        if n_converted:
-            logger.info(
-                "ACOperator: converted %d PV bus(es) to PQ because their "
-                "voltage control is saturated at a Q limit in the base PF.",
-                int(n_converted),
-            )
+    ppc["bus"][ppc_bus_pos, VM] = vm
+    ppc["bus"][ppc_bus_pos, VA] = np.rad2deg(va)
+    V_ppc = ppc["bus"][:, VM] * np.exp(1j * np.deg2rad(ppc["bus"][:, VA]))
+    Ybus_ppc, Yf, Yt = makeYbus(base_mva, ppc["bus"], ppc["branch"])
+    dS_dVm_ppc, dS_dVa_ppc = dSbus_dV(Ybus_ppc, V_ppc)
+    dSf_dVa, dSf_dVm, dSt_dVa, dSt_dVm, _Sf, _St = dSbr_dV(ppc["branch"], Yf, Yt, V_ppc)
+
+    mask_non_slack = np.ones(n_bus, dtype=bool)
+    mask_non_slack[int(slack_pos)] = False
+    pv_mask = np.asarray(
+        [
+            int(ppc["bus"][row, BUS_TYPE]) not in {int(PQ), int(REF)}
+            for row in ppc_bus_pos
+        ],
+        dtype=bool,
+    )
+    pv_mask[int(slack_pos)] = False
+    forced_pq = {int(x) for x in (forced_pq_bus_ids or set())}
+    for bus_id in forced_pq:
+        if bus_id in bus_pos and int(bus_pos[bus_id]) != int(slack_pos):
+            pv_mask[int(bus_pos[bus_id])] = False
+    pq_mask = mask_non_slack & ~pv_mask
+    n_pq = int(np.sum(pq_mask))
     n_pv = int(np.sum(pv_mask))
 
-    J, mask_non_slack, theta_red_pos, v_red_pos, pq_mask, n_pq = (
-        _build_reduced_pf_jacobian_mw_per_unit(
-            Ybus=Ybus,
-            vm_pu=vm,
-            va_rad=va,
-            slack_pos=slack_pos,
-            sn_mva=sn_mva,
-            pv_mask=pv_mask,
+    theta_red_pos = np.full(n_bus, -1, dtype=int)
+    theta_bus_pos = np.where(mask_non_slack)[0]
+    theta_red_pos[theta_bus_pos] = np.arange(theta_bus_pos.size, dtype=int)
+    v_red_pos = np.full(n_bus, -1, dtype=int)
+    pq_bus_pos = np.where(pq_mask)[0]
+    v_red_pos[pq_bus_pos] = np.arange(pq_bus_pos.size, dtype=int)
+
+    theta_ppc = ppc_bus_pos[theta_bus_pos]
+    pq_ppc = ppc_bus_pos[pq_bus_pos]
+    p_rows_ppc = theta_ppc
+    q_rows_ppc = pq_ppc
+    J = (
+        sp.bmat(
+            [
+                [
+                    dS_dVa_ppc[p_rows_ppc, :][:, theta_ppc].real,
+                    dS_dVm_ppc[p_rows_ppc, :][:, pq_ppc].real,
+                ],
+                [
+                    dS_dVa_ppc[q_rows_ppc, :][:, theta_ppc].imag,
+                    dS_dVm_ppc[q_rows_ppc, :][:, pq_ppc].imag,
+                ],
+            ],
+            format="csc",
         )
+        * base_mva
     )
+
+    line_lookup = nn._pd2ppc_lookups.get("branch", {}).get("line")
+    if not isinstance(line_lookup, tuple) or len(line_lookup) != 2:
+        raise ValueError("Could not map pandapower lines into PYPOWER branches.")
+    line_start, line_stop = (int(line_lookup[0]), int(line_lookup[1]))
+    net_line_order = [int(x) for x in nn.line.index]
+    if line_stop - line_start != len(net_line_order):
+        raise ValueError("Unexpected pandapower line-to-branch lookup length.")
+    net_line_pos = {lid: pos for pos, lid in enumerate(net_line_order)}
+    branch_rows = np.asarray(
+        [line_start + int(net_line_pos[lid]) for lid in line_ids], dtype=int
+    )
+
+    dS_from_dx = (
+        sp.hstack(
+            [
+                dSf_dVa[branch_rows, :][:, theta_ppc],
+                dSf_dVm[branch_rows, :][:, pq_ppc],
+            ],
+            format="csr",
+        )
+        * base_mva
+    )
+    dS_to_dx = (
+        sp.hstack(
+            [
+                dSt_dVa[branch_rows, :][:, theta_ppc],
+                dSt_dVm[branch_rows, :][:, pq_ppc],
+            ],
+            format="csr",
+        )
+        * base_mva
+    )
+    Ybus = Ybus_ppc[ppc_bus_pos, :][:, ppc_bus_pos].tocsr()
 
     try:
         J_lu = spla.splu(J)
@@ -852,6 +947,8 @@ def build_ac_operator(
         from_bus_pos=from_bus_pos,
         to_bus_pos=to_bus_pos,
         y_series_pu=y_series_pu,
+        dS_from_dx=dS_from_dx,
+        dS_to_dx=dS_to_dx,
         Ybus=Ybus,
         J=J,
         J_lu=J_lu,
