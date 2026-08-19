@@ -44,7 +44,8 @@ def main() -> None:
         {
             pos_of[int(net.load.loc[i, "bus"])]
             for i in net.load.index
-            if bool(net.load.loc[i, "in_service"]) and float(net.load.loc[i, "p_mw"]) > 0
+            if bool(net.load.loc[i, "in_service"])
+            and float(net.load.loc[i, "p_mw"]) > 0
         }
     )
     E = np.zeros((n_bus, len(load_bus_pos)))

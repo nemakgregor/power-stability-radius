@@ -34,7 +34,13 @@ REPEATS = 7
 
 def stat(v):
     a = np.asarray(v, dtype=float)
-    return {"mean_s": float(a.mean()), "std_s": float(a.std(ddof=1)), "min_s": float(a.min()), "max_s": float(a.max()), "n": int(a.size)}
+    return {
+        "mean_s": float(a.mean()),
+        "std_s": float(a.std(ddof=1)),
+        "min_s": float(a.min()),
+        "max_s": float(a.max()),
+        "n": int(a.size),
+    }
 
 
 def run_case(case_file: str, label: str) -> dict:
@@ -55,8 +61,12 @@ def run_case(case_file: str, label: str) -> dict:
     for _ in range(REPEATS):
         t = time.perf_counter()
         op = build_ac_operator(
-            net=net, slack_bus=slack, vm_pu=vm, va_rad=va,
-            line_indices=line_ids, lossless=True,
+            net=net,
+            slack_bus=slack,
+            vm_pu=vm,
+            va_rad=va,
+            line_indices=line_ids,
+            lossless=True,
         )
         t_op.append(time.perf_counter() - t)
     rss_op = peak_rss_mb()
@@ -64,7 +74,11 @@ def run_case(case_file: str, label: str) -> dict:
     for _ in range(REPEATS):
         t = time.perf_counter()
         ac = compute_ac_l2_radius(
-            net, base_pf=base_pf, slack_bus=slack, chunk_size=64, lossless=True,
+            net,
+            base_pf=base_pf,
+            slack_bus=slack,
+            chunk_size=64,
+            lossless=True,
             return_h_vectors=True,
         )
         t_cert.append(time.perf_counter() - t)
@@ -109,7 +123,10 @@ def main() -> None:
         except Exception as e:  # noqa: BLE001
             print(f"{lab}: FAILED {type(e).__name__}: {e}")
             results.append({"case": lab, "failed": str(e)[:300]})
-    save_json("exp5_timing_breakdown.json", {"experiment": "timing_breakdown", "cases": results})
+    save_json(
+        "exp5_timing_breakdown.json",
+        {"experiment": "timing_breakdown", "cases": results},
+    )
 
 
 if __name__ == "__main__":

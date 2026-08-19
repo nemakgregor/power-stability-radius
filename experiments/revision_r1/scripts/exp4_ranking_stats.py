@@ -13,6 +13,7 @@ loading ratio, 1/headroom.  Statistics:
 from __future__ import annotations
 
 import copy
+import signal
 import sys
 import time
 from pathlib import Path
@@ -31,8 +32,9 @@ from stability_radius.verification.sampling import (  # noqa: E402
 
 CASE = "pglib_opf_case118_ieee.m"
 SEED = 42
-N_MC = 10000
+N_MC = 8000
 N_BOOT = 2000
+_SAMPLE_TIMEOUT_S = 10  # skip pathological Q-limit flip-flop samples
 SIGMA_P = 30.0
 SIGMA_Q = 30.0
 K_LIST = [3, 5, 10]
@@ -75,21 +77,37 @@ def main() -> None:
     rng = np.random.default_rng(SEED)
     sig_p = np.full(len(bus_ids), SIGMA_P)
     sig_q = np.full(len(bus_ids), SIGMA_Q)
-    dP, dQ = sample_balanced_gaussian_sigma(rng=rng, n=N_MC, sigma_p=sig_p, sigma_q=sig_q)
+    dP, dQ = sample_balanced_gaussian_sigma(
+        rng=rng, n=N_MC, sigma_p=sig_p, sigma_q=sig_q
+    )
 
     base = copy.deepcopy(net)
     pp.runpp(base, init="dc", **PF_KW)
     sg = [pp.create_sgen(base, b, p_mw=0.0, q_mvar=0.0) for b in bus_ids]
 
+    def _alarm(_sig, _frm):
+        raise TimeoutError
+
+    signal.signal(signal.SIGALRM, _alarm)
+
     over = np.zeros((N_MC, m), dtype=bool)
     ok = np.zeros(N_MC, dtype=bool)
+    n_timeout = 0
     for k in range(N_MC):
         base.sgen.loc[sg, "p_mw"] = dP[k]
         base.sgen.loc[sg, "q_mvar"] = dQ[k]
+        signal.alarm(_SAMPLE_TIMEOUT_S)
         try:
-            pp.runpp(base, init="results", **PF_KW)
+            # independent init per sample: chaining init="results" can push the
+            # Q-limit outer loop into a persistent flip-flop on rare samples
+            pp.runpp(base, init="dc", **PF_KW)
+        except TimeoutError:
+            n_timeout += 1
+            continue
         except Exception:
             continue
+        finally:
+            signal.alarm(0)
         ok[k] = True
         s_all = np.maximum(
             np.hypot(base.res_line.p_from_mw.values, base.res_line.q_from_mvar.values),
@@ -138,9 +156,7 @@ def main() -> None:
                 "precision": tp / kk,
                 "recall": tp / kk,
                 "false_negative_lines": sorted(actual_top - pred_top),
-                "top_k_mean_freq": float(
-                    freq[np.argsort(-sc)[:kk]].mean()
-                ),
+                "top_k_mean_freq": float(freq[np.argsort(-sc)[:kk]].mean()),
             }
 
     out = {
@@ -148,6 +164,7 @@ def main() -> None:
         "seed": SEED,
         "n_mc_attempted": N_MC,
         "n_mc_converged": n_eff,
+        "n_mc_sample_timeouts": n_timeout,
         "sigma_p_mw": SIGMA_P,
         "sigma_q_mvar": SIGMA_Q,
         "n_boot_scenarios": N_BOOT,
@@ -161,7 +178,9 @@ def main() -> None:
         "runtime_s": float(time.time() - t0),
     }
     for name in scores:
-        print(f"{name:14s} rho={rho[name]:.3f} CI={out['spearman'][name]['ci95_scenario_bootstrap']}")
+        print(
+            f"{name:14s} rho={rho[name]:.3f} CI={out['spearman'][name]['ci95_scenario_bootstrap']}"
+        )
     for k_, v in diffs.items():
         print(f"{k_}: {v['point']:.3f} CI={v['ci95']}")
     save_json("exp4_ranking_stats.json", out)

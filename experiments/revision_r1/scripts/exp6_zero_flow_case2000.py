@@ -39,7 +39,11 @@ def main() -> None:
         fpf_cfg=ACFPFConfig(pg0_source="case", init="dc", max_attempts=3),
     )
     ac = compute_ac_l2_radius(
-        net, base_pf=base_pf, slack_bus=slack, chunk_size=64, lossless=True,
+        net,
+        base_pf=base_pf,
+        slack_bus=slack,
+        chunk_size=64,
+        lossless=True,
         return_h_vectors=True,
     )
     hv = ac.pop("_h_vectors")
@@ -76,9 +80,7 @@ def main() -> None:
             continue
         s0_ends += [float(d["ac_s0_from_mva"]), float(d["ac_s0_to_mva"])]
     s0_ends = np.asarray(s0_ends)
-    sensitivity = {
-        str(t): int((s0_ends <= t).sum()) for t in THRESHOLD_SWEEP_MVA
-    }
+    sensitivity = {str(t): int((s0_ends <= t).sum()) for t in THRESHOLD_SWEEP_MVA}
 
     finite_min = float(np.min(radii_all)) if radii_all else None
     out = {

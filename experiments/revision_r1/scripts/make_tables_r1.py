@@ -43,11 +43,11 @@ if d1:
         a = c["aggregate_by_eps"]
         t = t5.get(c["case"], {})
         rows.append(
-            f'\\texttt{{{esc(c["case"])}}} & {c["n_ends_checked"]} & '
-            f'{sci(a["1.0"]["median"])} & {sci(a["0.01"]["median"])} & '
-            f'{sci(a["0.001"]["median"])} & {sci(a["0.001"]["max"])} & '
-            f'{sci(c["adjoint_residual_max"])} & '
-            f'{fixed(t.get("certificate_adjoint_plus_norms", {}).get("mean_s"), 4)} \\\\'
+            f"\\texttt{{{esc(c['case'])}}} & {c['n_ends_checked']} & "
+            f"{sci(a['1.0']['median'])} & {sci(a['0.01']['median'])} & "
+            f"{sci(a['0.001']['median'])} & {sci(a['0.001']['max'])} & "
+            f"{sci(c['adjoint_residual_max'])} & "
+            f"{fixed(t.get('certificate_adjoint_plus_norms', {}).get('mean_s'), 4)} \\\\"
         )
     body = "\n".join(rows)
     write(
@@ -82,12 +82,12 @@ if d2:
     rows = []
     for r in d2["lines"]:
         rows.append(
-            f'\\texttt{{line\\_{r["line"]}}} & {r["end"]} & {fixed(r["s0_mva"], 2)} & '
-            f'{fixed(r["sigma_flow_analytical_mva"], 3)} & '
-            f'{fixed(r["sigma_flow_empirical_mva"], 3)} & '
-            f'{fixed(r["ratio_analytical_over_empirical"], 3)} & '
-            f'{fixed(r["predicted_exceed_prob"], 4)} & {fixed(r["empirical_exceed_prob"], 4)} & '
-            f'[{fixed(r["wilson95"][0], 4)}, {fixed(r["wilson95"][1], 4)}] \\\\'
+            f"\\texttt{{line\\_{r['line']}}} & {r['end']} & {fixed(r['s0_mva'], 2)} & "
+            f"{fixed(r['sigma_flow_analytical_mva'], 3)} & "
+            f"{fixed(r['sigma_flow_empirical_mva'], 3)} & "
+            f"{fixed(r['ratio_analytical_over_empirical'], 3)} & "
+            f"{fixed(r['predicted_exceed_prob'], 4)} & {fixed(r['empirical_exceed_prob'], 4)} & "
+            f"[{fixed(r['wilson95'][0], 4)}, {fixed(r['wilson95'][1], 4)}] \\\\"
         )
     body = "\n".join(rows)
     rs = d2["ratio_summary"]
@@ -135,9 +135,9 @@ if d3:
             if r09 and r09.get("target_is_violated"):
                 n_viol_at_09 += 1
         rows.append(
-            f'\\texttt{{{esc(c["case"])}}} & {n_lines} & '
-            f'{fixed(s["median"], 3)} & {fixed(s["min"], 3)} & {fixed(s["max"], 3)} & '
-            f'{n_viol_at_09}/{n_lines} & {c["q_limit_events_at_base"]} \\\\'
+            f"\\texttt{{{esc(c['case'])}}} & {n_lines} & "
+            f"{fixed(s['median'], 3)} & {fixed(s['min'], 3)} & {fixed(s['max'], 3)} & "
+            f"{n_viol_at_09}/{n_lines} & {c['q_limit_events_at_base']} \\\\"
         )
     body = "\n".join(rows)
     write(
@@ -169,17 +169,21 @@ Case & Lines & Med.\ crossing $\alpha$ & Min & Max & Violated at $0.9r$ & Q-lim.
 # ---------------- ranking stats (exp4) ----------------
 d4 = load("exp4_ranking_stats.json")
 if d4:
-    nm = {"inv_radius": "AC L2 danger score ($1/r$)", "loading_ratio": "Loading ratio", "inv_headroom": "Headroom danger score"}
+    nm = {
+        "inv_radius": "AC L2 danger score ($1/r$)",
+        "loading_ratio": "Loading ratio",
+        "inv_headroom": "Headroom danger score",
+    }
     rows = []
     for key, label in nm.items():
         sp = d4["spearman"][key]
         p5 = d4["precision_recall_at_k"]["5"][key]
         p10 = d4["precision_recall_at_k"]["10"][key]
         rows.append(
-            f'{label} & {fixed(sp["rho"], 3)} & '
-            f'[{fixed(sp["ci95_scenario_bootstrap"][0], 3)}, {fixed(sp["ci95_scenario_bootstrap"][1], 3)}] & '
-            f'{fixed(p5["precision"], 2)} & {fixed(p10["precision"], 2)} & '
-            f'{fixed(p5["top_k_mean_freq"], 3)} \\\\'
+            f"{label} & {fixed(sp['rho'], 3)} & "
+            f"[{fixed(sp['ci95_scenario_bootstrap'][0], 3)}, {fixed(sp['ci95_scenario_bootstrap'][1], 3)}] & "
+            f"{fixed(p5['precision'], 2)} & {fixed(p10['precision'], 2)} & "
+            f"{fixed(p5['top_k_mean_freq'], 3)} \\\\"
         )
     body = "\n".join(rows)
     diffs = d4["paired_differences"]
@@ -226,9 +230,9 @@ if d7:
         if "failed" in c:
             continue
         rows.append(
-            f'\\texttt{{{esc(c["case"])}}} & '
-            f'{fixed(c["r_dc_global"], 2)} & {fixed(c["r_ac_global"], 2)} & '
-            f'{fixed(c["ac_over_dc"], 3)} & {c["n_nondiff_ends"]} \\\\'
+            f"\\texttt{{{esc(c['case'])}}} & "
+            f"{fixed(c['r_dc_global'], 2)} & {fixed(c['r_ac_global'], 2)} & "
+            f"{fixed(c['ac_over_dc'], 3)} & {c['n_nondiff_ends']} \\\\"
         )
     body = "\n".join(rows)
     write(
@@ -258,14 +262,16 @@ if d5:
     rows = []
     for c in d5["cases"]:
         if "failed" in c:
-            rows.append(f'\\texttt{{{esc(c["case"])}}} & \\multicolumn{{7}}{{l}}{{lossless runpp base point does not converge (AC-FPF base required, cf.\\ Table~\\ref{{tab:zero-flow}})}} \\\\')
+            rows.append(
+                f"\\texttt{{{esc(c['case'])}}} & \\multicolumn{{7}}{{l}}{{lossless runpp base point does not converge (AC-FPF base required, cf.\\ Table~\\ref{{tab:zero-flow}})}} \\\\"
+            )
             continue
         rows.append(
-            f'\\texttt{{{esc(c["case"])}}} & {c["n_bus"]} & {c["n_line"]} & '
-            f'{c["ac_pf"]["mean_s"]:.3f}$\\pm${c["ac_pf"]["std_s"]:.3f} & '
-            f'{c["operator_build_assembly_plus_lu"]["mean_s"]:.3f}$\\pm${c["operator_build_assembly_plus_lu"]["std_s"]:.3f} & '
-            f'{c["certificate_adjoint_plus_norms"]["mean_s"]:.3f}$\\pm${c["certificate_adjoint_plus_norms"]["std_s"]:.3f} & '
-            f'{c["peak_rss_after_certificate_mb"]:.0f} & {c["stored_h_arrays_mb"]:.2f} \\\\'
+            f"\\texttt{{{esc(c['case'])}}} & {c['n_bus']} & {c['n_line']} & "
+            f"{c['ac_pf']['mean_s']:.3f}$\\pm${c['ac_pf']['std_s']:.3f} & "
+            f"{c['operator_build_assembly_plus_lu']['mean_s']:.3f}$\\pm${c['operator_build_assembly_plus_lu']['std_s']:.3f} & "
+            f"{c['certificate_adjoint_plus_norms']['mean_s']:.3f}$\\pm${c['certificate_adjoint_plus_norms']['std_s']:.3f} & "
+            f"{c['peak_rss_after_certificate_mb']:.0f} & {c['stored_h_arrays_mb']:.2f} \\\\"
         )
     body = "\n".join(rows)
     write(

@@ -82,7 +82,8 @@ def run_case(case_file: str) -> dict:
     r_dc = global_min(res, "radius_l2")
     r_ac = global_min(res, "radius_ac_l2")
     nd = sum(
-        int(bool(v.get("ac_nondifferentiable_from"))) + int(bool(v.get("ac_nondifferentiable_to")))
+        int(bool(v.get("ac_nondifferentiable_from")))
+        + int(bool(v.get("ac_nondifferentiable_to")))
         for v in res.values()
         if isinstance(v, dict)
     )

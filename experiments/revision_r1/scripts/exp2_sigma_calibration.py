@@ -80,7 +80,9 @@ def main() -> None:
 
     # Monte Carlo with the repo's own balanced sampler
     rng = np.random.default_rng(SEED)
-    dP, dQ = sample_balanced_gaussian_sigma(rng=rng, n=N_MC, sigma_p=sig_p, sigma_q=sig_q)
+    dP, dQ = sample_balanced_gaussian_sigma(
+        rng=rng, n=N_MC, sigma_p=sig_p, sigma_q=sig_q
+    )
 
     import copy
 
@@ -131,7 +133,9 @@ def main() -> None:
                 "s0_mva": s0,
                 "sigma_flow_analytical_mva": float(sflow),
                 "sigma_flow_empirical_mva": sd_emp,
-                "ratio_analytical_over_empirical": float(sflow / sd_emp) if sd_emp > 0 else None,
+                "ratio_analytical_over_empirical": float(sflow / sd_emp)
+                if sd_emp > 0
+                else None,
                 "tightened_limit_mva": float(tight),
                 "predicted_exceed_prob": pred_p,
                 "empirical_exceed_prob": emp_p,
@@ -159,8 +163,10 @@ def main() -> None:
         },
         "lines": lines_out,
     }
-    print(f"ratio analytical/empirical: median={out['ratio_summary']['median']:.3f} "
-          f"range=[{out['ratio_summary']['min']:.3f}, {out['ratio_summary']['max']:.3f}]  PF fails={n_fail}")
+    print(
+        f"ratio analytical/empirical: median={out['ratio_summary']['median']:.3f} "
+        f"range=[{out['ratio_summary']['min']:.3f}, {out['ratio_summary']['max']:.3f}]  PF fails={n_fail}"
+    )
     save_json("exp2_sigma_calibration.json", out)
 
 

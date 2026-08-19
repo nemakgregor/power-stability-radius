@@ -681,6 +681,11 @@ def run(
         meta = results.get("__meta__", {})
         input_path = meta.get("input_path")
         slack_bus = int(meta.get("slack_bus", 0))
+        # Replay with the SAME model conventions the certificate was computed
+        # with; a hardcoded default here silently replays a different network.
+        ac_meta = meta.get("ac", {}) if isinstance(meta.get("ac", {}), dict) else {}
+        lossless = bool(ac_meta.get("lossless", lossless))
+        balance = bool(ac_meta.get("balance", balance))
 
         if input_path is None:
             logger.warning("Skipping %s: no __meta__.input_path", rpath.name)

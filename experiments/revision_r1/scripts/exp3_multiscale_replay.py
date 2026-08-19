@@ -93,7 +93,9 @@ def run_case(case_file: str, label: str) -> dict:
                 "target_line_loading": s_target / limits[lid],
                 "any_thermal_violation": bool(over.any()),
                 "n_thermal_violations": int(over.sum()),
-                "first_violated_line": int(np.array(line_ids)[over][0]) if over.any() else None,
+                "first_violated_line": int(np.array(line_ids)[over][0])
+                if over.any()
+                else None,
                 "target_is_violated": bool(over[li]),
                 "vm_min": float(vm.min()),
                 "vm_max": float(vm.max()),
@@ -167,7 +169,10 @@ def run_case(case_file: str, label: str) -> dict:
 
 def main() -> None:
     results = [run_case(cf, lab) for cf, lab in CASES]
-    save_json("exp3_multiscale_replay.json", {"experiment": "multiscale_replay", "cases": results})
+    save_json(
+        "exp3_multiscale_replay.json",
+        {"experiment": "multiscale_replay", "cases": results},
+    )
 
 
 if __name__ == "__main__":
