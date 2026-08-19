@@ -202,7 +202,9 @@ bootstrap (resampling Monte Carlo scenarios, """
         + f"{d4['n_boot_scenarios']}"
         + r""" replicates), which
 treats the correlated line outcomes correctly, unlike the line bootstrap of
-the original submission.  The paired scenario-bootstrap 95\% interval for the
+the original submission; replicates re-estimate the empirical frequencies, so
+the intervals are mildly attenuated relative to the full-sample point
+estimate.  The paired scenario-bootstrap 95\% interval for the
 Spearman difference is """
         + f"$\\Delta\\rho = {dl['point']:.3f}$, CI $[{dl['ci95'][0]:.3f}, {dl['ci95'][1]:.3f}]$ vs.\\ loading and "
         + f"$\\Delta\\rho = {dh['point']:.3f}$, CI $[{dh['ci95'][0]:.3f}, {dh['ci95'][1]:.3f}]$ vs.\\ headroom"
